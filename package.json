@@ -1,0 +1,31 @@
+{
+  "name": "qq-companion",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "DSH 插件：QQ 私聊陪伴体（情绪/关系/人格四层 + 会遗忘的记忆卡）",
+  "exports": {
+    ".": "./src/host.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test --test-isolation=none \"test/*.test.mjs\""
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "dsh": ">=0.2.1-rc.2 <0.3.0",
+    "node": ">=22.13.0"
+  }
+}

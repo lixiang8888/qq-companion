@@ -1,0 +1,6 @@
+# QQ 陪伴插件：挂一行就生效。
+# 它不要 DSH 会话——自己的对话循环、自己的压缩、自己的状态，全部在这个插件里。
+- insert:
+    - id: qq-companion
+      name: qq-companion
+      config: {}
