@@ -63,6 +63,14 @@ export function classify(text) {
 
 const KIND_RANK = { chatter: 0, event: 1, identity: 2 };
 
+/** 记忆的来源。没有来源的记录，不许冒充「他说过的事」。 */
+export const SOURCES = ['said', 'seen', 'inferred'];
+
+/** 有根的记忆：他的原话，或者系统里真发生过的事。 */
+export function isGrounded(rec) {
+  return rec?.source === 'said' || rec?.source === 'seen';
+}
+
 // ---- 旧事实失效 ----
 // 新句里出现这些词，才有资格让旧记录失效（「团子走了」→「他养了只猫，叫团子」）。
 const SUPERSEDE_WORDS = ['走了', '没了', '不在了', '分手', '离职', '搬走', '不养了', '结束了', '换了', '不是了', '去世'];
@@ -226,7 +234,7 @@ export function restore(card, id) {
 }
 
 /** 记住一条。去重（同文不同次），主人的话优先。 */
-export function remember(card, text, { now = 0, owner = false, inGroup = false, direct = false, pinned = false, maxRecords = MAX_RECORDS, mood = null } = {}) {
+export function remember(card, text, { now = 0, owner = false, inGroup = false, direct = false, pinned = false, maxRecords = MAX_RECORDS, mood = null, source = 'said', quote = '' } = {}) {
   const t = String(text || '').trim();
   if (!t) return card;
   const next = structuredClone(card);
@@ -243,11 +251,19 @@ export function remember(card, text, { now = 0, owner = false, inGroup = false, 
   }
   const { score, isFirst, emotional } = scoreMemory(t, { owner, inGroup, direct });
   const first = Boolean(isFirst && owner) || next.records.length === 0;
-  const kind = classify(t);
+  // 来源决定这条记忆有没有「根」：
+  //   said = 他的原话（我们拿到的是原文，所以能逐字留下）
+  //   seen = 系统里真实发生的事（状态变化、时间）
+  //   inferred = 她自己推的/想的 —— 不许冒充事实
+  const src = SOURCES.includes(source) ? source : 'said';
+  const kind = src === 'inferred' ? 'chatter' : classify(t);
   const rec = {
     id: `m_${createHash('sha1').update(`${t}|${now}`).digest('hex').slice(0, 8)}`,
     text: t.slice(0, 300),
     kind,
+    source: src,
+    // 原话只留前 200 字：用来核「她记的和他说的是不是一回事」，不用来复读。
+    quote: src === 'said' ? String(quote || t).slice(0, 200) : '',
     importance: first && owner ? 100 : score,
     emotional,
     clarity: 'vivid',
@@ -344,3 +360,4 @@ export function stats(card) {
   }
   return { total, archived, ...by, forgotten: card.stats?.forgotten || 0, purged: card.stats?.purged || 0 };
 }
+

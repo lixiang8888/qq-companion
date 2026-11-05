@@ -168,3 +168,27 @@ test('身份类记忆放很久也不会只剩印象', () => {
   const rec = card.records.find((r) => r.text === '我妈住在杭州');
   assert.ok(rank[rec.clarity] >= rank.clear, `实际 ${rec.clarity}`);
 });
+
+test('记忆有来源：他的原话逐字留一份', async () => {
+  const { createCard, remember, isGrounded } = await import('../src/memory/card.js');
+  const card = remember(createCard(0), '他养了只猫叫团子', { now: 1, owner: true });
+  const rec = card.records[0];
+  assert.equal(rec.source, 'said');
+  assert.equal(rec.quote, '他养了只猫叫团子');
+  assert.equal(isGrounded(rec), true);
+});
+
+test('她自己推出来的，不许冒充「关于他是谁」', async () => {
+  const { createCard, remember, isGrounded } = await import('../src/memory/card.js');
+  const card = remember(createCard(0), '他的名字是张三', { now: 1, source: 'inferred' });
+  const rec = card.records[0];
+  assert.equal(rec.kind, 'chatter', '推断只能落在闲话这一档');
+  assert.equal(rec.quote, '', '没有原话就没有原话');
+  assert.equal(isGrounded(rec), false);
+});
+
+test('系统里真发生过的事算有根', async () => {
+  const { createCard, remember, isGrounded } = await import('../src/memory/card.js');
+  const card = remember(createCard(0), '今天他走了很久', { now: 1, source: 'seen' });
+  assert.equal(isGrounded(card.records[0]), true);
+});
