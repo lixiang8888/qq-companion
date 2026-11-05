@@ -159,3 +159,29 @@ export function parsePostReply(text) {
   if (cleaned.length < 4) return { skip: true, text: '', reason: '太短' };
   return { skip: false, text: cleaned, reason: '' };
 }
+
+/**
+ * 让她回一条评论。
+ *
+ * 只给三样：她说过的正文、这个人说了什么、他是谁。不给关系分数，不给「你要表现得亲密一点」。
+ * 公开场合 —— 陌生人也会看到。
+ */
+export function composeCommentPrompt({ post = '', comment = '' } = {}) {
+  return [
+    '有人在你那条说说下面留了话，你要回一句。',
+    `你说的是：${post}`,
+    `他说的是：${comment}`,
+    '一句话，十五字以内，像打字不像写作。',
+    '公开场合，不提私聊里的事，不用「亲爱的」这类称呼。',
+    '不知道该说什么就只回 SKIP，不要解释。',
+  ].join('\n');
+}
+
+/** 回评论的解析：SKIP 就不回，其余照发但要短。 */
+export function parseCommentReply(text) {
+  const raw = String(text ?? '').trim();
+  if (!raw) return { skip: true, text: '' };
+  if (/^SKIP[。.!！\s]*$/i.test(raw)) return { skip: true, text: '' };
+  const cleaned = raw.replace(/\s+/g, ' ').trim().slice(0, 60);
+  return { skip: cleaned.length < 1, text: cleaned };
+}

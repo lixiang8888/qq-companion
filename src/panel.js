@@ -36,7 +36,7 @@ function section(title, body) {
 /**
  * @param {{state: object, memory: object, gateway: string, session: object, persona: string, config: object, now: number}} o
  */
-export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', session = {}, history = [], checks = [], persona = '', config = {}, life = null, diaries = [], budget = null, alive = null, insights = null, now = Date.now() } = {}) {
+export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', session = {}, history = [], checks = [], persona = '', config = {}, life = null, diaries = [], budget = null, alive = null, insights = null, qzone = null, now = Date.now() } = {}) {
   const cfg = config || {};
   const conn = cfg.onebot || {};
   const traits = TRAITS.map((k) => {
@@ -144,6 +144,12 @@ ${section('体检', checks.length
     : '<p class="dim">没有可检查的项</p>')}
 ${section('此刻', `<p class="big">${escapeHtml(stateLine(state))}</p><p class="dim">心情「${escapeHtml(moodLabel(state.mood.v))}」· 情绪强度 ${state.emotion.intensity.toFixed(2)}</p>`)}
 ${section('她的房间', `${doing}${awakeText}${insightText}${diaryText}`)}
+${section('空间', (() => {
+  if (!qzone?.lastText) return '<p class="dim">还没发过说说</p>';
+  const when = qzone.lastPostAt ? new Date(qzone.lastPostAt).toLocaleString() : '';
+  return `<p class="dim">${escapeHtml(when)} 发的（${escapeHtml(qzone.lastKind || '')}）</p><p>${escapeHtml(qzone.lastText)}</p>`
+    + `<p class="dim">tid=${escapeHtml(qzone.lastTid || '')} · <a href="?qzdelete=1">删掉这条</a></p>`;
+})())}
 ${section('人格', `${traits}<p class="dim">${escapeHtml(state.self.narrative || '还没有发生过漂移')}</p><p class="dim">待结算的模式：</p>${patternText}<p class="dim">快照 ${(state.self.snapshots || []).length} 版</p>${snaps ? `<ul>${snaps}</ul>` : ''}`)}
 ${section('记忆', `<p>共 ${mem.total} 条（清晰 ${mem.vivid || 0} / 清楚 ${mem.clear || 0} / 模糊 ${mem.fuzzy || 0} / 只剩印象 ${mem.trace || 0}），已遗忘 ${mem.forgotten || 0}</p>${memoryList}${staleText}${goneText}`)}
 ${section('最近想起', recalls.length    ? `<ul>${recalls.map((r) => `<li><span class="tag">${escapeHtml(new Date(r.at).toLocaleTimeString())}</span>「${escapeHtml(r.query)}」→ ${r.picks.length ? r.picks.map((t) => escapeHtml(t)).join('、') : '<span class="dim">没想起什么</span>'}</li>`).join('')}</ul>`
@@ -162,3 +168,4 @@ ${section('设置', `<form method="post" action="config">
 </form>`)}
 </body></html>`;
 }
+

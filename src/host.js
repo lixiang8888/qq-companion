@@ -22,8 +22,8 @@ import { baselineOf, composePrompt, diff as diaryDiff, dueDay, hasDiary, readDia
 import { addUsage, createBudget, fetchBalance, moneyBlock, usageOf } from './budget.js';
 import { createMailbox, DEFAULT_WINDOW_MS, mergeTexts } from './mailbox.js';
 import { applyInsights, composePrompt as insightsPrompt, createInsights, dueInsights, parseInsights, renderInsights } from './insights.js';
-import { composePostPrompt, decidePost, notePosted, parsePostReply } from './qzone-post.js';
-import { publish as qzonePublish } from './qzone.js';
+import { composeCommentPrompt, composePostPrompt, decidePost, notePosted, parseCommentReply, parsePostReply } from './qzone-post.js';
+import { comment as qzoneComment, detail as qzoneDetail, freshComments, publish as qzonePublish, remove as qzoneRemove } from './qzone.js';
 import { renderPanel } from './panel.js';
 import { rollbackTraits } from './affect/personality.js';
 import { replyPlan } from './affect/behavior.js';
@@ -551,6 +551,77 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   }
 
   /**
+   * 看她那条说说下面有没有新评论，有就回一句。
+   *
+   * 三条规矩：
+   *   - 只有真有说说才查（没发过就别去敲接口）
+   *   - 30 分钟最多查一次
+   *   - 见过的 comment_id 一律记下，不管回没回——Maizone 的已知 bug 就是重复评论
+   */
+  async function refreshQzoneComments() {
+    const qz = qzoneStore.load();
+    const tid = String(qz.lastTid || '');
+    if (!tid) return { checked: 0, replied: 0, reason: '还没发过说说' };
+    const t = now();
+    if (Number(qz.lastCommentAt) && t - Number(qz.lastCommentAt) < 30 * 60e3) {
+      return { checked: 0, replied: 0, reason: '还没到下一轮' };
+    }
+
+    let selfUin = Number(qz.selfUin) || 0;
+    if (!selfUin) {
+      try {
+        const info = await onebot.call('get_login_info', {});
+        selfUin = Number(info?.user_id) || 0;
+      } catch { /* 拿不到就先不跳过自己 */ }
+    }
+
+    let d;
+    try {
+      d = await qzoneDetail(onebot, tid);
+    } catch (e) {
+      log.warn?.(`查评论失败：${e.message}`);
+      qzoneStore.save({ ...qzoneStore.load(), lastCommentAt: t, selfUin });
+      return { checked: 0, replied: 0, reason: `查失败：${e.message}` };
+    }
+
+    const seen = qz.seenComments?.[tid] || [];
+    const fresh = freshComments(d.comments, seen).filter((c) => c.uin !== selfUin);
+    let replied = 0;
+    const handled = [...seen];
+    for (const c of fresh) {
+      handled.push(c.id);
+      let parsed;
+      try {
+        const text = await complete({
+          system: `${personaText(personaDir, config.persona)}\n\n你在自己的空间里回别人的评论。`,
+          messages: [{ role: 'user', text: composeCommentPrompt({ post: qz.lastText || '', comment: c.text }) }],
+          maxTokens: 60,
+        });
+        parsed = parseCommentReply(text);
+      } catch (e) {
+        log.warn?.(`想回评论没想出来：${e.message}`);
+        continue;
+      }
+      if (parsed.skip) continue;
+      try {
+        await qzoneComment(onebot, tid, parsed.text, { targetUin: c.uin });
+        replied += 1;
+      } catch (e) {
+        log.warn?.(`回评论失败：${e.message}`);
+      }
+    }
+
+    qzoneStore.save({
+      ...qzoneStore.load(),
+      selfUin,
+      lastCommentAt: t,
+      seenComments: { ...(qzoneStore.load().seenComments || {}), [tid]: handled.slice(-200) },
+    });
+    if (replied) log(`空间：回了 ${replied} 条评论`);
+    return { checked: d.comments.length, replied };
+  }
+
+  /**
    * 十分钟一次的心跳。顺手测出另一件事：两次心跳之间如果隔了很久，
    * 不是她不再，是机器睡了——那段时间她也是不存在的（进程被冻住，不是她在发呆）。
    */
@@ -564,6 +635,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     enqueue(refreshDiary).catch((e) => log.warn?.(`日记没写成：${e.message}`));
     enqueue(refreshBalance).catch((e) => log.warn?.(`查余额出错：${e.message}`));
     enqueue(evaluatePost).catch((e) => log.warn?.(`空间判定出错：${e.message}`));
+    enqueue(refreshQzoneComments).catch((e) => log.warn?.(`查评论出错：${e.message}`));
     tickProactive().catch((e) => log.warn?.(`主动搭话出错：${e.message}`));
   }
 
@@ -640,6 +712,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         budget: budgetStore.load(),
         alive: { before: aliveBefore, bootAt, offMs: aliveBefore ? Math.max(0, bootAt - aliveBefore) : 0 },
         insights: insightsStore.load(),
+        qzone: qzoneStore.load(),
         session: {
           size: session.size,
           compactions: session.snapshot().compactions,
@@ -658,7 +731,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       const forgetId = q.get('forget');
       const restoreId = q.get('restore');
       const unsupersedeId = q.get('unsupersede');
-      if ((at || pinId || forgetId || restoreId || unsupersedeId) && !sameSiteOnly(req)) {
+      const qzDelete = q.get('qzdelete');
+      if ((at || pinId || forgetId || restoreId || unsupersedeId || qzDelete) && !sameSiteOnly(req)) {
         return '跨站请求被拒绝：面板上的操作只接受本页点击。';
       }
       if (at) {
@@ -676,6 +750,14 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         if (unsupersedeId) card = undoSupersede(card, unsupersedeId);
         memoryStore.save(card);
       }
+      if (qzDelete) {
+        const qz = qzoneStore.load();
+        if (qz.lastTid) {
+          // 面板路由是同步的：删的请求发出去就落盘，不等网络回来。
+          qzoneRemove(onebot, qz.lastTid).catch((e) => log.warn?.(`删说说失败：${e.message}`));
+          qzoneStore.save({ ...qz, lastTid: '', lastText: '', deletedAt: now() });
+        }
+      }
       const snap = snapshot();
       return renderPanel({
         state: snap.state,
@@ -691,6 +773,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         budget: snap.budget,
         alive: snap.alive,
         insights: snap.insights,
+        qzone: snap.qzone,
         config: {
           ownerQQ: config.ownerQQ,
           persona: config.persona,
@@ -759,7 +842,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     log.info?.(`qq-companion：面板 ${panelUrl}`);
   } catch { /* 诊断日志失败不影响启动 */ }
 
-  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), publish: (text, opts) => qzonePublish(onebot, text, opts) }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, get config() { return config; }, dataDir };
+  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, get config() { return config; }, dataDir };
 }
 
 function loadConfig(file, log) {
@@ -841,3 +924,6 @@ function listPersonas(dir) {
   try { return readdirSync(dir).filter((n) => n.endsWith('.md')).map((n) => n.slice(0, -3)); }
   catch { return []; }
 }
+
+
+
