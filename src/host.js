@@ -3,13 +3,14 @@
 // 刻意不用 DSH 会话（session/prompt + remote.mux）：陪伴体要自己掌握「记多少、什么时候压」，
 // 而且插件进程内调用 ctx.llm 已经足够。少一层协议，就少一处会随 DSH 升级而坏的地方。
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { createJsonStore } from './store.js';
 import { createOneBot, sendText } from './onebot.js';
-import { normalizeMessage, splitReply } from './message.js';
+import { normalizeMessage, quoteLine, replyIdOf, splitReply } from './message.js';
+import { MAX_IMAGE_BYTES, dataUrlOf, describeImage, imageSegmentsOf, imageSourceOf, mimeOf, withImageText } from './vision.js';
 import { createLlmComplete } from './llm.js';
 import { createLocalSession } from './session.js';
 import { createCompanion } from './companion.js';
@@ -422,6 +423,61 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     onFlush: (batch) => enqueue(() => processBatch(batch)),
   });
 
+  /**
+   * 他发图了：先让模型看一眼，把描述变成文字接进正文。
+   * 看不到就说看不到——她以前会编，是因为她手里只有「[图片]」三个字。
+   */
+  async function withImages(msg) {
+    const segs = imageSegmentsOf(msg.segments);
+    if (!segs.length) return msg;
+    const credentials = typeof ctx.get === 'function' ? ctx.get('credentials') : undefined;
+    const got = credentials?.resolve ? await credentials.resolve('DEEPSEEK_API_KEY').catch(() => null) : null;
+    const key = typeof got === 'string' ? got : got?.value;
+    if (!key) return { ...msg, text: withImageText(msg.text, []) };
+
+    const seen = [];
+    for (const seg of segs.slice(0, 2)) {
+      const src = imageSourceOf(seg);
+      if (!src) { seen.push({ ok: false, reason: '认不出来源' }); continue; }
+      let bytes;
+      try {
+        if (src.kind === 'file') {
+          if (statSync(src.value).size > MAX_IMAGE_BYTES) { seen.push({ ok: false, reason: '太大' }); continue; }
+          bytes = readFileSync(src.value);
+        } else {
+          const res = await fetchImpl(src.value, { signal: AbortSignal.timeout(20000) });
+          if (!res?.ok) { seen.push({ ok: false, reason: `HTTP ${res?.status}` }); continue; }
+          bytes = Buffer.from(await res.arrayBuffer());
+          if (bytes.length > MAX_IMAGE_BYTES) { seen.push({ ok: false, reason: '太大' }); continue; }
+        }
+      } catch (e) {
+        seen.push({ ok: false, reason: e.message });
+        continue;
+      }
+      seen.push(await describeImage({ dataUrl: dataUrlOf(bytes, mimeOf(src.value)), key, fetchImpl }));
+    }
+    if (!seen.some((d) => d.ok)) log.warn?.(`看图没看成：${seen.map((d) => d.reason).join('；')}`);
+    return { ...msg, text: withImageText(msg.text, seen), images: seen };
+  }
+
+  /**
+   * 引用只有 id，原文要回查。查回来就把「他在回复哪句」写进正文——
+   * 不然「看看这个图是什么」在她眼里没有任何指代物。
+   */
+  async function withQuote(msg) {
+    const id = replyIdOf(msg.segments);
+    if (!id) return msg;
+    try {
+      const r = await onebot.call('get_msg', { message_id: Number(id) });
+      const line = quoteLine(r?.message);
+      if (!line) return msg;
+      return { ...msg, quoted: line, text: `[他是在回复「${line}」] ${msg.text}` };
+    } catch (e) {
+      log.warn?.(`查引用原文失败：${e.message}`);
+      return msg;
+    }
+  }
+
   async function handleEvent(ev) {
     const msg = normalizeMessage(ev);
     if (!msg || msg.kind !== 'private') return { ignored: 'not-private' };
@@ -431,7 +487,11 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     if (msg.text.length > MAX_INBOUND_CHARS) {
       msg.text = `${msg.text.slice(0, MAX_INBOUND_CHARS)}…（后面太长，没看完）`;
     }
-    return mailbox.push(msg);
+    // 只有带图或带引用时才先异步补信息；纯文本必须同步入队，
+    // 否则连发合并的窗口会晚一个微任务才开（测试钉着这条）。
+    const needsWork = imageSegmentsOf(msg.segments).length > 0 || Boolean(replyIdOf(msg.segments));
+    if (!needsWork) return mailbox.push(msg);
+    return mailbox.push(await withQuote(await withImages(msg)));
   }
 
   /** 一轮：可能来自一条消息，也可能是刚才连发的几条。 */
@@ -950,4 +1010,6 @@ export function endpointOf(config) {
     wsToken: config?.onebot?.wsToken || '',
   };
 }
+
+
 

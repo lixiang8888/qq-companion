@@ -11,14 +11,14 @@ const SEG_LABEL = {
   video: '[视频]',
   file: '[文件]',
   json: '[卡片]',
-  xml: '[卡片]',
-  forward: '[转发]',
+  xml: '[卡片]',  forward: '[转发]',
   markdown: '[卡片]',
 };
 
 function segText(seg) {
   if (!seg || typeof seg !== 'object') return '';
   if (seg.type === 'text') return String(seg.data?.text ?? '');
+  if (seg.type === 'reply') return ''; // 引用的原文由 host 用 get_msg 查回来，这里只留空
   if (seg.type === 'at') {
     const name = seg.data?.name ? `@${seg.data.name}` : '@某人';
     return `${name} `;
@@ -123,4 +123,23 @@ export function splitReply(text, { max = 4, maxChars = 300 } = {}) {
     if (buf) parts.push(buf);
   }
   return parts.slice(0, max);
+}
+
+/** 取出这条消息引用了哪一条（reply 段只有 id）。 */
+export function replyIdOf(segments) {
+  const seg = (segments || []).find((s) => s?.type === 'reply');
+  const id = seg?.data?.id;
+  return id === undefined || id === null || id === '' ? '' : String(id);
+}
+
+/** 把被引用的消息压成一行，用作「他是在回复『…』」里的那句话。 */
+export function quoteLine(message, max = 60) {
+  const text = (Array.isArray(message) ? message : [])
+    .filter((s) => s?.type === 'text')
+    .map((s) => String(s.data?.text ?? ''))
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max)}…` : text;
 }

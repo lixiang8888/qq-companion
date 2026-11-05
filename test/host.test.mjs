@@ -668,28 +668,6 @@ test('连发三条：一次模型调用、三条记忆、一条回复', async ()
   assert.equal(host.memory.card().records.length, 3, '每条原话各存一条记忆');
 });
 
-test('连发三条：一次模型调用、三条记忆、一条回复', async () => {
-  const timers = [];
-  const later = (fn) => { timers.push(fn); return timers.length - 1; };
-  const clear = (h) => { if (typeof h === 'number') timers[h] = null; };
-  const { ctx, host } = lifeSetup(['嗯'], 0, { mergeWindowMs: 3000, later, clear });
-  const ev = (text) => ({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: text });
-
-  const p1 = host.handleEvent(ev('在吗'));
-  const p2 = host.handleEvent(ev('睡了吗'));
-  const p3 = host.handleEvent(ev('我跟你说个事'));
-  assert.equal(ctx.calls.length, 0, '窗口没到，不该调模型');
-
-  timers.findLast((f) => typeof f === 'function')();
-  const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
-  assert.equal(r1.merged, 3);
-  assert.equal(r2.sent, r3.sent, '同一批拿到同一个结果');
-  assert.equal(ctx.calls.length, 1, '三条只该调一次模型');
-
-  const userText = ctx.calls[0].messages.filter((m) => m.role === 'user').at(-1).content[0].text;
-  assert.match(userText, /在吗[\s\S]*睡了吗[\s\S]*我跟你说个事/, '三句都要在，顺序不变');
-  assert.equal(host.memory.card().records.length, 3, '每条原话各存一条记忆');
-});
 
 test('面板路由：她的房间确实接上了当下和日记文件', async () => {
   const start = new Date(2026, 9, 28, 23, 30).getTime();
