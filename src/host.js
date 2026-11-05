@@ -538,7 +538,12 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     }
     try {
       const { tid } = await qzonePublish(onebot, parsed.text, { ugcRight: config.qzone?.ugcRight ?? 4 });
-      qzoneStore.save({ ...notePosted(base, { kind: verdict.kind, at: t }), lastTid: tid, lastText: parsed.text, lastDecision: { at: t, reason: ${verdict.reason} → 已发出 } });
+      qzoneStore.save({
+        ...notePosted(base, { kind: verdict.kind, at: t }),
+        lastTid: tid,
+        lastText: parsed.text,
+        lastDecision: { at: t, reason: `${verdict.reason} → 已发出` },
+      });
       log(`空间：发出去了（${verdict.kind}）tid=${tid}`);
       return { ...verdict, post: true, tid, text: parsed.text };
     } catch (e) {
