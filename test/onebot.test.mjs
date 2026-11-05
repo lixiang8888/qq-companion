@@ -112,3 +112,11 @@ test('没有 wsUrl：不崩，报错状态', () => {
   h.ob.start();
   assert.equal(h.ob.state, 'error');
 });
+
+test("网关参数：WS token 必须单独传下去（漏了就一直是 reconnecting）", async () => {
+  const { endpointOf } = await import('../src/host.js');
+  const ep = endpointOf({ onebot: { httpUrl: 'http://h', wsUrl: 'ws://w', token: 'HTTP', wsToken: 'WS' } });
+  assert.equal(ep.token, 'HTTP');
+  assert.equal(ep.wsToken, 'WS');
+  assert.notEqual(ep.token, ep.wsToken, '两个 token 不能互相顶替');
+});

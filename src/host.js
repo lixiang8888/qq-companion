@@ -222,11 +222,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   });
 
   const onebot = createOneBot({
-    endpoint: () => ({
-      httpUrl: config.onebot?.httpUrl || '',
-      wsUrl: config.onebot?.wsUrl || '',
-      token: config.onebot?.token || '',
-    }),
+    endpoint: () => endpointOf(config),
     log: (m) => log.info?.(m),
     onEvent: (ev) => { handleEvent(ev).catch((e) => log.warn?.('处理消息失败：' + e.message)); },
   });
@@ -935,3 +931,17 @@ function listPersonas(dir) {
 
 
 
+
+/**
+ * 网关连接参数。抽成函数是为了能测：这里漏一个字段，WS 握手就会一直被拒，
+ * 而现象是「网关 reconnecting」，从插件外面完全看不出是 token 的问题。
+ */
+export function endpointOf(config) {
+  return {
+    httpUrl: config?.onebot?.httpUrl || '',
+    wsUrl: config?.onebot?.wsUrl || '',
+    token: config?.onebot?.token || '',
+    // SnowLuma 的 HTTP 和 WS 是两个 token，不能互相顶替。
+    wsToken: config?.onebot?.wsToken || '',
+  };
+}
