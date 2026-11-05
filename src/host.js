@@ -516,7 +516,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const verdict = decidePost(qz, events, t);
     // 不管发不发，基线都要往前推，否则同一段变化会被反复算成「新事件」。
     const base = { ...qz, lastRelation: { ...(st.relation || {}) }, lastSnapAt, absenceSeen: true };
-    if (!verdict.post) { qzoneStore.save(base); return verdict; }
+    if (!verdict.post) { qzoneStore.save({ ...base, lastDecision: { at: t, reason: verdict.reason } }); return verdict; }
 
     let parsed;
     try {
@@ -533,12 +533,12 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       return { ...verdict, post: false, reason: `写失败：${e.message}` };
     }
     if (parsed.skip) {
-      qzoneStore.save({ ...base, armed: false });
+      qzoneStore.save({ ...base, armed: false, lastDecision: { at: t, reason: parsed.reason } });
       return { ...verdict, post: false, reason: parsed.reason };
     }
     try {
       const { tid } = await qzonePublish(onebot, parsed.text, { ugcRight: config.qzone?.ugcRight ?? 4 });
-      qzoneStore.save({ ...notePosted(base, { kind: verdict.kind, at: t }), lastTid: tid, lastText: parsed.text });
+      qzoneStore.save({ ...notePosted(base, { kind: verdict.kind, at: t }), lastTid: tid, lastText: parsed.text, lastDecision: { at: t, reason: ${verdict.reason} → 已发出 } });
       log(`空间：发出去了（${verdict.kind}）tid=${tid}`);
       return { ...verdict, post: true, tid, text: parsed.text };
     } catch (e) {
@@ -945,3 +945,4 @@ export function endpointOf(config) {
     wsToken: config?.onebot?.wsToken || '',
   };
 }
+
