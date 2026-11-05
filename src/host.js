@@ -22,6 +22,8 @@ import { baselineOf, composePrompt, diff as diaryDiff, dueDay, hasDiary, readDia
 import { addUsage, createBudget, fetchBalance, moneyBlock, usageOf } from './budget.js';
 import { createMailbox, DEFAULT_WINDOW_MS, mergeTexts } from './mailbox.js';
 import { applyInsights, composePrompt as insightsPrompt, createInsights, dueInsights, parseInsights, renderInsights } from './insights.js';
+import { composePostPrompt, decidePost, notePosted, parsePostReply } from './qzone-post.js';
+import { publish as qzonePublish } from './qzone.js';
 import { renderPanel } from './panel.js';
 import { rollbackTraits } from './affect/personality.js';
 import { replyPlan } from './affect/behavior.js';
@@ -131,6 +133,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   const insightsStore = createJsonStore(join(dataDir, 'insights.json'), { defaults: () => createInsights(), log: (m) => log.warn?.(m) });
   // 她「上次醒着」的时间戳：一路写下去，下次开机才知道中间空了多久。
   const aliveStore = createJsonStore(join(dataDir, 'alive.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
+  // 空间：上次发了什么、为什么发、评论看到哪儿了。
+  const qzoneStore = createJsonStore(join(dataDir, 'qzone.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
   const bootAt = now();
   const aliveBefore = Number(aliveStore.load()?.at) || 0;
   aliveStore.save({ at: bootAt });
@@ -358,8 +362,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
    * 查余额。只走 DSH 的凭据 seam（ctx.credentials），不自己去读凭据文件。
    * 查失败要退避：第三方中转会一直 401，每十分钟打一次是拿她的存在去撞墙。
    */
-  async function refreshBalance() {
-    const t = now();
+  async function refreshBalance() {    const t = now();
     const cur = budgetStore.load();
     const last = cur.balance;
     const gap = last && !last.ok ? 6 * 3600e3 : 30 * 60e3;
@@ -475,6 +478,79 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   }
 
   /**
+   * 该不该发一条说说。取数 → 纯函数判定 → 让她写 → 发出去。
+   * 判定规则在 qzone-post.js，这里只管真实数据从哪来、以及落盘。
+   */
+  async function evaluatePost() {
+    const t = now();
+    const qz = qzoneStore.load();
+    const st = companion.snapshot();
+    const events = [];
+
+    // 关系：跟上次判定比，只算增量，不算绝对值。
+    const prevRel = qz.lastRelation || {};
+    let delta = 0;
+    for (const k of ['trust', 'intimacy']) {
+      const a = Number(prevRel[k]);
+      const b = Number(st.relation?.[k]);
+      if (Number.isFinite(a) && Number.isFinite(b)) delta = Math.max(delta, Math.abs(b - a));
+    }
+    if (delta > 0) events.push({ kind: 'relation', magnitude: delta });
+
+    // 情绪：强度够大、而且偏离中立够远（平静的开心不算「大起大落」）。
+    const emo = st.emotion || {};
+    const intensity = Number(emo.intensity) || 0;
+    const swing = Math.abs((Number.isFinite(Number(emo.v)) ? Number(emo.v) : 0.5) - 0.5) * 2;
+    if (intensity >= 0.7 && swing >= 0.6) events.push({ kind: 'mood', magnitude: intensity * swing });
+
+    // 和好：亏欠从有到无。
+    if (Number(prevRel.debt) > 0 && !(Number(st.relation?.debt) > 0)) events.push({ kind: 'repair', magnitude: 1 });
+
+    // 人格：出现新的快照（月更）。
+    const snaps = st.self?.snapshots || [];
+    const lastSnapAt = Number(snaps[snaps.length - 1]?.at) || 0;
+    if (qz.lastSnapAt && lastSnapAt > qz.lastSnapAt) events.push({ kind: 'personality', magnitude: 1 });
+
+    // 不在：只在开机后一小时内算一次，否则每次心跳都会重报同一段虚空。
+    const offMs = aliveBefore ? Math.max(0, bootAt - aliveBefore) : 0;
+    if (!qz.absenceSeen && offMs > 0 && t - bootAt < 3600e3) events.push({ kind: 'absence', magnitude: offMs });
+
+    const verdict = decidePost(qz, events, t);
+    // 不管发不发，基线都要往前推，否则同一段变化会被反复算成「新事件」。
+    const base = { ...qz, lastRelation: { ...(st.relation || {}) }, lastSnapAt, absenceSeen: true };
+    if (!verdict.post) { qzoneStore.save(base); return verdict; }
+
+    let parsed;
+    try {
+      const doing = advance(lifeStore.load(), t).doing;
+      const text = await complete({
+        system: `${personaText(personaDir, config.persona)}\n\n你要发一条公开的说说。`,
+        messages: [{ role: 'user', text: composePostPrompt({ kind: verdict.kind, doing }) }],
+        maxTokens: 300,
+      });
+      parsed = parsePostReply(text);
+    } catch (e) {
+      log.warn?.(`写说说失败：${e.message}`);
+      qzoneStore.save({ ...base, armed: true });
+      return { ...verdict, post: false, reason: `写失败：${e.message}` };
+    }
+    if (parsed.skip) {
+      qzoneStore.save({ ...base, armed: false });
+      return { ...verdict, post: false, reason: parsed.reason };
+    }
+    try {
+      const { tid } = await qzonePublish(onebot, parsed.text, { ugcRight: config.qzone?.ugcRight ?? 4 });
+      qzoneStore.save({ ...notePosted(base, { kind: verdict.kind, at: t }), lastTid: tid, lastText: parsed.text });
+      log(`空间：发出去了（${verdict.kind}）tid=${tid}`);
+      return { ...verdict, post: true, tid, text: parsed.text };
+    } catch (e) {
+      log.warn?.(`发说说失败：${e.message}`);
+      qzoneStore.save({ ...base, armed: true });
+      return { ...verdict, post: false, reason: `发送失败：${e.message}` };
+    }
+  }
+
+  /**
    * 十分钟一次的心跳。顺手测出另一件事：两次心跳之间如果隔了很久，
    * 不是她不再，是机器睡了——那段时间她也是不存在的（进程被冻住，不是她在发呆）。
    */
@@ -487,6 +563,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     enqueue(refreshLife).catch((e) => log.warn?.(`她的当下出错：${e.message}`));
     enqueue(refreshDiary).catch((e) => log.warn?.(`日记没写成：${e.message}`));
     enqueue(refreshBalance).catch((e) => log.warn?.(`查余额出错：${e.message}`));
+    enqueue(evaluatePost).catch((e) => log.warn?.(`空间判定出错：${e.message}`));
     tickProactive().catch((e) => log.warn?.(`主动搭话出错：${e.message}`));
   }
 
@@ -682,7 +759,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     log.info?.(`qq-companion：面板 ${panelUrl}`);
   } catch { /* 诊断日志失败不影响启动 */ }
 
-  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, get config() { return config; }, dataDir };
+  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), publish: (text, opts) => qzonePublish(onebot, text, opts) }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, get config() { return config; }, dataDir };
 }
 
 function loadConfig(file, log) {

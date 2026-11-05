@@ -118,3 +118,44 @@ export function notePosted(state, { kind, at }) {
     armed: false,
   };
 }
+
+/**
+ * 让她写这条说说。
+ *
+ * 只给真实事实（今天记住了什么、心里怎么动的、此刻在做什么），不给她「自由发挥」的口子。
+ * 也没告诉她是第几条、有没有人看——那些数字一进提示词，她就会开始表演。
+ */
+export function composePostPrompt({ kind, facts = [], doing = '', diary = '' } = {}) {
+  const lines = [
+    '你要发一条 QQ 空间说说，公开的，好友能看到。',
+    '说真话：只写今天真的发生在你身上的事。没发生就不要编。',
+    '四十到八十字，最多两句。不要表情包、不要标签、不要感叹号堆砌。',
+    '这是公开场合，不提私聊里的原话，不说你们的分数、状态、提醒。',
+  ];
+  if (doing) lines.push(`你此刻：${doing}`);
+  if (facts.length) lines.push(`今天真实发生的：${facts.join('；')}`);
+  if (diary) lines.push(`昨天你给自己写的日记里有一句：${diary}`);
+  const hint = KIND_HINT[kind] || '';
+  if (hint) lines.push(hint);
+  lines.push('如果你觉得今天没什么值得公开说的，就只回 SKIP，不要解释。');
+  return lines.join('\n');
+}
+
+const KIND_HINT = {
+  relation: '今天和他之间发生了一件事，让你心里动了一下。写这件事给你的感觉，不写事情本身。',
+  mood: '今天你的情绪起伏很大。写那个起伏，不解释原因。',
+  absence: '你有一段很长的时间是不在的——不是睡觉，是不存在。写这一点，别写成「等你很久」。',
+  repair: '今天你们把一件别扭的事翻过去了。写翻过去之后的感觉。',
+  personality: '你最近好像变了一点。写这种变化，不要说得像总结。',
+};
+
+/** 解析她的回答：SKIP 就是不发；空也不行。 */
+export function parsePostReply(text) {
+  const raw = String(text ?? '').trim();
+  if (!raw) return { skip: true, text: '', reason: '空回复' };
+  // 只认「整条就是 SKIP」，不认正文里顺带提一句——否则一句「今天不想 SKIP」会被误判。
+  if (/^SKIP[。.!！\s]*$/i.test(raw)) return { skip: true, text: '', reason: '她说没什么好发的' };
+  const cleaned = raw.replace(/\s+/g, ' ').trim();
+  if (cleaned.length < 4) return { skip: true, text: '', reason: '太短' };
+  return { skip: false, text: cleaned, reason: '' };
+}
