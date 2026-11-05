@@ -145,10 +145,12 @@ ${section('体检', checks.length
 ${section('此刻', `<p class="big">${escapeHtml(stateLine(state))}</p><p class="dim">心情「${escapeHtml(moodLabel(state.mood.v))}」· 情绪强度 ${state.emotion.intensity.toFixed(2)}</p>`)}
 ${section('她的房间', `${doing}${awakeText}${insightText}${diaryText}`)}
 ${section('空间', (() => {
-  if (!qzone?.lastText) return '<p class="dim">还没发过说说</p>';
+  if (!qzone?.lastText) {
+    return '<p class="dim">还没发过说说</p><p class="dim"><a href="?qztest=1">测一下：现在让她写一条</a></p>';
+  }
   const when = qzone.lastPostAt ? new Date(qzone.lastPostAt).toLocaleString() : '';
   return `<p class="dim">${escapeHtml(when)} 发的（${escapeHtml(qzone.lastKind || '')}）</p><p>${escapeHtml(qzone.lastText)}</p>`
-    + `<p class="dim">tid=${escapeHtml(qzone.lastTid || '')} · <a href="?qzdelete=1">删掉这条</a></p>`;
+    + `<p class="dim">tid=${escapeHtml(qzone.lastTid || '')} · <a href="?qzcheck=1">立刻查评论</a> · <a href="?qzdelete=1">删掉这条</a></p>`;
 })())}
 ${section('人格', `${traits}<p class="dim">${escapeHtml(state.self.narrative || '还没有发生过漂移')}</p><p class="dim">待结算的模式：</p>${patternText}<p class="dim">快照 ${(state.self.snapshots || []).length} 版</p>${snaps ? `<ul>${snaps}</ul>` : ''}`)}
 ${section('记忆', `<p>共 ${mem.total} 条（清晰 ${mem.vivid || 0} / 清楚 ${mem.clear || 0} / 模糊 ${mem.fuzzy || 0} / 只剩印象 ${mem.trace || 0}），已遗忘 ${mem.forgotten || 0}</p>${memoryList}${staleText}${goneText}`)}
@@ -168,4 +170,5 @@ ${section('设置', `<form method="post" action="config">
 </form>`)}
 </body></html>`;
 }
+
 

@@ -481,7 +481,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
    * 该不该发一条说说。取数 → 纯函数判定 → 让她写 → 发出去。
    * 判定规则在 qzone-post.js，这里只管真实数据从哪来、以及落盘。
    */
-  async function evaluatePost() {
+  async function evaluatePost({ force = false } = {}) {
     const t = now();
     const qz = qzoneStore.load();
     const st = companion.snapshot();
@@ -514,6 +514,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     // 不在：只在开机后一小时内算一次，否则每次心跳都会重报同一段虚空。
     const offMs = aliveBefore ? Math.max(0, bootAt - aliveBefore) : 0;
     if (!qz.absenceSeen && offMs > 0 && t - bootAt < 3600e3) events.push({ kind: 'absence', magnitude: offMs });
+
+    if (force) events.push({ kind: 'mood', magnitude: 1 }); // 面板上的「测一下」：走同一条判定链，只补一个信号
 
     const verdict = decidePost(qz, events, t);
     // 不管发不发，基线都要往前推，否则同一段变化会被反复算成「新事件」。
@@ -558,12 +560,12 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
    *   - 30 分钟最多查一次
    *   - 见过的 comment_id 一律记下，不管回没回——Maizone 的已知 bug 就是重复评论
    */
-  async function refreshQzoneComments() {
+  async function refreshQzoneComments({ force = false } = {}) {
     const qz = qzoneStore.load();
     const tid = String(qz.lastTid || '');
     if (!tid) return { checked: 0, replied: 0, reason: '还没发过说说' };
     const t = now();
-    if (Number(qz.lastCommentAt) && t - Number(qz.lastCommentAt) < 30 * 60e3) {
+    if (!force && Number(qz.lastCommentAt) && t - Number(qz.lastCommentAt) < 30 * 60e3) {
       return { checked: 0, replied: 0, reason: '还没到下一轮' };
     }
 
@@ -723,7 +725,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
 
     route('/state', snapshot);
 
-    route('/panel', (req) => {
+    route('/panel', async (req) => {
       // 面板上的操作都是 GET 链接：本地自检页，点一下即生效，不需要前端脚本。
       const q = new URL(req?.url || '/', 'http://x').searchParams;
       const at = Number(q.get('rollback'));
@@ -732,7 +734,9 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       const restoreId = q.get('restore');
       const unsupersedeId = q.get('unsupersede');
       const qzDelete = q.get('qzdelete');
-      if ((at || pinId || forgetId || restoreId || unsupersedeId || qzDelete) && !sameSiteOnly(req)) {
+      const qzTest = q.get('qztest');
+      const qzCheck = q.get('qzcheck');
+      if ((at || pinId || forgetId || restoreId || unsupersedeId || qzDelete || qzTest || qzCheck) && !sameSiteOnly(req)) {
         return '跨站请求被拒绝：面板上的操作只接受本页点击。';
       }
       if (at) {
@@ -750,11 +754,13 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         if (unsupersedeId) card = undoSupersede(card, unsupersedeId);
         memoryStore.save(card);
       }
+      if (qzTest) await evaluatePost({ force: true });
+      if (qzCheck) await refreshQzoneComments({ force: true });
       if (qzDelete) {
         const qz = qzoneStore.load();
         if (qz.lastTid) {
-          // 面板路由是同步的：删的请求发出去就落盘，不等网络回来。
-          qzoneRemove(onebot, qz.lastTid).catch((e) => log.warn?.(`删说说失败：${e.message}`));
+          // 面板现在可以 await 了（route 里本来就是 await handler）。
+          try { await qzoneRemove(onebot, qz.lastTid); } catch (e) { log.warn?.(`删说说失败：${e.message}`); }
           qzoneStore.save({ ...qz, lastTid: '', lastText: '', deletedAt: now() });
         }
       }
@@ -924,6 +930,8 @@ function listPersonas(dir) {
   try { return readdirSync(dir).filter((n) => n.endsWith('.md')).map((n) => n.slice(0, -3)); }
   catch { return []; }
 }
+
+
 
 
 
