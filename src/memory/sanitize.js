@@ -1,6 +1,6 @@
 // 入库前脱敏：记忆会被拼进提示词，密钥/凭证不该跟着进去。
 //
-// 模式取自 dsh-memory-core 的 sanitize（MIT），只留我们真正会遇到的几类；
+// 模式取自 dsh-memory-core 的 sanitize（MIT，见 THIRD_PARTY_NOTICES.md），只留我们真正会遇到的几类；
 // 替换成同样长度的占位，避免把「有没有密码」当成信息泄露出去。
 
 const RULES = [
@@ -19,3 +19,4 @@ export function sanitizeSecrets(text) {
   for (const [re, rep] of RULES) out = out.replace(re, rep);
   return out;
 }
+

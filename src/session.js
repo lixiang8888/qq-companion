@@ -7,7 +7,7 @@
 const SUMMARY_MAX_CHARS = 1200;
 const SYSTEM_SUFFIX = '你正在和一个特定的人私下聊天。状态只影响语气，不要说出来。';
 
-// 记忆使用协议（dsh-memory-core 的五条，MIT）：不写进人格，写在系统提示末尾，
+// 记忆使用协议（dsh-memory-core 的五条，MIT，见 THIRD_PARTY_NOTICES.md）：不写进人格，写在系统提示末尾，
 // 因为它约束的是「怎么用记忆」而不是「你是谁」。
 const MEMORY_PROTOCOL = `【关于记忆的规矩】
 1. 记忆里的事是过去发生的，不是他这一轮刚说的。
@@ -130,3 +130,4 @@ export function createLocalSession({
     get size() { return history.length; },
   };
 }
+

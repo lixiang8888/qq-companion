@@ -142,3 +142,10 @@ npm test     # 143 项离线测试（无网络、无真 QQ）
 
 逐条对照目标的验收报告（含复现命令）：[docs/acceptance.md](docs/acceptance.md)。
 
+
+## 许可
+
+本项目自己写的部分是 **MIT**，见 [LICENSE](LICENSE)。
+
+借过谁的东西、用到什么程度、各自的许可，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+其中 SnowLuma 是「源码可见、非商业」许可（不是 OSI 开源），所以这里**只通过它的接口通信，不含它的任何代码**。

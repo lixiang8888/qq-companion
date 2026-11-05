@@ -1,6 +1,6 @@
 // 记忆卡：会模糊、会遗忘、但重要的东西永远在。
 //
-// 规则不是拍脑袋：照 SurfCore 的 MEMORY_CARD.md（MIT）实现的最小版——
+// 规则不是拍脑袋：照 SurfCore 的 MEMORY_CARD.md（MIT）实现的最小版（见 THIRD_PARTY_NOTICES.md）——
 //   四档清晰度、每天最多降一档、停机按天补跑、置顶/初次/主人重要记忆有下限。
 // 我们没有照抄它的 90KB，只留判定链；数字可调，测试钉住的是「形状」不是绝对值。
 
@@ -360,4 +360,5 @@ export function stats(card) {
   }
   return { total, archived, ...by, forgotten: card.stats?.forgotten || 0, purged: card.stats?.purged || 0 };
 }
+
 
