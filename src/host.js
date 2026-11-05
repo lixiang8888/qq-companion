@@ -11,6 +11,7 @@ import { createJsonStore } from './store.js';
 import { createOneBot, sendText } from './onebot.js';
 import { normalizeMessage, quoteLine, replyIdOf, splitReply } from './message.js';
 import { MAX_IMAGE_BYTES, dataUrlOf, describeImage, imageSegmentsOf, imageSourceOf, mimeOf, withImageText } from './vision.js';
+import { extractQuestions, leftoverQuestions, pendingLine } from './topics.js';
 import { createLlmComplete } from './llm.js';
 import { createLocalSession } from './session.js';
 import { createCompanion } from './companion.js';
@@ -228,6 +229,9 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     onEvent: (ev) => { handleEvent(ev).catch((e) => log.warn?.('处理消息失败：' + e.message)); },
   });
 
+  // 他问过、她还没答的问题。内存里存着就够：重启后丢掉，比追一笔旧账好。
+  let pendingQuestions = [];
+
   const companion = createCompanion({
     load: () => store.load(),
     save: (st) => store.save(st),
@@ -240,7 +244,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
 
   /** 每轮给她的额外上下文：她刚才不在多久、她最近的想法、此刻在干什么，加上钱。 */
   async function contextBlock() {
-    return [awakeLine(), renderInsights(insightsStore.load()), (await lifeBlock()), moneyNow()].filter(Boolean).join('\n');
+    return [awakeLine(), renderInsights(insightsStore.load()), (await lifeBlock()), pendingLine(pendingQuestions), moneyNow()].filter(Boolean).join('\n');
   }
 
   /**
@@ -497,6 +501,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   /** 一轮：可能来自一条消息，也可能是刚才连发的几条。 */
   async function processBatch(batch) {
     const msg = { ...batch.last, text: mergeTexts(batch.texts), parts: batch.texts };
+    // 这一轮的问题：最后一条是她在答的，前面的挂到下一轮。
+    const asked = extractQuestions(batch.texts.join(''));
     const r = await companion.handleMessage(msg);
     if (r.ignored) return r;
     const plan = replyPlan(companion.snapshot(), { baseDelayMs: config.session?.replyDelayMs ?? 800 });
@@ -506,6 +512,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       try { await sleep(plan.delayMs); await sendText(onebot, msg, part); }
       catch (e) { log.warn?.(`发言失败：${e.message}`); break; }
     }
+    pendingQuestions = leftoverQuestions(asked);
     return { ...r, sent: parts.length, plan, merged: batch.texts.length };
   }
 
@@ -1010,6 +1017,7 @@ export function endpointOf(config) {
     wsToken: config?.onebot?.wsToken || '',
   };
 }
+
 
 
 
