@@ -14,6 +14,15 @@ export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const MIME_BY_EXT = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' };
 
 /** 按扩展名猜 MIME；官方说按内容判断，这里只是拼 data URL 用。 */
+export function sniffMime(bytes) {
+  const b = Buffer.from(bytes || []);
+  if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8) return 'image/jpeg';
+  if (b.length > 3 && b[0] === 0x89 && b[1] === 0x50) return 'image/png';
+  if (b.length > 3 && b[0] === 0x47 && b[1] === 0x49) return 'image/gif';
+  if (b.length > 11 && b.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  return '';
+}
+
 export function mimeOf(pathOrUrl = '') {
   const m = String(pathOrUrl).toLowerCase().match(/\.([a-z0-9]+)(?:\?|#|$)/);
   return MIME_BY_EXT[m?.[1]] || 'image/jpeg';
@@ -21,7 +30,13 @@ export function mimeOf(pathOrUrl = '') {
 
 /** 从消息段里挑出图片（最多看几张，由调用方决定）。 */
 export function imageSegmentsOf(segments) {
-  return (segments || []).filter((s) => s?.type === 'image');
+  // image 是普通图；mface/face 是表情包——它们也得能看，不然她手里只有「[表情]」。
+  return (segments || []).filter((s) => {
+    if (s?.type === 'image') return true;
+    if (s?.type !== 'mface' && s?.type !== 'face') return false;
+    const d = s.data || {};
+    return Boolean(d.url || d.file || d.emoji_id);
+  });
 }
 
 /**
@@ -50,8 +65,9 @@ export function dataUrlOf(bytes, mime = 'image/jpeg') {
 /**
  * 让模型描述一张图。失败一律返回 {ok:false}，绝不抛——看图失败不该让她哑掉。
  */
-export async function describeImage({ dataUrl, key, fetchImpl = globalThis.fetch, model = VISION_MODEL, baseUrl = VISION_BASE, timeoutMs = 30000 } = {}) {
-  if (!dataUrl) return { ok: false, reason: '没有图' };
+export async function describeImage({ dataUrl, dataUrls, key, prompt = '', fetchImpl = globalThis.fetch, model = VISION_MODEL, baseUrl = VISION_BASE, timeoutMs = 30000 } = {}) {
+  const list = (Array.isArray(dataUrls) && dataUrls.length ? dataUrls : [dataUrl]).filter(Boolean);
+  if (!list.length) return { ok: false, reason: '没有图' };
   if (!key) return { ok: false, reason: '没有可用的 key' };
   try {
     const res = await fetchImpl(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
@@ -59,12 +75,12 @@ export async function describeImage({ dataUrl, key, fetchImpl = globalThis.fetch
       headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
       body: JSON.stringify({
         model,
-        max_tokens: 200,
+        max_tokens: 800, // 推理模型会先用掉一截 token，给少了正文就是空的
         messages: [{
           role: 'user',
           content: [
-            { type: 'text', text: '用一两句话描述这张图里有什么：画的是什么、有没有文字（有就照抄）、什么气氛。只描述，不评价、不猜测背景。' },
-            { type: 'image_url', image_url: { url: dataUrl } },
+            { type: 'text', text: prompt || '用一两句话描述这张图里有什么：画的是什么、有没有文字（有就照抄）、什么气氛。只描述，不评价、不猜测背景。' },
+            ...list.map((url) => ({ type: 'image_url', image_url: { url } })),
           ],
         }],
       }),
@@ -80,12 +96,63 @@ export async function describeImage({ dataUrl, key, fetchImpl = globalThis.fetch
   }
 }
 
-/** 把描述塞回正文，替换掉那个占位的 [图片]。 */
-export function withImageText(text, descriptions = []) {
+/**
+ * 把描述塞回正文，替换掉那个占位的 [图片]。
+ * 看不到的时候，如果 QQ 自己带了表情名（summary，例如「[哈哈]」），就把这个名字说出来——
+ * 名字是腾讯给的，不是她猜的。
+ */
+export function withImageText(text, descriptions = [], names = []) {
   const usable = descriptions.filter((d) => d?.ok && d.text);
   if (!usable.length) {
-    return `${text}（他发了一张图，你看不到内容——别猜，就说你看不到）`.trim();
+    const known = (names || []).filter(Boolean);
+    const hint = known.length ? `他发的表情叫「${known[0]}」` : '他发了一张图';
+    return `${text}（${hint}，你看不到内容——别猜，就说你看不到）`.trim();
   }
-  const line = usable.map((d) => `[他发了一张图：${d.text}]`).join('');
+  // 说成「你看到了什么」，而不是「有人给了你一段图注」——
+  // 后者会让她把图注念一遍（真机上每次都「看到了，……」）。
+  const line = usable.map((d) => `（你看了一眼他刚发来的图：${d.text}。知道就行，别复述）`).join('');
   return `${line}${text}`.trim();
 }
+
+
+
+
+
+
+
+/** 从 pages 帧里挑几张：均匀采样，首尾都取到。 */
+export function pickFrameIndexes(pages, max = 4) {
+  const n = Math.floor(Number(pages) || 0);
+  if (n <= 0 || max <= 0) return [];
+  if (n <= max) return Array.from({ length: n }, (_, i) => i);
+  const out = [];
+  for (let i = 0; i < max; i++) out.push(Math.round((i * (n - 1)) / (max - 1)));
+  return [...new Set(out)];
+}
+
+/**
+ * 动图抽帧：把 GIF / 动态 WebP 拆成几张 PNG。
+ * sharp 只在真的需要时才 import——没装或者坏掉的话，退化成「只看第一帧」，不该拖垮回话。
+ */
+export async function extractGifFrames(bytes, { max = 4, sharpImpl = null } = {}) {
+  let sharp = sharpImpl;
+  if (!sharp) {
+    try { sharp = (await import('sharp')).default; } catch { return null; }
+  }
+  try {
+    const meta = await sharp(bytes, { animated: true }).metadata();
+    const pages = Number(meta?.pages) || 1;
+    if (pages <= 1) return null;
+    const frames = [];
+    for (const page of pickFrameIndexes(pages, max)) {
+      const png = await sharp(bytes, { animated: true, page }).png().toBuffer();
+      frames.push(dataUrlOf(png, 'image/png'));
+    }
+    return { pages, frames };
+  } catch {
+    return null;
+  }
+}
+
+/** 多帧交给模型时用的那句话：说清楚这是同一个动图的不同时刻。 */
+export const ANIMATION_PROMPT = '这是同一个动图按时间顺序取的几帧。用一两句话说明它在做什么动作：谁在动、怎么动、有没有循环。只描述，不评价。';

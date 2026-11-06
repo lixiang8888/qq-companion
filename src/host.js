@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { createJsonStore } from './store.js';
 import { createOneBot, sendText } from './onebot.js';
 import { normalizeMessage, quoteLine, replyIdOf, splitReply } from './message.js';
-import { MAX_IMAGE_BYTES, dataUrlOf, describeImage, imageSegmentsOf, imageSourceOf, mimeOf, withImageText } from './vision.js';
+import { ANIMATION_PROMPT, MAX_IMAGE_BYTES, dataUrlOf, describeImage, extractGifFrames, imageSegmentsOf, imageSourceOf, mimeOf, sniffMime, withImageText } from './vision.js';
 import { extractQuestions, leftoverQuestions, pendingLine } from './topics.js';
 import { createLlmComplete } from './llm.js';
 import { createLocalSession } from './session.js';
@@ -428,40 +428,79 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   });
 
   /**
+   * 一张图的字节。QQ 的图片链接带 rkey 签名、会过期，直接下载拿不到；
+   * 正确顺序是：先 get_image 换一个新链接，再下载；实在不行才退回原始 url / 本地路径。
+   */
+  async function imageBytesOf(seg) {
+    const d = seg?.data || {};
+    const ref = d.file || d.emoji_id || d.file_id;
+    if (ref) {
+      try {
+        const r = await onebot.call('get_image', { file: String(ref) });
+        const fresh = String(r?.url || r?.file || '');
+        if (/^https?:\/\//i.test(fresh)) {
+          const res = await fetchImpl(fresh, { signal: AbortSignal.timeout(20000) });
+          if (res?.ok) return Buffer.from(await res.arrayBuffer());
+        }
+      } catch (e) {
+        log.warn?.(`换图片链接失败：${e.message}`);
+      }
+    }
+    const src = imageSourceOf(seg);
+    if (!src) throw new Error('认不出来源');
+    if (src.kind === 'file') {
+      if (statSync(src.value).size > MAX_IMAGE_BYTES) throw new Error('太大');
+      return readFileSync(src.value);
+    }
+    const res = await fetchImpl(src.value, { signal: AbortSignal.timeout(20000) });
+    if (!res?.ok) throw new Error(`HTTP ${res?.status}`);
+    return Buffer.from(await res.arrayBuffer());
+  }
+
+  /**
    * 他发图了：先让模型看一眼，把描述变成文字接进正文。
    * 看不到就说看不到——她以前会编，是因为她手里只有「[图片]」三个字。
    */
   async function withImages(msg) {
     const segs = imageSegmentsOf(msg.segments);
     if (!segs.length) return msg;
+    const names = segs.map((s) => String(s?.data?.summary || '')).filter(Boolean);
     const credentials = typeof ctx.get === 'function' ? ctx.get('credentials') : undefined;
     const got = credentials?.resolve ? await credentials.resolve('DEEPSEEK_API_KEY').catch(() => null) : null;
     const key = typeof got === 'string' ? got : got?.value;
-    if (!key) return { ...msg, text: withImageText(msg.text, []) };
+    if (!key) return { ...msg, text: withImageText(msg.text, [], names) };
 
     const seen = [];
     for (const seg of segs.slice(0, 2)) {
-      const src = imageSourceOf(seg);
-      if (!src) { seen.push({ ok: false, reason: '认不出来源' }); continue; }
       let bytes;
       try {
-        if (src.kind === 'file') {
-          if (statSync(src.value).size > MAX_IMAGE_BYTES) { seen.push({ ok: false, reason: '太大' }); continue; }
-          bytes = readFileSync(src.value);
-        } else {
-          const res = await fetchImpl(src.value, { signal: AbortSignal.timeout(20000) });
-          if (!res?.ok) { seen.push({ ok: false, reason: `HTTP ${res?.status}` }); continue; }
-          bytes = Buffer.from(await res.arrayBuffer());
-          if (bytes.length > MAX_IMAGE_BYTES) { seen.push({ ok: false, reason: '太大' }); continue; }
-        }
+        bytes = await imageBytesOf(seg);
+        if (bytes.length > MAX_IMAGE_BYTES) { seen.push({ ok: false, reason: '太大' }); continue; }
       } catch (e) {
         seen.push({ ok: false, reason: e.message });
         continue;
       }
-      seen.push(await describeImage({ dataUrl: dataUrlOf(bytes, mimeOf(src.value)), key, fetchImpl }));
+      // 扩展名会说谎（表情包常是 .jpg 其实是 gif），按字节判断真实格式。
+      const mime = sniffMime(bytes) || mimeOf(String(seg?.data?.url || seg?.data?.file || ''));
+      // 动图：抽几帧一起看，否则模型只拿到第一帧（真机上「疯狂点头」会变成一张静止的脸）。
+      const anim = await extractGifFrames(bytes).catch(() => null);
+      if (anim?.frames?.length > 1) {
+        const r = await describeImage({ dataUrls: anim.frames, prompt: ANIMATION_PROMPT, key, fetchImpl, timeoutMs: 45000 });
+        seen.push({ ...r, frames: anim.frames.length, pages: anim.pages });
+      } else {
+        seen.push(await describeImage({ dataUrl: dataUrlOf(bytes, mime), key, fetchImpl }));
+      }
     }
     if (!seen.some((d) => d.ok)) log.warn?.(`看图没看成：${seen.map((d) => d.reason).join('；')}`);
-    return { ...msg, text: withImageText(msg.text, seen), images: seen };
+    // 留一份现场：看图失败时看不到控制台日志，只能靠这个文件回查。
+    try {
+      writeFileSync(join(dataDir, 'vision-debug.json'), JSON.stringify({
+        at: now(),
+        names,
+        attempts: seen.map((d) => ({ ok: Boolean(d.ok), reason: d.reason || '', text: d.text ? String(d.text).slice(0, 120) : '' })),
+      }, null, 2));
+    } catch { /* 调试文件写不了也不能影响回话 */ }
+    return { ...msg, text: withImageText(msg.text, seen, names), images: seen };
   }
 
   /**
@@ -1017,6 +1056,8 @@ export function endpointOf(config) {
     wsToken: config?.onebot?.wsToken || '',
   };
 }
+
+
 
 
 

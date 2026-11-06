@@ -52,7 +52,9 @@ test('看图成功：把描述取出来，顺手带 usage', async () => {
 
 test('描述接回正文：接在前面，原文不动', () => {
   const out = withImageText('你看这个', [{ ok: true, text: '一只猫' }]);
-  assert.equal(out, '[他发了一张图：一只猫]你看这个');
+  assert.match(out, /你看了一眼他刚发来的图：一只猫/);
+  assert.match(out, /别复述/);
+  assert.match(out, /你看这个$/, '他原话放在最后，别改动');
 });
 
 test('看不到图时明确告诉她别猜', () => {
@@ -64,4 +66,63 @@ test('看不到图时明确告诉她别猜', () => {
 
 test('上限是个具体的数，不是「很大」', () => {
   assert.ok(MAX_IMAGE_BYTES > 0 && MAX_IMAGE_BYTES <= 32 * 1024 * 1024);
+});
+
+test('表情包也算图：mface/face 有 url 就送去看看', async () => {
+  const { imageSegmentsOf } = await import('../src/vision.js');
+  const segs = [
+    { type: 'mface', data: { url: 'https://x/a.gif' } },
+    { type: 'face', data: { emoji_id: '1' } },
+    { type: 'face', data: {} },
+  ];
+  assert.equal(imageSegmentsOf(segs).length, 2, '有 url 或 emoji_id 的才算');
+});
+
+test('按字节认格式：扩展名会说谎', async () => {
+  const { sniffMime } = await import('../src/vision.js');
+  assert.equal(sniffMime(Buffer.from([0xff, 0xd8, 0xff, 0xe0])), 'image/jpeg');
+  assert.equal(sniffMime(Buffer.from([0x89, 0x50, 0x4e, 0x47])), 'image/png');
+  assert.equal(sniffMime(Buffer.from('GIF89a', 'ascii')), 'image/gif');
+  assert.equal(sniffMime(Buffer.concat([Buffer.from('RIFF0000', 'ascii'), Buffer.from('WEBP', 'ascii')])), 'image/webp');
+  assert.equal(sniffMime(Buffer.from([1, 2, 3])), '');
+});
+
+test('看不到图时，把腾讯给的表情名说出来（不是她猜的）', async () => {
+  const { withImageText } = await import('../src/vision.js');
+  const out = withImageText('', [{ ok: false, reason: 'HTTP 403' }], ['[哈哈]']);
+  assert.match(out, /\[哈哈\]/);
+  assert.match(out, /看不到/);
+});
+
+
+test('动图抽帧：均匀采样，首尾都取到', async () => {
+  const { pickFrameIndexes } = await import('../src/vision.js');
+  assert.deepEqual(pickFrameIndexes(0, 4), []);
+  assert.deepEqual(pickFrameIndexes(1, 4), [0]);
+  assert.deepEqual(pickFrameIndexes(3, 4), [0, 1, 2], '不够多就全取');
+  assert.deepEqual(pickFrameIndexes(10, 4), [0, 3, 6, 9]);
+});
+
+test('动图抽帧：sharp 不在或坏了就返回 null，退化成只看第一帧', async () => {
+  const { extractGifFrames } = await import('../src/vision.js');
+  const broken = () => { throw new Error('没有 sharp'); };
+  assert.equal(await extractGifFrames(Buffer.from('x'), { sharpImpl: broken }), null);
+});
+
+test('动图抽帧：单帧图不当动图处理', async () => {
+  const { extractGifFrames } = await import('../src/vision.js');
+  const fake = () => ({ metadata: async () => ({ pages: 1 }) });
+  assert.equal(await extractGifFrames(Buffer.from('x'), { sharpImpl: fake }), null);
+});
+
+test('动图抽帧：多帧时每帧都变成一张 png', async () => {
+  const { extractGifFrames } = await import('../src/vision.js');
+  const fake = () => ({
+    metadata: async () => ({ pages: 4 }),
+    png: () => ({ toBuffer: async () => Buffer.from([0x89, 0x50, 0x4e, 0x47]) }),
+  });
+  const r = await extractGifFrames(Buffer.from('x'), { sharpImpl: fake });
+  assert.equal(r.pages, 4);
+  assert.equal(r.frames.length, 4);
+  assert.ok(r.frames[0].startsWith('data:image/png;base64,'));
 });
