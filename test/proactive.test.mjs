@@ -130,15 +130,17 @@ test('提示文本：说清是他没说话、带由头、脱敏、不许复述',
 });
 
 test('读懂她的决定：JSON、裹在代码块里的 JSON、坏格式兜底', () => {
-  assert.deepEqual(parsePokeReply('{"send":true,"message":"在干嘛"}'), { send: true, message: '在干嘛' });
+  assert.deepEqual(parsePokeReply('{"send":true,"message":"在干嘛"}'), { send: true, message: '在干嘛', search: '' });
   const no = parsePokeReply('```json\n{"send":false,"waitMinutes":30,"reason":"睡了"}\n```');
   assert.equal(no.send, false);
   assert.equal(no.waitMinutes, 30);
   assert.equal(no.reason, '睡了');
+  // 只说想查、不说要发：可以
+  assert.equal(parsePokeReply('{"send":false,"search":"湖州明天会下雨吗"}').search, '湖州明天会下雨吗');
   // 想说但没话 = 不发
   assert.equal(parsePokeReply('{"send":true,"message":"  "}').send, false);
   assert.equal(parsePokeReply('[沉默]').send, false);
   assert.equal(parsePokeReply('').send, false);
   // 格式坏了：整段当一句话，别因为少个括号整晚不说话
-  assert.deepEqual(parsePokeReply('在干嘛呢'), { send: true, message: '在干嘛呢' });
+  assert.deepEqual(parsePokeReply('在干嘛呢'), { send: true, message: '在干嘛呢', search: '' });
 });

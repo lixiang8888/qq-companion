@@ -30,6 +30,8 @@ import { renderPanel } from './panel.js';
 import { rollbackTraits } from './affect/personality.js';
 import { replyPlan } from './affect/behavior.js';
 import { DEFAULTS as PROACTIVE_DEFAULTS, composePokePrompt, notePoked, noteSaidByUser, noteTurn, noteWait, parsePokeReply, pokeGate } from './proactive.js';
+import { fetchWeather, isStale, placeOf, weatherLine } from './weather.js';
+import { canSearch, factLine, latestFact, noteSearch, search } from './search.js';
 
 export const name = 'qq-companion';
 // cordis 的 inject 是「必填服务」清单：只有列在这里的服务，访问时才不会抛，
@@ -96,6 +98,11 @@ const DEFAULT_CONFIG = {
   // 余额低于这个数，她才会主动提钱。
   budget: { lowBalance: 5 },
   proactive: { ...PROACTIVE_DEFAULTS },
+  // 她在哪：huzhou（湖州师范学院）或 zhuji（诸暨），坐标在 weather.js。
+  // enabled 默认关：开着就会去连外网，测试和不想联网的人都该能关掉。
+  weather: { enabled: false, place: 'huzhou' },
+  // 查真事：key 是 Tavily 的，留空就查不了（天气不走这条，那条免密钥）。
+  search: { enabled: false, key: '', maxPerDay: 5 },
 };
 
 export function defaultDataDir() {
@@ -137,6 +144,10 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   const aliveStore = createJsonStore(join(dataDir, 'alive.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
   // 空间：上次发了什么、为什么发、评论看到哪儿了。
   const qzoneStore = createJsonStore(join(dataDir, 'qzone.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
+  // 外面的天气：半小时一次，落盘是为了重启后不用立刻再问一遍。
+  const weatherStore = createJsonStore(join(dataDir, 'weather.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
+  // 她查过的真事：带来源，一天内算新鲜。
+  const factsStore = createJsonStore(join(dataDir, 'facts.json'), { defaults: () => ({ items: [] }), log: (m) => log.warn?.(m) });
   const bootAt = now();
   const aliveBefore = Number(aliveStore.load()?.at) || 0;
   aliveStore.save({ at: bootAt });
@@ -250,9 +261,48 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   }
   const clockLine = (t) => `此时：${clockText(t)}`;
 
-  /** 每轮给她的额外上下文：此刻几点、她刚才不在多久、她最近的想法、在干什么，加上钱。 */
+  /**
+   * 外面的天气。半小时一次，查不到就退回上次那个数——
+   * 但会带上它是几点的，免得她拿早上的天气说下午的话。
+   */
+  const weatherOn = () => config.weather?.enabled === true;
+
+  async function refreshWeather({ force = false } = {}) {
+    const t = now();
+    const cached = weatherStore.load();
+    const place = placeOf(config.weather || {});
+    if (!force && cached?.place === place.id && !isStale(cached, t)) return cached;
+    try {
+      const w = await fetchWeather({ place, fetchImpl, now });
+      weatherStore.save(w);
+      return w;
+    } catch (e) {
+      log.warn?.(`天气没查成：${e.message}`);
+      return cached;
+    }
+  }
+
+  /** 每轮给她的额外上下文：此刻几点、外面什么天、她查过什么、刚才不在多久、在干什么，加上钱。 */
   async function contextBlock() {
-    return [clockLine(), awakeLine(), renderInsights(insightsStore.load()), (await lifeBlock()), pendingLine(pendingQuestions), moneyNow()].filter(Boolean).join('\n');
+    const t = now();
+    // 过期就当场问一次：她开口时天气应该是当下的，而不是十分钟前的。
+    if (weatherOn() && isStale(weatherStore.load(), t)) await refreshWeather();
+    const w = weatherStore.load();
+    const place = placeOf(config.weather || {});
+    // 旧数据要标明是哪次查的：拿早上的天气说下午的话，比不知道更糟。
+    const weatherTextLine = w?.place === place.id
+      ? `${weatherLine(w)}${isStale(w, t) ? `（${clockOf(w.at)} 查的，之后没再查成）` : ''}`
+      : '';
+    return [
+      clockLine(t),
+      weatherTextLine,
+      factLine(latestFact(factsStore.load(), t)),
+      awakeLine(),
+      renderInsights(insightsStore.load()),
+      (await lifeBlock()),
+      pendingLine(pendingQuestions),
+      moneyNow(),
+    ].filter(Boolean).join('\n');
   }
 
   /**
@@ -428,9 +478,28 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
 
     const decided = parsePokeReply(thought);
     const withThought = { ...state, lastThought: { at: t, text: thought.trim().slice(0, 200) } };
+
+    // 她顺手想查点什么。查不到就算了，绝不能让她以为查过。
+    let looked = '';
+    if (decided.search && config.search?.enabled === true && canSearch(factsStore.load(), t, config.search?.maxPerDay ?? 5)) {
+      try {
+        const fact = await search({ query: decided.search, key: config.search?.key, fetchImpl, now });
+        // 搜回来的是网页原文（导航栏、表格、### 一堆）。压成一句人话再给她，
+        // 不然她上下文里全是抓下来的乱码，比不知道还糟。
+        const summary = await squeezeFact(fact);
+        const useful = summary && !/没查到|查不到|不知道/.test(summary);
+        if (useful) fact.answer = summary;
+        // 没用的那次也要计数：额度是真花了，只是没记住什么。
+        factsStore.save(noteSearch(factsStore.load(), { now: t, fact: useful ? fact : null }));
+        if (useful) looked = summary;
+      } catch (e) {
+        log.warn?.(`查「${decided.search}」没查成：${e.message}`);
+      }
+    }
+
     if (!decided.send) {
       pokeStore.save(noteWait({ state: withThought, now: t, minutes: decided.waitMinutes }));
-      return { poked: false, reason: decided.reason || '想过了，先不说', waitMinutes: decided.waitMinutes };
+      return { poked: false, reason: decided.reason || '想过了，先不说', waitMinutes: decided.waitMinutes, search: decided.search || '', looked };
     }
 
     const plan = replyPlan(st, { baseDelayMs: config.session?.replyDelayMs ?? 800 });
@@ -444,12 +513,31 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     pokeStore.save(notePoked({ state: withThought, now: t }));
     // 她确实说了这句话。不记进历史，他下一句接上来时她不知道自己刚问过什么。
     if (sent) session.note(decided.message, { at: t });
-    return { poked: true, sent, message: decided.message };
+    return { poked: true, sent, message: decided.message, search: decided.search || '', looked };
+  }
+
+  /**
+   * 把搜回来的网页原文压成一句中文事实。
+   * 只用材料里有的东西：材料里没有就让它说「没查到」，那边就不记这条。
+   */
+  async function squeezeFact(fact) {
+    const raw = [fact.answer, ...fact.results.slice(0, 3).map((r) => `${r.title}\n${r.content}`)]
+      .filter(Boolean).join('\n\n').slice(0, 1500);
+    try {
+      const out = String(await complete({
+        system: '你把给的材料压成一句中文事实，不超过 50 字。只用材料里写了的，不补充、不推测、不评价；材料里看不出来就只回四个字：没查到。',
+        messages: [{ role: 'user', text: raw }],
+        maxTokens: 200,
+      }) || '').trim();
+      return out.replace(/\s+/g, ' ').slice(0, 120);
+    } catch {
+      // 压不出来就用原文——宁可糙，也不要空。
+      return String(fact.answer || '').replace(/\s+/g, ' ').slice(0, 120);
+    }
   }
 
   /** 现在这一刻的护栏结论。面板上「她为什么没来找你」就看这一行。 */
-  function pokeNow() {
-    const t = now();
+  function pokeNow() {    const t = now();
     const hist = session.snapshot().history;
     const lastUserAt = [...hist].reverse().find((m) => m.role === 'user')?.at || 0;
     return pokeGate({
@@ -807,6 +895,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     enqueue(refreshBalance).catch((e) => log.warn?.(`查余额出错：${e.message}`));
     enqueue(evaluatePost).catch((e) => log.warn?.(`空间判定出错：${e.message}`));
     enqueue(refreshQzoneComments).catch((e) => log.warn?.(`查评论出错：${e.message}`));
+    if (weatherOn()) enqueue(refreshWeather).catch((e) => log.warn?.(`查天气出错：${e.message}`));
     tickProactive().catch((e) => log.warn?.(`主动搭话出错：${e.message}`));
   }
 
@@ -885,6 +974,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         insights: insightsStore.load(),
         qzone: qzoneStore.load(),
         proactive: { ...pokeStore.load(), gate: pokeNow() },
+        weather: weatherStore.load(),
+        facts: factsStore.load(),
         session: {
           size: session.size,
           compactions: session.snapshot().compactions,
@@ -951,6 +1042,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         insights: snap.insights,
         qzone: snap.qzone,
         proactive: snap.proactive,
+        weather: snap.weather,
+        facts: snap.facts,
         config: {
           ownerQQ: config.ownerQQ,
           persona: config.persona,
@@ -1038,7 +1131,7 @@ function loadConfig(file, log) {
 /** 嵌套对象按层合并：用户只写 ownerQQ 时，onebot 的默认地址不能被整块抹掉。 */
 export function mergeConfig(base, patch) {
   const out = { ...base, ...(patch || {}) };
-  for (const key of ['onebot', 'model', 'session', 'proactive', 'budget']) {
+  for (const key of ['onebot', 'model', 'session', 'proactive', 'budget', 'weather', 'search']) {
     if (patch?.[key] && typeof patch[key] === 'object') out[key] = { ...(base?.[key] || {}), ...patch[key] };
   }
   return out;

@@ -26,6 +26,8 @@
 |---|---|---|
 | [SnowLuma](https://github.com/SnowLuma/SnowLuma) | **源码可见、非商业**（不是 OSI 开源） | 只通过它的 HTTP / WebSocket 接口通信，**仓库里不含它的任何代码或二进制**。这条不能破：它的许可与 MIT 不兼容 |
 | [NapCat](https://github.com/NapNeko/NapCatQQ) | 见其仓库 | 动作名（`send_qzone_msg` 等）和参数形状属于接口事实，代码未复制 |
+| [Open-Meteo](https://open-meteo.com/) | CC BY 4.0（数据）/ 免密钥接口 | 只按 HTTP 公开接口取天气观测值，不含其代码。免费额度前提是非商业用途 |
+| [Tavily](https://tavily.com/) | 商业接口，按账号条款 | 只调 `/search` 接口；key 存在本机 `config.json`，不进仓库 |
 
 ## 只读过思路的
 

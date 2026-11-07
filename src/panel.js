@@ -10,6 +10,7 @@ import { moodLabel, stateLine } from './affect/inject.js';
 import { clockOf, gapText } from './life.js';
 import { balanceLine, spendLine } from './budget.js';
 import { renderInsights } from './insights.js';
+import { weatherLine } from './weather.js';
 
 export function escapeHtml(value) {
   return String(value ?? '')
@@ -36,7 +37,7 @@ function section(title, body) {
 /**
  * @param {{state: object, memory: object, gateway: string, session: object, persona: string, config: object, now: number}} o
  */
-export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', session = {}, history = [], checks = [], persona = '', config = {}, life = null, diaries = [], budget = null, alive = null, insights = null, qzone = null, proactive = null, now = Date.now() } = {}) {
+export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', session = {}, history = [], checks = [], persona = '', config = {}, life = null, diaries = [], budget = null, alive = null, insights = null, qzone = null, proactive = null, weather = null, facts = null, now = Date.now() } = {}) {
   const cfg = config || {};
   const conn = cfg.onebot || {};
   const traits = TRAITS.map((k) => {
@@ -168,8 +169,13 @@ ${section('她会不会来找你', (() => {
   const thought = p.lastThought?.text
     ? `<p class="dim">上次想的是（${escapeHtml(new Date(p.lastThought.at).toLocaleString())}）：「${escapeHtml(p.lastThought.text.slice(0, 80))}」</p>`
     : '';
+  const out = weather ? `<p class="dim">${escapeHtml(weatherLine(weather))}（${escapeHtml(new Date(weather.at).toLocaleTimeString())} 查的）</p>` : '';
+  const f = facts?.items?.[0];
+  const factText = f
+    ? `<p class="dim">查过（${escapeHtml(new Date(f.at).toLocaleString())}）：「${escapeHtml(f.query)}」→ ${escapeHtml(String(f.answer).slice(0, 100))}</p>`
+    : '';
   return `<p>期待时间：${escapeHtml(when)}${why}</p>${verdict}`
-    + `<p class="dim">今天主动 ${p.count || 0} 次 · 连发没回 ${p.consecutive || 0} 条 · 想过 ${p.thinks?.n || 0} 次</p>${thought}`;
+    + `<p class="dim">今天主动 ${p.count || 0} 次 · 连发没回 ${p.consecutive || 0} 条 · 想过 ${p.thinks?.n || 0} 次</p>${thought}${out}${factText}`;
 })())}
 ${section('人格', `${traits}<p class="dim">${escapeHtml(state.self.narrative || '还没有发生过漂移')}</p><p class="dim">待结算的模式：</p>${patternText}<p class="dim">快照 ${(state.self.snapshots || []).length} 版</p>${snaps ? `<ul>${snaps}</ul>` : ''}`)}
 ${section('记忆', `<p>共 ${mem.total} 条（清晰 ${mem.vivid || 0} / 清楚 ${mem.clear || 0} / 模糊 ${mem.fuzzy || 0} / 只剩印象 ${mem.trace || 0}），已遗忘 ${mem.forgotten || 0}</p>${memoryList}${staleText}${goneText}`)}

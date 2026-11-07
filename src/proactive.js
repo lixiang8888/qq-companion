@@ -172,9 +172,11 @@ export function composePokePrompt({ clock = '', idle = '', lastLine = '', hint =
   if (hint) lines.push(`你心里还挂着件事：${sanitizeSecrets(hint).slice(0, 60)}。`);
   if (inner) lines.push(`上次这个点你也想过这事，当时想的是：「${sanitizeSecrets(inner).slice(0, 60)}」。`);
   lines.push('要不要找他？他可能在忙、在睡，也可能这会儿就是不想说话——不说也完全没问题。');
+  lines.push('要是你心里有个具体的疑问（外面的新闻、某个东西是什么），可以顺手查一下，加一个键："search":"你想查的那句话"。');
   lines.push('只回一个 JSON，别的什么都不要：');
   lines.push('{"send":false,"waitMinutes":45,"reason":"一句话，为什么先不说"}');
   lines.push('或者 {"send":true,"message":"你要发过去的那句话"}');
+  lines.push('想查就再加一句：{"send":false,"waitMinutes":60,"reason":"…","search":"湖州明天会下雨吗"}');
   return lines.join('\n');
 }
 
@@ -200,13 +202,15 @@ export function parsePokeReply(text) {
   const j = pickJson(raw);
   if (j && typeof j === 'object') {
     const waitMinutes = num(j.waitMinutes, DEFAULTS.defaultWaitMinutes);
+    // 查什么跟发不发是两件事：可以只想查、不说话。
+    const search = String(j.search || '').replace(/\s+/g, ' ').trim().slice(0, 80);
     if (j.send === true) {
       const message = String(j.message || '').trim();
-      if (message && !isSilent(message)) return { send: true, message };
-      return { send: false, waitMinutes, reason: String(j.reason || '想说，但没话') };
+      if (message && !isSilent(message)) return { send: true, message, search };
+      return { send: false, waitMinutes, search, reason: String(j.reason || '想说，但没话') };
     }
-    return { send: false, waitMinutes, reason: String(j.reason || '') };
+    return { send: false, waitMinutes, search, reason: String(j.reason || '') };
   }
-  if (!raw || isSilent(raw)) return { send: false, waitMinutes: DEFAULTS.defaultWaitMinutes, reason: '没想好说什么' };
-  return { send: true, message: raw };
+  if (!raw || isSilent(raw)) return { send: false, waitMinutes: DEFAULTS.defaultWaitMinutes, search: '', reason: '没想好说什么' };
+  return { send: true, message: raw, search: '' };
 }

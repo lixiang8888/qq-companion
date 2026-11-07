@@ -8,6 +8,7 @@ const RULES = [
   [/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{10,}/g, '[令牌已隐藏]'],
   [/\bgithub_pat_[A-Za-z0-9_]{10,}/g, '[令牌已隐藏]'],
   [/\bAKIA[0-9A-Z]{12,}/g, '[密钥已隐藏]'],
+  [/\btvly-[A-Za-z0-9_-]{8,}/g, '[密钥已隐藏]'],
   [/\bBearer\s+[A-Za-z0-9._-]{8,}/gi, 'Bearer [令牌已隐藏]'],
   [/\b(?:password|passwd|token|api[_-]?key|secret)\s*[=:]\s*\S+/gi, (m) => m.replace(/([=:]).*$/, '$1[已隐藏]')],
   [/\b1[3-9]\d{9}\b/g, '[手机号已隐藏]'],

@@ -9,6 +9,7 @@ test('常见密钥形态被替换', () => {
     'ghp_aaaaaaaaaaaaaaaaaaaa',
     'github_pat_11ABCDEFG_abcdefghij',
     'AKIAIOSFODNN7EXAMPLE',
+    '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',
     'Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig',
   ];
   for (const c of cases) {

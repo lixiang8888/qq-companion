@@ -72,6 +72,15 @@ token 那一格留空表示「不改」。
     "quietFrom": 23,         // 安静时段，跨零点也认
     "quietTo": 8,
     "moodFloor": 0.25        // 心情低于这个值就不主动
+  },
+  "weather": {
+    "enabled": true,         // 开着会连 Open-Meteo（免密钥）
+    "place": "huzhou"        // huzhou（湖州师范学院）或 zhuji（诸暨）
+  },
+  "search": {
+    "enabled": true,
+    "key": "tvly-...",       // Tavily 的 key；留空就查不了，天气不受影响
+    "maxPerDay": 5
   }
 }
 ```
@@ -108,6 +117,8 @@ node scripts/preflight.mjs --online    # 真连一次 OneBot（只 get_login_inf
   budget.json          今天的 token 与账户余额
   diary-snapshot.json  昨天收摊时的记忆指纹（日记差分的基线）
   proactive.json       期待时间、今天主动了几次、上次想过什么
+  weather.json         外面的天气（半小时一次，实测值）
+  facts.json           她查过的事 + 来源（一天内算新鲜）
   diary/*.md           她自己写的日记
   personas/*.md        人格卡
 ```
@@ -123,7 +134,7 @@ node scripts/preflight.mjs --online    # 真连一次 OneBot（只 get_login_inf
 ## 测试
 
 ```bash
-npm test     # 341 项离线测试（无网络、无真 QQ）
+npm test     # 358 项离线测试（无网络、无真 QQ）
 ```
 
 ## 状态
@@ -132,6 +143,8 @@ npm test     # 341 项离线测试（无网络、无真 QQ）
 挨骂会掉、被认真对待会涨、忘了不等于原谅）、人格（五特质、月度结算、快照回滚、自我叙事）、
 记忆卡（四档清晰度、每天一档、停机补跑、锚点不忘、BM25 召回、2200 字注入上限、遗忘可找回）、
 主动搭话（期待时间 + 连发上限，扛过护栏才自己想一次发不发）、自检面板与安装体检、
+**她知道自己几点、外面什么天**（Open-Meteo 实测，不是网页转述）、
+**她想查点真事就能查**（Tavily，带来源，压成一句中文再记）、
 **她自己的生活**（当下、日记、开机后知道自己不在过多久）、**钱包**（真余额 + 自己的 token）。
 
 **未做**：群聊、语音、多对象、工具调用（联网搜索）。
