@@ -21,7 +21,8 @@ export function createLocalSession({
   system = '',
   compactAt = 30,           // 超过这么多条（user+assistant）就压
   keepRecent = 12,          // 压缩时保留最近这么多条原文
-  summaryMaxTokens = 400,
+  // 400 不够：推理模型先用思考占掉一截，正文就空了（真机上确实空过）。
+  summaryMaxTokens = 800,
   now = Date.now,
   initial = null,           // 上次落盘的状态：{summary, history, compactions}
   persist = null,           // (snapshot) => void，每轮之后调用
@@ -130,4 +131,5 @@ export function createLocalSession({
     get size() { return history.length; },
   };
 }
+
 

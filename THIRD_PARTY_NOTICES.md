@@ -12,6 +12,13 @@
 | dsh-memory-core | MIT | `src/memory/sanitize.js` 的脱敏模式；`src/session.js` 的「记忆使用协议」五条 | 模式与条文取自它，实现改写 |
 | [dsh-qq-zone](https://github.com/LFELKEEA/dsh-qq-zone) | MIT | `src/qzone.js` 的错误分类（unreachable / unauthorized / action-missing / rejected） | 分类思路，代码自己写；接口形状是在 SnowLuma 上实测的 |
 
+## 运行时依赖
+
+| 依赖 | 许可 | 用在哪 |
+|---|---|---|
+| [sharp](https://sharp.pixelplumbing.com/) | Apache-2.0 | 动图抽帧（GIF / 动态 WebP 解码成多帧）。只做解码，不碰别的 |
+
+`node_modules/` 不进仓库，换机器要重新 `npm install`。
 ## 只调用接口、未复制代码的
 
 | 项目 | 许可 | 关系 |
@@ -33,3 +40,4 @@ astrbot_plugin_private_companion、internetsb/Maizone、dsh-soul-evolve。
 
 - **商标**：仓库名里带 `QQ`，人格卡自称「DeepSeek 小鲸鱼」。自用没问题，**发布或商用是另一回事**。
 - **账号风险**：用 OneBot / 第三方协议端登录个人 QQ 本身不符合 QQ 用户协议。代价不是版权纠纷，是封号。
+
