@@ -19,6 +19,7 @@
 | [sharp](https://sharp.pixelplumbing.com/) | Apache-2.0 | 动图抽帧（GIF / 动态 WebP 解码成多帧）。只做解码，不碰别的 |
 
 `node_modules/` 不进仓库，换机器要重新 `npm install`。
+
 ## 只调用接口、未复制代码的
 
 | 项目 | 许可 | 关系 |
@@ -33,6 +34,14 @@
 dsh-plugin-soul、dsh-persona-memory、dsh-character-presets、dsh-companion、dsh-memory-core、
 灵枢 lingshu-skill、agent-memory-experiment、deepseek-harness-digital-life、astrbot_plugin_qzone_bridge、
 astrbot_plugin_private_companion、internetsb/Maizone、dsh-soul-evolve。
+
+`src/proactive.js` 的触发模型另外参考了三个 DSH 插件（都读了 README 与设计说明，未复制代码）：
+
+| 项目 | 许可 | 借了什么 |
+|---|---|---|
+| [dsh-heartbeat-inner](https://github.com/zy666946/dsh-heartbeat-inner) | MIT | 「期待时间」代替固定间隔；`{send, waitMinutes}` 的决策 JSON；发了没回的退避 |
+| [dsh-proactive](https://github.com/john-walks-slow/dsh-proactive) | MIT | 「唤醒不等于发言」——静默轮次不该留下来污染长期上下文 |
+| [Kanadego/dsh-heartbeat](https://github.com/Kanadego/dsh-heartbeat) | MIT | 「闸门先于模型」：判别说时根本不调模型，省 token 也避免硬凑话 |
 
 其中 `docs/design/affection_audit.md` 是别人写的好感度审计报告，当作参考阅读，未复制其代码。
 

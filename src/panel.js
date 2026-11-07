@@ -36,7 +36,7 @@ function section(title, body) {
 /**
  * @param {{state: object, memory: object, gateway: string, session: object, persona: string, config: object, now: number}} o
  */
-export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', session = {}, history = [], checks = [], persona = '', config = {}, life = null, diaries = [], budget = null, alive = null, insights = null, qzone = null, now = Date.now() } = {}) {
+export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', session = {}, history = [], checks = [], persona = '', config = {}, life = null, diaries = [], budget = null, alive = null, insights = null, qzone = null, proactive = null, now = Date.now() } = {}) {
   const cfg = config || {};
   const conn = cfg.onebot || {};
   const traits = TRAITS.map((k) => {
@@ -155,6 +155,21 @@ ${section('空间', (() => {
   const when = qzone.lastPostAt ? new Date(qzone.lastPostAt).toLocaleString() : '';
   return `<p class="dim">${escapeHtml(when)} 发的（${escapeHtml(qzone.lastKind || '')}）</p><p>${escapeHtml(qzone.lastText)}</p>`
     + `${why}<p class="dim">tid=${escapeHtml(qzone.lastTid || '')} · <a href="?qzcheck=1">立刻查评论</a> · <a href="?qzdelete=1">删掉这条</a></p>`;
+})())}
+${section('她会不会来找你', (() => {
+  const p = proactive || {};
+  const e = p.expect || {};
+  const gate = p.gate;
+  const when = e.at ? new Date(e.at).toLocaleString() : '还没算（等她说完一轮）';
+  const why = e.why ? `<span class="dim">（${escapeHtml(e.why)}）</span>` : '';
+  const verdict = gate?.ok
+    ? '<p class="big">现在可以找他</p>'
+    : `<p class="dim">现在不发：${escapeHtml(gate?.reason || '未开启')}</p>`;
+  const thought = p.lastThought?.text
+    ? `<p class="dim">上次想的是（${escapeHtml(new Date(p.lastThought.at).toLocaleString())}）：「${escapeHtml(p.lastThought.text.slice(0, 80))}」</p>`
+    : '';
+  return `<p>期待时间：${escapeHtml(when)}${why}</p>${verdict}`
+    + `<p class="dim">今天主动 ${p.count || 0} 次 · 连发没回 ${p.consecutive || 0} 条 · 想过 ${p.thinks?.n || 0} 次</p>${thought}`;
 })())}
 ${section('人格', `${traits}<p class="dim">${escapeHtml(state.self.narrative || '还没有发生过漂移')}</p><p class="dim">待结算的模式：</p>${patternText}<p class="dim">快照 ${(state.self.snapshots || []).length} 版</p>${snaps ? `<ul>${snaps}</ul>` : ''}`)}
 ${section('记忆', `<p>共 ${mem.total} 条（清晰 ${mem.vivid || 0} / 清楚 ${mem.clear || 0} / 模糊 ${mem.fuzzy || 0} / 只剩印象 ${mem.trace || 0}），已遗忘 ${mem.forgotten || 0}</p>${memoryList}${staleText}${goneText}`)}

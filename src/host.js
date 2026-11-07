@@ -29,7 +29,7 @@ import { comment as qzoneComment, detail as qzoneDetail, freshComments, publish 
 import { renderPanel } from './panel.js';
 import { rollbackTraits } from './affect/personality.js';
 import { replyPlan } from './affect/behavior.js';
-import { DEFAULTS as PROACTIVE_DEFAULTS, isSilent, notePoke, pokeDecision, pokePrompt } from './proactive.js';
+import { DEFAULTS as PROACTIVE_DEFAULTS, composePokePrompt, notePoked, noteSaidByUser, noteTurn, noteWait, parsePokeReply, pokeGate } from './proactive.js';
 
 export const name = 'qq-companion';
 // cordis 的 inject 是「必填服务」清单：只有列在这里的服务，访问时才不会抛，
@@ -226,6 +226,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   const onebot = createOneBot({
     endpoint: () => endpointOf(config),
     log: (m) => log.info?.(m),
+    fetchImpl,
     onEvent: (ev) => { handleEvent(ev).catch((e) => log.warn?.('处理消息失败：' + e.message)); },
   });
 
@@ -242,9 +243,16 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     extraContext: () => contextBlock(),
   });
 
-  /** 每轮给她的额外上下文：她刚才不在多久、她最近的想法、此刻在干什么，加上钱。 */
+  /** 她看得见「现在几点」。没有这一行，她只能猜，而猜出来的时间是假的。 */
+  function clockText(t = now()) {
+    const d = new Date(t);
+    return `${d.getMonth() + 1}月${d.getDate()}日 周${'日一二三四五六'[d.getDay()]} ${clockOf(t)}`;
+  }
+  const clockLine = (t) => `此时：${clockText(t)}`;
+
+  /** 每轮给她的额外上下文：此刻几点、她刚才不在多久、她最近的想法、在干什么，加上钱。 */
   async function contextBlock() {
-    return [awakeLine(), renderInsights(insightsStore.load()), (await lifeBlock()), pendingLine(pendingQuestions), moneyNow()].filter(Boolean).join('\n');
+    return [clockLine(), awakeLine(), renderInsights(insightsStore.load()), (await lifeBlock()), pendingLine(pendingQuestions), moneyNow()].filter(Boolean).join('\n');
   }
 
   /**
@@ -376,7 +384,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     return b;
   }
 
-  /** 主动搭话：闸门全过才发；模型选沉默就一个字不发。 */
+  /** 主动搭话：期待到了、护栏全过，她先自己想一想；想的结果是发，或者晚点再想。 */
   async function tickProactive() {
     return enqueue(tickProactiveInner);
   }
@@ -388,26 +396,69 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const t = now();
     const hist = session.snapshot().history;
     const lastUserAt = [...hist].reverse().find((m) => m.role === 'user')?.at || 0;
-    const lastBotAt = [...hist].reverse().find((m) => m.role === 'assistant')?.at || 0;
     const st = companion.snapshot();
-    const d = pokeDecision({ now: t, cfg, lastUserAt, lastBotAt, pokes: pokeStore.load(), mood: st.mood.v });
-    if (!d.ok) return { poked: false, reason: d.reason };
+    const state = pokeStore.load();
+    const g = pokeGate({ now: t, cfg, lastUserAt, state, mood: st.mood.v });
+    if (!g.ok) return { poked: false, reason: g.reason };
 
+    const lastLine = [...hist].reverse().find((m) => m.role === 'user')?.text || '';
     const hint = rankForPrompt(memoryStore.load(), { now: t }).find((r) => !r.pinned && !r.first)?.text || '';
-    const chatId = `private:${config.ownerQQ}`;
-    const reply = await session.prompt(chatId, pokePrompt({ idleHours: d.idleHours, memory: hint }), { context: [buildContext(st), await lifeBlock()].filter(Boolean).join('\n') });
-    pokeStore.save(notePoke({ pokes: pokeStore.load(), now: t }));
-    if (isSilent(reply)) return { poked: true, sent: 0, reason: '模型选择沉默' };
+    const prompt = composePokePrompt({
+      clock: clockText(t),
+      idle: `他已经 ${g.idleHours} 小时没跟你说话了`,
+      lastLine,
+      hint,
+      inner: state.lastThought?.text || '',
+      doing: await lifeBlock(),
+    });
+
+    // 这是一次独立调用，不碰主历史：写进去，她就真会以为自己听过那句系统提醒。
+    let thought = '';
+    try {
+      thought = String(await complete({
+        system: `${personaText(personaDir, config.persona)}\n\n（眼下你没在跟他说话，只是自己心里在想。别写旁白，只回那个 JSON。）`,
+        messages: [{ role: 'user', text: prompt }],
+        maxTokens: 400,
+      }) || '');
+    } catch (e) {
+      pokeStore.save(noteWait({ state, now: t }));
+      log.warn?.(`主动搭话前想不动：${e.message}`);
+      return { poked: false, reason: `想的时候出错了：${e.message}` };
+    }
+
+    const decided = parsePokeReply(thought);
+    const withThought = { ...state, lastThought: { at: t, text: thought.trim().slice(0, 200) } };
+    if (!decided.send) {
+      pokeStore.save(noteWait({ state: withThought, now: t, minutes: decided.waitMinutes }));
+      return { poked: false, reason: decided.reason || '想过了，先不说', waitMinutes: decided.waitMinutes };
+    }
 
     const plan = replyPlan(st, { baseDelayMs: config.session?.replyDelayMs ?? 800 });
-    const parts = splitReply(reply).slice(0, plan.maxParts);
-    const msg = { kind: 'private', userId: String(config.ownerQQ), chatId };
+    const parts = splitReply(decided.message).slice(0, plan.maxParts);
+    const msg = { kind: 'private', userId: String(config.ownerQQ), chatId: `private:${config.ownerQQ}` };
     let sent = 0;
     for (const part of parts) {
       try { await sleep(plan.delayMs); await sendText(onebot, msg, part); sent += 1; }
       catch (e) { log.warn?.(`主动搭话发送失败：${e.message}`); break; }
     }
-    return { poked: true, sent };
+    pokeStore.save(notePoked({ state: withThought, now: t }));
+    // 她确实说了这句话。不记进历史，他下一句接上来时她不知道自己刚问过什么。
+    if (sent) session.note(decided.message, { at: t });
+    return { poked: true, sent, message: decided.message };
+  }
+
+  /** 现在这一刻的护栏结论。面板上「她为什么没来找你」就看这一行。 */
+  function pokeNow() {
+    const t = now();
+    const hist = session.snapshot().history;
+    const lastUserAt = [...hist].reverse().find((m) => m.role === 'user')?.at || 0;
+    return pokeGate({
+      now: t,
+      cfg: { ...PROACTIVE_DEFAULTS, ...(config.proactive || {}) },
+      lastUserAt,
+      state: pokeStore.load(),
+      mood: companion.snapshot().mood.v,
+    });
   }
 
   // 串行队列：两条消息前后脚到达时，不能各自 load→改→save（后写的会吃掉先写的）。
@@ -540,6 +591,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   /** 一轮：可能来自一条消息，也可能是刚才连发的几条。 */
   async function processBatch(batch) {
     const msg = { ...batch.last, text: mergeTexts(batch.texts), parts: batch.texts };
+    // 他出声了：连发改零，等着的那个期待点作废。
+    pokeStore.save(noteSaidByUser(pokeStore.load()));
     // 这一轮的问题：最后一条是她在答的，前面的挂到下一轮。
     const asked = extractQuestions(batch.texts.join(''));
     const r = await companion.handleMessage(msg);
@@ -552,6 +605,15 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       catch (e) { log.warn?.(`发言失败：${e.message}`); break; }
     }
     pendingQuestions = leftoverQuestions(asked);
+    // 这一轮说完了：按「他平时多久会回」重算期待点。到了那个点他还没吭声，她才会想起他。
+    const turnEnd = now();
+    pokeStore.save(noteTurn({
+      now: turnEnd,
+      state: pokeStore.load(),
+      lastUserAt: Number(msg.at) || turnEnd,
+      history: session.snapshot().history,
+      cfg: { ...PROACTIVE_DEFAULTS, ...(config.proactive || {}) },
+    }));
     return { ...r, sent: parts.length, plan, merged: batch.texts.length };
   }
 
@@ -822,6 +884,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         alive: { before: aliveBefore, bootAt, offMs: aliveBefore ? Math.max(0, bootAt - aliveBefore) : 0 },
         insights: insightsStore.load(),
         qzone: qzoneStore.load(),
+        proactive: { ...pokeStore.load(), gate: pokeNow() },
         session: {
           size: session.size,
           compactions: session.snapshot().compactions,
@@ -887,6 +950,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         alive: snap.alive,
         insights: snap.insights,
         qzone: snap.qzone,
+        proactive: snap.proactive,
         config: {
           ownerQQ: config.ownerQQ,
           persona: config.persona,
@@ -955,7 +1019,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     log.info?.(`qq-companion：面板 ${panelUrl}`);
   } catch { /* 诊断日志失败不影响启动 */ }
 
-  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, get config() { return config; }, dataDir };
+  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, get config() { return config; }, dataDir };
 }
 
 function loadConfig(file, log) {

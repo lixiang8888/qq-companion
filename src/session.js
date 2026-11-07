@@ -125,6 +125,19 @@ export function createLocalSession({
       return clean;
     },
 
+    /**
+     * 记一句「她真的发出去过的话」，但不叫模型。
+     * 主动搭话走的是独立调用，不经过这里；可她确实对他说了那句话，
+     * 不记下来的话，他下一句接上时她会完全不知道自己刚说过什么。
+     */
+    note(text, { role = 'assistant', at = now() } = {}) {
+      const clean = String(text ?? '').trim();
+      if (!clean) return false;
+      history.push({ role, text: clean, at });
+      save();
+      return true;
+    },
+
     /** 面板/调试用。 */
     snapshot,
 

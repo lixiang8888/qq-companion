@@ -64,10 +64,11 @@ token 那一格留空表示「不改」。
   "session": { "compactAt": 30, "keepRecent": 12, "replyDelayMs": 800 },
   "budget": { "lowBalance": 5 },             // 余额低于这个数，她才会主动提钱
   "proactive": {
-    "enabled": false,        // 默认关：不开关就不会主动找你
-    "minIdleMinutes": 180,   // 至少这么久没说话
+    "enabled": true,         // 关掉她就一次都不会先开口
+    "minIdleMinutes": 180,   // 他至少这么久没说话，才轮到她惦记
     "maxPerDay": 3,
     "minGapMinutes": 120,
+    "maxConsecutive": 2,     // 他还没回，最多连发几条
     "quietFrom": 23,         // 安静时段，跨零点也认
     "quietTo": 8,
     "moodFloor": 0.25        // 心情低于这个值就不主动
@@ -106,7 +107,7 @@ node scripts/preflight.mjs --online    # 真连一次 OneBot（只 get_login_inf
   alive.json           上次醒着的时间戳
   budget.json          今天的 token 与账户余额
   diary-snapshot.json  昨天收摊时的记忆指纹（日记差分的基线）
-  proactive.json       主动搭话的每日计数与冷却
+  proactive.json       期待时间、今天主动了几次、上次想过什么
   diary/*.md           她自己写的日记
   personas/*.md        人格卡
 ```
@@ -122,7 +123,7 @@ node scripts/preflight.mjs --online    # 真连一次 OneBot（只 get_login_inf
 ## 测试
 
 ```bash
-npm test     # 143 项离线测试（无网络、无真 QQ）
+npm test     # 341 项离线测试（无网络、无真 QQ）
 ```
 
 ## 状态
@@ -130,17 +131,15 @@ npm test     # 143 项离线测试（无网络、无真 QQ）
 **已做**：私聊收发、情绪（效价/唤醒/强度 + 衰减 + 影响节奏与条数）、关系（信任/亲密/戒备/亏欠，
 挨骂会掉、被认真对待会涨、忘了不等于原谅）、人格（五特质、月度结算、快照回滚、自我叙事）、
 记忆卡（四档清晰度、每天一档、停机补跑、锚点不忘、BM25 召回、2200 字注入上限、遗忘可找回）、
-主动搭话（六道闸、默认关）、自检面板与安装体检、
+主动搭话（期待时间 + 连发上限，扛过护栏才自己想一次发不发）、自检面板与安装体检、
 **她自己的生活**（当下、日记、开机后知道自己不在过多久）、**钱包**（真余额 + 自己的 token）。
 
-**未做**：群聊、语音、表情包、多对象、工具调用（联网搜索/看图）。
+**未做**：群聊、语音、多对象、工具调用（联网搜索）。
 
 **已验证**：bundle 能装进 DSH、插件真的加载、面板与接口在真宿主里 200、40 轮长对话会触发压缩、
 以及用假 OneBot + 假模型跑通「QQ 事件 → 模型 → 回复发出」的完整链路。
 
 **未验证**：真的 SnowLuma 与真的模型 key。装之前 `preflight --install` 会告诉你差哪一步。
-
-逐条对照目标的验收报告（含复现命令）：[docs/acceptance.md](docs/acceptance.md)。
 
 逐条对照目标的验收报告（含复现命令）：[docs/acceptance.md](docs/acceptance.md)。
 

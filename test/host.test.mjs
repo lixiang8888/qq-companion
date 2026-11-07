@@ -54,6 +54,47 @@ test('主动搭话：默认关闭，不会偷偷调用模型', async () => {
   assert.equal(calls, 0);
 });
 
+test('主动搭话：期待到了就自己想一次，发出去的那句她才记得', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-poke-'));
+  const sent = [];
+  const fetchImpl = async (url, init) => {
+    sent.push({ url, body: init?.body });
+    return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
+  };
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+    enabled: true,
+    ownerQQ: '42',
+    onebot: { httpUrl: 'http://127.0.0.1:9' },
+    // quietFrom === quietTo 表示没有安静时段，免得这条测试跟着跑在一个半夜的钟点上翻车。
+    proactive: { enabled: true, minIdleMinutes: 180, quietFrom: 0, quietTo: 0 },
+  }));
+  let clock = new Date(2026, 0, 1, 9, 0, 0).getTime();
+  const ctx = fakeCtx({ replies: ['嗯', '{"send":true,"message":"在干嘛"}', '{"send":false,"waitMinutes":45}'] });
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  // 聊一轮：她最后说话。以前到这个状态，那个「上一条是我说的」闸门就永远关着。
+  // time 要显式给：没给的话会落到真实时钟上，和这条测试的假时钟对不上。
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(clock / 1000) });
+
+  const early = await host.proactive.tick();
+  assert.equal(early.poked, false, '刚聊完不该马上又找他');
+  assert.match(early.reason, /期待/);
+
+  clock += 4 * 3600e3; // 四个小时后他还没吭声
+  const r = await host.proactive.tick();
+  assert.equal(r.poked, true);
+  assert.equal(r.sent, 1);
+  assert.ok(sent.some((s) => s.url.endsWith('/send_private_msg')), '真的发出去了');
+
+  const history = host.session.snapshot().history;
+  assert.ok(history.some((m) => m.role === 'assistant' && m.text === r.message), '她确实说过这句，得记得');
+  assert.ok(!history.some((m) => /这是你自己在想/.test(m.text)), '「想」的过程不能住进她的记忆');
+
+  // 连发一次之后期待点翻倍 + 冷却：不会四小时后立刻又来一条。
+  const again = await host.proactive.tick();
+  assert.equal(again.poked, false);
+});
+
 test('面板操作：忘记一条、置顶一条、再找回', async () => {
   const { ctx, host } = setup();
   await host.memory.block({ text: '他喜欢猫', userId: '42' });
