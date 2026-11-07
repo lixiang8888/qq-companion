@@ -45,8 +45,8 @@ test('接口坏了要报错，不能返回半条天气', async () => {
 });
 
 test('那一行：说清是实测、缺项就不提', () => {
-  const line = weatherLine({ label: '湖州师范学院', temp: 15, feels: 15, high: 18, low: 12, humid: 77, text: '毛毛雨' });
-  assert.match(line, /湖州师范学院/);
+  const line = weatherLine({ label: '湖州师范大学', temp: 15, feels: 15, high: 18, low: 12, humid: 77, text: '毛毛雨' });
+  assert.match(line, /湖州师范大学/);
   assert.match(line, /实测/);
   assert.match(line, /毛毛雨15°C/);
   assert.match(line, /今天 12~18°C/);

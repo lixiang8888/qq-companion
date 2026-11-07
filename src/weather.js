@@ -5,7 +5,7 @@
 // 她要说就说真的，所以这一条走实测。
 
 export const PLACES = {
-  huzhou: { label: '湖州师范学院', lat: 30.8943, lon: 120.0875 },
+  huzhou: { label: '湖州师范大学', lat: 30.8943, lon: 120.0875 },
   zhuji: { label: '诸暨', lat: 29.7136, lon: 120.2464 },
 };
 

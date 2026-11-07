@@ -98,7 +98,7 @@ const DEFAULT_CONFIG = {
   // 余额低于这个数，她才会主动提钱。
   budget: { lowBalance: 5 },
   proactive: { ...PROACTIVE_DEFAULTS },
-  // 她在哪：huzhou（湖州师范学院）或 zhuji（诸暨），坐标在 weather.js。
+  // 她在哪：huzhou（湖州师范大学）或 zhuji（诸暨），坐标在 weather.js。
   // enabled 默认关：开着就会去连外网，测试和不想联网的人都该能关掉。
   weather: { enabled: false, place: 'huzhou' },
   // 查真事：key 是 Tavily 的，留空就查不了（天气不走这条，那条免密钥）。

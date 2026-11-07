@@ -75,7 +75,7 @@ token 那一格留空表示「不改」。
   },
   "weather": {
     "enabled": true,         // 开着会连 Open-Meteo（免密钥）
-    "place": "huzhou"        // huzhou（湖州师范学院）或 zhuji（诸暨）
+    "place": "huzhou"        // huzhou（湖州师范大学）或 zhuji（诸暨）
   },
   "search": {
     "enabled": true,
