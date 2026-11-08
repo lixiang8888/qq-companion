@@ -81,6 +81,57 @@ Schedule、委派、记忆基础设施、可选 B站 MCP。绑 DSH 0.2.0-rc.2，
 | 独立的「记忆守则」提示段，防止把每次读文件都记成流水账 | 待采纳 |
 | 明说「好感度不是真实关系的度量」 | 已同向（我们的 guard/trust 也不对外声称） |
 
+## 2026-11 追加的一批（主动搭话 / 天气 / 看视频 / B站）
+
+只读 README 与设计说明，未复制代码。许可证与「借了什么」见 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
+
+### dsh-see-now（让 AI 实时看见屏幕）—— **这批里影响最大的一个**
+
+<https://github.com/SAOS-3624/dsh-see-now> · Apache-2.0 · v0.2.1
+
+**判断：它的抓屏管线不采用，它的两条思想全部采用。**
+
+| 它的做法 | 我们用在哪 |
+| --- | --- |
+| 每帧先打 0–255「变化分」（64×36 网格上的像素差），只留「换了一张」或「攒够了运动量」的 | `src/video.js` 的 `changeScore`——**但改用逐通道而不是灰度**（见下） |
+| 留下来的 4~8 帧**拼进同一张图**：一张图里塞几帧价格差不多 | `packSheet` |
+| 宽度对齐 **42px** patch 网格：800 会被 pad 到 812 白算一列，798 正好 19 列 | `SHEET_WIDTH = 798`、`SHEET_HEIGHT = 462` |
+| 只传「变了的帧」，静止屏幕几乎不出图 | 视频只抽 90 秒、每 2 秒一帧，再挑 ≤6 帧 |
+
+**唯一没照它做的地方**：它用 HSV 加权，我们第一版图省事用了灰度，真机一测红→绿只拿到 17 分
+（「换了一整屏」被判成「没怎么变」），改成逐通道平均差后 128/127。这条记在 `docs/design/06` 里。
+
+它另外还有悬浮窗 + `say` 通道（AI 说话并被念出来），和 `dsh-watch-together` 同一协议——
+那是另一种产品形态（对桌面说话，不是对 QQ 说话），本项目没接。
+
+### 主动性：三个 DSH 心跳插件
+
+<https://github.com/zy666946/dsh-heartbeat-inner> · MIT　—— 期待时间 / `{send, waitMinutes}` 决策 JSON / 退避
+<https://github.com/john-walks-slow/dsh-proactive> · MIT　—— 宿主级调度、静默轮次不污染上下文
+<https://github.com/Kanadego/dsh-heartbeat> · MIT　—— 闸门先于模型、心事匣、节律随机化
+
+三个都没有直接装：它们服务的是 DSH agent，本项目是自己管循环、没有工具面。
+只把「什么时候该想起他」这套判断搬进了 `src/proactive.js`。
+
+### dsh-environment-context
+
+<https://github.com/liqiming-whu/dsh-environment-context> · MIT
+
+时间/天气/地点/电量的环境上下文注入，天气源按 Open-Meteo → MET Norway → wttr.in 容错，
+用系统提示段注入而不是产生聊天消息。我们只取了第一路（实测值）和「注入而非消息」这条。
+
+### 刷 B站：四个都读过，一个都没装
+
+[dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-scroll)、[dsh-deepmoyu](https://github.com/pyyxzi/dsh-deepmoyu)、
+[dsh-bili-eyes](https://github.com/QiuYeDx/dsh-bili-eyes)、[dsh-bili-mini](https://github.com/tuanzhanghao/dsh-bili-mini)。
+
+**判断：不采用。** 它们是**给 DSH agent 的工具插件**（注册 `bili_*` 工具，宿主在 agent 会话里喂给模型），
+而本项目的对话是一次 `ctx.llm.stream` 的裸调用，**没有工具面**——装上也不会让 QQ 里的小鲸鱼会刷 B站，
+只会让 DSH 窗口里那个 agent 会。真要做，只能像天气/查真事那样自己写 HTTP 客户端。
+
+顺带一条选型记录：`dsh-deepmoyu` 是照着「鲸鱼娘」做的，和本项目的人格（DeepSeek 小鲸鱼）**撞身份**，
+就算以后要装也只能二选一。
+
 ## 还没读的
 
 `ccawmiku/dsh-salon`（陪伴群聊+私聊）、`zuoyunlai/dsh-pet-plugin`（桌宠 + TTS）、`ailreth/xiaoxiao-persona-core`、`@m-rui/dsh-mate-companion`（npm）、`dsh-self`（npm）。

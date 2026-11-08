@@ -16,7 +16,7 @@
 
 | 依赖 | 许可 | 用在哪 |
 |---|---|---|
-| [sharp](https://sharp.pixelplumbing.com/) | Apache-2.0 | 动图抽帧（GIF / 动态 WebP 解码成多帧）。只做解码，不碰别的 |
+| [sharp](https://sharp.pixelplumbing.com/) | Apache-2.0 | 动图抽帧（GIF / 动态 WebP 解码成多帧）；视频帧的缩放、变化分取样、拼图合成。只做图像解码与合成，不碰别的 |
 
 `node_modules/` 不进仓库，换机器要重新 `npm install`。
 
@@ -32,19 +32,33 @@
 
 ## 只读过思路的
 
-下面这些只读了 README / 文档，没有复制代码，出处记在 [docs/references.md](docs/references.md)：
+下面这些只读了 README / 设计说明，**没有复制代码**，详细判断记在 [docs/references.md](docs/references.md)。
+
+### 2026-11 这一批（主动搭话 / 天气 / 看视频）
+
+| 项目 | 许可 | 借了什么 | 落在哪 |
+|---|---|---|---|
+| [dsh-see-now](https://github.com/SAOS-3624/dsh-see-now) | **Apache-2.0** | 两条核心：①**先判断这一帧值不值得看**再决定传不传（0–255 变化分，64×36 网格）；②留下来的几帧**拼进同一张图**——一张里塞 4 帧还是 8 帧价格差不多。另外它算的账我们也照用了：宽度对齐 **42px** patch 网格（800 会被 pad 到 812，白算一整列，798 正好 19 列） | [src/video.js](qq-companion/src/video.js)。**只借思路，没有沿用它的抓屏管线、没有引入它的依赖** |
+| [dsh-heartbeat-inner](https://github.com/zy666946/dsh-heartbeat-inner) | MIT | 「期待时间」代替固定间隔；`{send, waitMinutes}` 的决策 JSON；发了没回的退避 | [src/proactive.js](qq-companion/src/proactive.js) |
+| [dsh-proactive](https://github.com/john-walks-slow/dsh-proactive) | MIT | 「唤醒不等于发言」——静默轮次不该留下来污染长期上下文 | 同上（「想」不写进主历史） |
+| [Kanadego/dsh-heartbeat](https://github.com/Kanadego/dsh-heartbeat) | MIT | 「闸门先于模型」：判别说时根本不调模型，省 token 也避免硬凑话 | 同上（`pokeGate` 先于那次调用） |
+| [dsh-environment-context](https://github.com/liqiming-whu/dsh-environment-context) | MIT | 天气源的容错顺序（Open-Meteo → MET Norway → wttr.in）、以及「环境用系统提示段注入，不产生聊天消息」这条做法 | [src/weather.js](qq-companion/src/weather.js)（我们只用了第一路，因为它是实测值） |
+
+### 只看过、**没有采用**的
+
+2026-11 查「能不能让她刷 B站」时读了这四个。结论是它们都是**给 DSH agent 的工具插件**，
+而本项目的对话循环是自建的、没有工具面，所以一个都没装、也没抄：
+
+[c1overzz/dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-scroll)、
+[pyyxzi/dsh-deepmoyu](https://github.com/pyyxzi/dsh-deepmoyu)、
+[QiuYeDx/dsh-bili-eyes](https://github.com/QiuYeDx/dsh-bili-eyes)、
+[tuanzhanghao/dsh-bili-mini](https://github.com/tuanzhanghao/dsh-bili-mini)（均 MIT）。
+
+### 更早读过的那批
 
 dsh-plugin-soul、dsh-persona-memory、dsh-character-presets、dsh-companion、dsh-memory-core、
 灵枢 lingshu-skill、agent-memory-experiment、deepseek-harness-digital-life、astrbot_plugin_qzone_bridge、
 astrbot_plugin_private_companion、internetsb/Maizone、dsh-soul-evolve。
-
-`src/proactive.js` 的触发模型另外参考了三个 DSH 插件（都读了 README 与设计说明，未复制代码）：
-
-| 项目 | 许可 | 借了什么 |
-|---|---|---|
-| [dsh-heartbeat-inner](https://github.com/zy666946/dsh-heartbeat-inner) | MIT | 「期待时间」代替固定间隔；`{send, waitMinutes}` 的决策 JSON；发了没回的退避 |
-| [dsh-proactive](https://github.com/john-walks-slow/dsh-proactive) | MIT | 「唤醒不等于发言」——静默轮次不该留下来污染长期上下文 |
-| [Kanadego/dsh-heartbeat](https://github.com/Kanadego/dsh-heartbeat) | MIT | 「闸门先于模型」：判别说时根本不调模型，省 token 也避免硬凑话 |
 
 其中 `docs/design/affection_audit.md` 是别人写的好感度审计报告，当作参考阅读，未复制其代码。
 
