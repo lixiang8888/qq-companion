@@ -28,6 +28,7 @@
 | [NapCat](https://github.com/NapNeko/NapCatQQ) | 见其仓库 | 动作名（`send_qzone_msg` 等）和参数形状属于接口事实，代码未复制 |
 | [Open-Meteo](https://open-meteo.com/) | CC BY 4.0（数据）/ 免密钥接口 | 只按 HTTP 公开接口取天气观测值，不含其代码。免费额度前提是非商业用途 |
 | [Tavily](https://tavily.com/) | 商业接口，按账号条款 | 只调 `/search` 接口；key 存在本机 `config.json`，不进仓库 |
+| [ffmpeg](https://ffmpeg.org/) | gyan.dev 的 essentials 构建是 **GPLv3** | `src/video.js` 只把它当**外部程序**用 `spawn` 调（抽帧），不链接、不打包。**仓库里不含它的二进制**——需要时自己下到 `<数据目录>/bin/ffmpeg.exe` |
 
 ## 只读过思路的
 

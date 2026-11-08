@@ -10,7 +10,8 @@ import { join } from 'node:path';
 import { createJsonStore } from './store.js';
 import { createOneBot, sendText } from './onebot.js';
 import { normalizeMessage, quoteLine, replyIdOf, splitReply } from './message.js';
-import { ANIMATION_PROMPT, MAX_IMAGE_BYTES, dataUrlOf, describeImage, extractGifFrames, imageSegmentsOf, imageSourceOf, mimeOf, sniffMime, withImageText } from './vision.js';
+import { ANIMATION_PROMPT, MAX_IMAGE_BYTES, dataUrlOf, describeImage, extractGifFrames, imageSegmentsOf, imageSourceOf, mimeOf, sniffMime, videoSegmentsOf, withImageText } from './vision.js';
+import { MAX_VIDEO_BYTES, VIDEO_PROMPT, findFfmpeg, videoSheet, withVideoText } from './video.js';
 import { extractQuestions, leftoverQuestions, pendingLine } from './topics.js';
 import { createLlmComplete } from './llm.js';
 import { createLocalSession } from './session.js';
@@ -103,6 +104,8 @@ const DEFAULT_CONFIG = {
   weather: { enabled: false, place: 'huzhou' },
   // 查真事：key 是 Tavily 的，留空就查不了（天气不走这条，那条免密钥）。
   search: { enabled: false, key: '', maxPerDay: 5 },
+  // 看视频：抽帧要 ffmpeg。ffmpeg 留空则依次找 <dataDir>/bin/ 和 PATH。
+  video: { enabled: true, ffmpeg: '', maxSeconds: 90 },
 };
 
 export function defaultDataDir() {
@@ -643,6 +646,73 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   }
 
   /**
+   * 视频的字节。QQ 视频段的 url 有时效，和图片一样不能想当然。
+   * 直连下不动就退回：让 SnowLuma 下到它自己的临时目录——同一台机器，能直接读。
+   */
+  async function videoBytesOf(seg) {
+    const src = imageSourceOf(seg);
+    if (src?.kind === 'file') {
+      if (statSync(src.value).size > MAX_VIDEO_BYTES) throw new Error('太大');
+      return readFileSync(src.value);
+    }
+    const url = String(seg?.data?.url || '');
+    if (/^https?:\/\//i.test(url)) {
+      try {
+        const res = await fetchImpl(url, { signal: AbortSignal.timeout(30000) });
+        if (res?.ok) {
+          const buf = Buffer.from(await res.arrayBuffer());
+          if (buf.length > MAX_VIDEO_BYTES) throw new Error('太大');
+          return buf;
+        }
+      } catch (e) {
+        if (/太大/.test(e.message)) throw e;
+        log.warn?.(`视频直连下载失败：${e.message}`);
+      }
+    }
+    const r = await onebot.call('download_file', { url, name: 'qqc-video.mp4' });
+    const p = String(r?.file || '');
+    if (!p || !existsSync(p)) throw new Error('拿不到视频文件');
+    if (statSync(p).size > MAX_VIDEO_BYTES) throw new Error('太大');
+    return readFileSync(p);
+  }
+
+  /**
+   * 他发视频了：抽几帧、按画面变化挑几张、拼成一张图，让模型看一次。
+   * 听不到声音——这一条既写进提示词，也写进她的正文，不然她会替视频编台词。
+   */
+  async function withVideos(msg) {
+    const segs = videoSegmentsOf(msg.segments);
+    if (!segs.length) return msg;
+    if (config.video?.enabled === false) {
+      return { ...msg, text: withVideoText(msg.text, { ok: false, reason: '视频识别关着' }) };
+    }
+    const credentials = typeof ctx.get === 'function' ? ctx.get('credentials') : undefined;
+    const got = credentials?.resolve ? await credentials.resolve('DEEPSEEK_API_KEY').catch(() => null) : null;
+    const key = typeof got === 'string' ? got : got?.value;
+    let look;
+    try {
+      const bytes = await videoBytesOf(segs[0]);
+      const ffmpeg = findFfmpeg({ binDir: join(dataDir, 'bin'), explicit: config.video?.ffmpeg || '' });
+      const sheet = await videoSheet({ buffer: bytes, ffmpeg, seconds: config.video?.maxSeconds ?? 90 });
+      if (!key) throw new Error('没有视觉模型的 key');
+      const r = await describeImage({ dataUrl: dataUrlOf(sheet.sheet, 'image/jpeg'), prompt: VIDEO_PROMPT, key, fetchImpl, timeoutMs: 60000 });
+      look = r.ok
+        ? { ok: true, text: r.text, frames: sheet.frames, seconds: sheet.to }
+        : { ok: false, reason: r.reason };
+    } catch (e) {
+      look = { ok: false, reason: e.message };
+    }
+    if (!look.ok) log.warn?.(`看视频没看成：${look.reason}`);
+    // 留一份现场：真机上视频这条路最容易「静默不生效」，没有回查点就只能猜。
+    try {
+      writeFileSync(join(dataDir, 'video-debug.json'), JSON.stringify({
+        at: now(), ok: Boolean(look.ok), reason: look.reason || '', frames: look.frames || 0, seconds: look.seconds || 0,
+      }, null, 2));
+    } catch { /* 调试文件写不了也不能影响回话 */ }
+    return { ...msg, text: withVideoText(msg.text, look), video: look };
+  }
+
+  /**
    * 引用只有 id，原文要回查。查回来就把「他在回复哪句」写进正文——
    * 不然「看看这个图是什么」在她眼里没有任何指代物。
    */
@@ -669,11 +739,13 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     if (msg.text.length > MAX_INBOUND_CHARS) {
       msg.text = `${msg.text.slice(0, MAX_INBOUND_CHARS)}…（后面太长，没看完）`;
     }
-    // 只有带图或带引用时才先异步补信息；纯文本必须同步入队，
+    // 只有带图、带视频或带引用时才先异步补信息；纯文本必须同步入队，
     // 否则连发合并的窗口会晚一个微任务才开（测试钉着这条）。
-    const needsWork = imageSegmentsOf(msg.segments).length > 0 || Boolean(replyIdOf(msg.segments));
+    const needsWork = imageSegmentsOf(msg.segments).length > 0
+      || videoSegmentsOf(msg.segments).length > 0
+      || Boolean(replyIdOf(msg.segments));
     if (!needsWork) return mailbox.push(msg);
-    return mailbox.push(await withQuote(await withImages(msg)));
+    return mailbox.push(await withQuote(await withImages(await withVideos(msg))));
   }
 
   /** 一轮：可能来自一条消息，也可能是刚才连发的几条。 */
@@ -1131,7 +1203,7 @@ function loadConfig(file, log) {
 /** 嵌套对象按层合并：用户只写 ownerQQ 时，onebot 的默认地址不能被整块抹掉。 */
 export function mergeConfig(base, patch) {
   const out = { ...base, ...(patch || {}) };
-  for (const key of ['onebot', 'model', 'session', 'proactive', 'budget', 'weather', 'search']) {
+  for (const key of ['onebot', 'model', 'session', 'proactive', 'budget', 'weather', 'search', 'video']) {
     if (patch?.[key] && typeof patch[key] === 'object') out[key] = { ...(base?.[key] || {}), ...patch[key] };
   }
   return out;

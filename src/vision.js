@@ -40,6 +40,14 @@ export function imageSegmentsOf(segments) {
 }
 
 /**
+ * 视频段。data 形状和图片差不多（url / file），所以来源解析直接复用 imageSourceOf。
+ * 唯一区别：get_file 只认图片和语音的缓存，视频拿不到本地路径。
+ */
+export function videoSegmentsOf(segments) {
+  return (segments || []).filter((s) => s?.type === 'video' && (s?.data?.url || s?.data?.file));
+}
+
+/**
  * 一张图的来源。SnowLuma 给的东西不固定，三种都认：
  *   data.url  = http(s) 链接 → 下载
  *   data.url  = file:// 或磁盘路径 → 直接读
