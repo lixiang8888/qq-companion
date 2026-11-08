@@ -1,7 +1,7 @@
 // 会话层：多轮上下文、压缩触发、压缩失败不丢历史。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createLocalSession } from '../src/session.js';
+import { createLocalSession, stampOf, withStamps } from '../src/session.js';
 
 function fake({ reply = '嗯', summary = '早先聊过猫' } = {}) {
   const calls = [];
@@ -201,4 +201,59 @@ test('空回复不当成 assistant 空消息', async () => {
   const r = await s.prompt('p', '在吗');
   assert.equal(r, '');
   assert.equal(s.session || true, true);
+});
+
+// 「刚刚」那次事故：前天晚上的抱怨，她第二天说成「刚还嫌我不理你」。
+// 原因不是她记错，是拼 messages 时把 at 丢掉了——中间那 47 小时在她眼里不存在。
+const at = (d, h, m = 0) => new Date(2026, 10, d, h, m, 0).getTime();
+const NOW = at(8, 21, 10);
+
+test('时间戳：只标断层处——第一条、以及隔了半小时以上的那条', () => {
+  const out = withStamps([
+    { role: 'user', text: '前天那句', at: at(6, 21, 44) },
+    { role: 'assistant', text: '前天我回的', at: at(6, 21, 45) },
+    { role: 'user', text: '喵喵喵', at: at(8, 21, 4) },
+    { role: 'assistant', text: '喵什么', at: at(8, 21, 5) },
+  ], NOW);
+
+  assert.match(out[0].text, /^（前天 21:44）前天那句$/);
+  assert.equal(out[1].text, '前天我回的', '紧接着的那句不加，省 token');
+  assert.match(out[2].text, /^（今天 21:04）喵喵喵$/);
+  assert.equal(out[3].text, '喵什么');
+});
+
+test('时间戳：昨天 / 前天 / 几天前 / 更早', () => {
+  assert.equal(stampOf(at(8, 9, 5), NOW), '今天 09:05');
+  assert.equal(stampOf(at(7, 23, 5), NOW), '昨天 23:05');
+  assert.equal(stampOf(at(6, 21, 44), NOW), '前天 21:44');
+  assert.equal(stampOf(at(4, 8, 0), NOW), '4 天前 08:00');
+  assert.equal(stampOf(at(1, 8, 0), NOW), '11-01 08:00');
+});
+
+test('加了时间戳之后，模型看到的历史里真的有那 47 小时的断层', async () => {
+  const { calls, complete } = fake();
+  const s = createLocalSession({
+    complete, system: '', now: () => NOW,
+    initial: { history: [
+      { role: 'user', text: '我不说话，你就不会主动找我是吧', at: at(6, 21, 44) },
+      { role: 'assistant', text: '你自己不说话', at: at(6, 21, 45) },
+    ] },
+  });
+  await s.prompt('p', '喵喵喵');
+  const sent = calls[0].messages;
+  assert.match(sent[0].text, /（前天 21:44）/);
+  assert.match(calls[0].system, /关于时间/, 'system 里要告诉她括号是什么');
+});
+
+test('压缩的入参也带时间，摘要才不会把旧事洗成永远新鲜', async () => {
+  const { calls, complete } = fake({ summary: '他前天嫌我不主动' });
+  const s = createLocalSession({
+    complete, system: '', now: () => NOW, compactAt: 1, keepRecent: 1,
+    initial: { history: [{ role: 'user', text: '我不说话你就不会主动找我是吧', at: at(6, 21, 44) }] },
+  });
+  await s.prompt('p', '喵喵喵');
+  const summaryCall = calls.find((c) => /压成一段摘要/.test(c.system || ''));
+  assert.ok(summaryCall, '应该触发压缩');
+  assert.match(summaryCall.messages[0].text, /前天 21:44/);
+  assert.match(summaryCall.system, /什么时候/);
 });

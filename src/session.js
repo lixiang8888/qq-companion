@@ -6,6 +6,43 @@
 
 const SUMMARY_MAX_CHARS = 1200;
 const SYSTEM_SUFFIX = '你正在和一个特定的人私下聊天。状态只影响语气，不要说出来。';
+// 断层阈值：隔了半小时以上才值得标一次时间。每句都标既贵又像日志。
+const GAP_MS = 30 * 60e3;
+
+/**
+ * 一句话说的时刻，相对「现在」现算。
+ * 现算而不是存下来：昨天打的「今天」今天就成了假话。
+ */
+export function stampOf(at, now = 0) {
+  const d = new Date(Number(at) || Number(now));
+  const n = new Date(Number(now) || Date.now());
+  const midnight = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((midnight(n) - midnight(d)) / 864e5);
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  if (days <= 0) return `今天 ${hm}`;
+  if (days === 1) return `昨天 ${hm}`;
+  if (days === 2) return `前天 ${hm}`;
+  if (days < 7) return `${days} 天前 ${hm}`;
+  return `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, '0')} ${hm}`;
+}
+
+/**
+ * 给历史打时间戳：只在断层处打——第一条，以及和上一条隔了半小时以上的那条。
+ *
+ * 为什么必须有这一步：以前 history 存了 at，拼 messages 时却只取 {role,text}，
+ * 于是「前天晚上他嫌我不主动」和「刚才他发了两个么么」在她眼里是紧挨着的两句，
+ * 她把两天前的事说成了「刚刚」。
+ */
+export function withStamps(history = [], now = 0, { gapMs = GAP_MS } = {}) {
+  let prev = 0;
+  return (history || []).map((m) => {
+    const at = Number(m?.at) || 0;
+    const need = !prev || !at || at - prev > gapMs;
+    if (at) prev = at;
+    const text = String(m?.text ?? '');
+    return { role: m?.role, text: need ? `（${stampOf(at || now, now)}）${text}` : text };
+  });
+}
 
 // 记忆使用协议（dsh-memory-core 的五条，MIT，见 THIRD_PARTY_NOTICES.md）：不写进人格，写在系统提示末尾，
 // 因为它约束的是「怎么用记忆」而不是「你是谁」。
@@ -15,6 +52,11 @@ const MEMORY_PROTOCOL = `【关于记忆的规矩】
 3. 提到旧事要能说出是什么时候的；说不出来就别装。
 4. 新说法和旧记忆冲突时，以新的为准。
 5. 不要编造记忆里没有的细节，也不要用记忆去邀功。`;
+
+// 加这一条是因为她真的错过：前天晚上的抱怨，她第二天说成「刚还嫌我不理你」。
+const TIME_NOTE = `【关于时间】
+对话里某句前面带括号（比如「（昨天 21:44）」）的，那是那句话说的时刻；不带括号的就是紧接着上一句。
+说「刚刚」「今天」「昨天」之前先看那个括号——别把前天的事说成刚发生。`;
 
 export function createLocalSession({
   complete,                 // async ({system, messages, maxTokens, temperature}) => string
@@ -39,19 +81,19 @@ export function createLocalSession({
   // 真摘要用「摘要」标签，丢档说明用「更早的对话」标签。
   let droppedNote = '';
 
-  const systemOf = (context = '') => [typeof system === 'function' ? system() : system, SYSTEM_SUFFIX, MEMORY_PROTOCOL, summary ? `【更早的对话摘要】${summary}` : '', droppedNote ? `【更早的对话】${droppedNote}` : '', context]
+  const systemOf = (context = '') => [typeof system === 'function' ? system() : system, SYSTEM_SUFFIX, MEMORY_PROTOCOL, TIME_NOTE, summary ? `【更早的对话摘要】${summary}` : '', droppedNote ? `【更早的对话】${droppedNote}` : '', context]
     .filter(Boolean).join('\n\n');
 
   async function compact() {
     const head = history.slice(0, history.length - keepRecent);
     if (!head.length) return false;
-    const transcript = head.map((m) => `${m.role === 'user' ? '他' : '我'}：${m.text}`).join('\n');
-    let next = '';
+    // 压缩的入参也带时间戳：不带的话，压完这三次之后的旧事就再也没有年龄了。
+    const transcript = withStamps(head, now()).map((m) => `${m.role === 'user' ? '他' : '我'}：${m.text}`).join('\n');    let next = '';
     try {
       // 不要传 temperature：有些推理模型会直接拒绝这个参数，而主对话（不传）是好的——
       // 结果就是「聊天正常、压缩每次都失败」，且失败被静默吞掉。
       next = await complete({
-        system: '把下面这段对话压成一段摘要，给之后的自己看：保留关系变化、约定、他在意的事、没说完的话题；不要评价、不要编。不超过 200 字。',
+        system: '把下面这段对话压成一段摘要，给之后的自己看：保留关系变化、约定、他在意的事、没说完的话题，以及每件事大概是什么时候（今天/昨天/几号）；不要评价、不要编。不超过 200 字。',
         messages: [{ role: 'user', text: transcript }],
         maxTokens: summaryMaxTokens,
       });
@@ -94,7 +136,7 @@ export function createLocalSession({
     if (text.length <= SUMMARY_MAX_CHARS) return text;
     try {
       const squeezed = await complete({
-        system: '把下面这段对话摘要再压一次，保留关系变化、约定、他在意的事、没说完的话题；不要评价、不要编。不超过 400 字。',
+        system: '把下面这段对话摘要再压一次，保留关系变化、约定、他在意的事、没说完的话题，以及每件事大概是什么时候；不要评价、不要编。不超过 400 字。',
         messages: [{ role: 'user', text }],
         maxTokens: summaryMaxTokens,
       });
@@ -115,7 +157,7 @@ export function createLocalSession({
 
       const reply = await complete({
         system: systemOf(context),
-        messages: history.map(({ role, text }) => ({ role, text })),
+        messages: withStamps(history, now()),
       });
       const clean = String(reply ?? '').trim();
       // 空回复（被过滤、被掐断）不要写进历史：下一轮模型会看见一条空的「她说过的话」，

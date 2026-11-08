@@ -90,7 +90,9 @@ test('私聊进来 → 拆成两条发回 QQ', async (t) => {
   assert.doesNotMatch(sys.content[0].text, /=>/, '人格被当成函数源码发过去 = 静默失效');
   assert.match(sys.content[0].text, /不要说出口/, '情绪注入块必须进 prompt');
   assert.equal(sent.messages[1].role, 'user');
-  assert.equal(sent.messages[1].content[0].text, '在吗');
+  // 正文前面带一个时间戳（「（今天 21:04）在吗」）——她得知道这句话是什么时候说的。
+  assert.equal(sent.messages[1].content[0].text.replace(/^（[^）]*）/, ''), '在吗');
+  assert.match(sent.messages[1].content[0].text, /^（.+ \d{2}:\d{2}）在吗$/);
 
   await bot.close();
 });
