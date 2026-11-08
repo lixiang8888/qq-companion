@@ -203,6 +203,46 @@ test('空回复不当成 assistant 空消息', async () => {
   assert.equal(s.session || true, true);
 });
 
+// 她以前只看得到「图片识别出来的那段文字」。现在原图只在到达的那一轮跟过去，
+// 历史里仍然是文字——这样她当场能从真实画面反应，之后回想的也不会是过期链接。
+test('原图只贴在最后一条上，历史里不存图片', async () => {
+  const { calls, complete } = fake();
+  const s = createLocalSession({ complete, system: '', now: () => NOW });
+  await s.prompt('p', '第一句');
+  await s.prompt('p', '看这个', { images: ['data:image/jpeg;base64,AAA'] });
+
+  const sent = calls[1].messages;
+  assert.equal(sent.at(-1).images.length, 1, '这一轮末尾要带上原图');
+  assert.ok(!sent.slice(0, -1).some((m) => m.images), '历史里的消息不能带图');
+
+  const hist = s.snapshot().history;
+  assert.ok(hist.every((m) => m.images === undefined), '落盘的历史里没有图片字段');
+});
+
+test('一轮最多带两张图：三连发不该白烧 token', async () => {
+  const { calls, complete } = fake();
+  const s = createLocalSession({ complete, system: '', now: () => NOW });
+  await s.prompt('p', '三张', { images: ['a', 'b', 'c', 'd'] });
+  assert.equal(calls[0].messages.at(-1).images.length, 2);
+});
+
+test('模型不收图片时：去掉图再试一次，不能整轮哑掉', async () => {
+  const seen = [];
+  let n = 0;
+  const complete = async ({ messages }) => {
+    n += 1;
+    seen.push(messages);
+    if (messages.some((m) => m.images)) throw new Error('该模型不支持图片');
+    return '看到了';
+  };
+  const s = createLocalSession({ complete, system: '', now: () => NOW });
+  const r = await s.prompt('p', '看这个', { images: ['data:image/jpeg;base64,AAA'] });
+  assert.equal(r, '看到了');
+  assert.equal(n, 2, '第一次带图失败、第二次去图成功');
+  assert.ok(!seen[1].some((m) => m.images));
+});
+
+
 // 「刚刚」那次事故：前天晚上的抱怨，她第二天说成「刚还嫌我不理你」。
 // 原因不是她记错，是拼 messages 时把 at 丢掉了——中间那 47 小时在她眼里不存在。
 const at = (d, h, m = 0) => new Date(2026, 10, d, h, m, 0).getTime();

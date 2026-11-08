@@ -49,7 +49,10 @@ export function createCompanion({ load, save, session, ownerQQ = '', now = Date.
       const memory = await memoryBlock(msg, { mood: st.emotion }).catch(() => '');
       // 「她此刻在干什么」由 host 拼（要读 life.json、要问她），这里只负责接上去。
       const life = await extraContext().catch(() => '');
-      const reply = await session.prompt(msg.chatId, msg.text, { context: [context, life, memory].filter(Boolean).join('\n') });
+      const reply = await session.prompt(msg.chatId, msg.text, {
+        context: [context, life, memory].filter(Boolean).join('\n'),
+        images: msg.images,
+      });
 
       return { state: st, context, damage: a.damage, hash: stateHash(st), reply };
     },

@@ -25,9 +25,17 @@ export function createLlmComplete(ctx, { provider, model, maxTokens, temperature
     }
     for (const m of messages || []) {
       const text = String(m.text ?? '');
-      list.push(m.role === 'assistant'
-        ? { id: randomUUID(), role: 'assistant', source: { ...assistantSource }, content: [{ type: 'text', text }] }
-        : { role: 'user', content: [{ type: 'text', text }] });
+      const imgs = Array.isArray(m.images) ? m.images.filter(Boolean) : [];
+      if (m.role === 'assistant') {
+        list.push({ id: randomUUID(), role: 'assistant', source: { ...assistantSource }, content: [{ type: 'text', text }] });
+        continue;
+      }
+      // 带图的那一轮：图片块必须排在文字前面（官方要求，反过来会报错）。
+      if (imgs.length) {
+        list.push({ role: 'user', content: [...imgs.map((url) => ({ type: 'image_url', image_url: { url } })), { type: 'text', text }] });
+      } else {
+        list.push({ role: 'user', content: [{ type: 'text', text }] });
+      }
     }
 
     const opts = { provider, model, messages: list };

@@ -14,7 +14,7 @@ import { ANIMATION_PROMPT, MAX_IMAGE_BYTES, dataUrlOf, describeImage, extractGif
 import { MAX_VIDEO_BYTES, VIDEO_PROMPT, findFfmpeg, videoSheet, withVideoText } from './video.js';
 import { extractQuestions, leftoverQuestions, pendingLine } from './topics.js';
 import { createLlmComplete } from './llm.js';
-import { createLocalSession } from './session.js';
+import { createLocalSession, MAX_TURN_IMAGES } from './session.js';
 import { createCompanion } from './companion.js';
 import { initState } from './affect/core.js';
 import { stateLine } from './affect/inject.js';
@@ -613,6 +613,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     if (!key) return { ...msg, text: withImageText(msg.text, [], names) };
 
     const seen = [];
+    // 这一轮真发给她看的原图。她当场看见的是画面本身，之后回想起的仍是那段文字描述。
+    const shown = [];
     for (const seg of segs.slice(0, 2)) {
       let bytes;
       try {
@@ -629,8 +631,11 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       if (anim?.frames?.length > 1) {
         const r = await describeImage({ dataUrls: anim.frames, prompt: ANIMATION_PROMPT, key, fetchImpl, timeoutMs: 45000 });
         seen.push({ ...r, frames: anim.frames.length, pages: anim.pages });
+        shown.push(...anim.frames.slice(0, MAX_TURN_IMAGES));
       } else {
-        seen.push(await describeImage({ dataUrl: dataUrlOf(bytes, mime), key, fetchImpl }));
+        const url = dataUrlOf(bytes, mime);
+        shown.push(url);
+        seen.push(await describeImage({ dataUrl: url, key, fetchImpl }));
       }
     }
     if (!seen.some((d) => d.ok)) log.warn?.(`看图没看成：${seen.map((d) => d.reason).join('；')}`);
@@ -642,7 +647,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         attempts: seen.map((d) => ({ ok: Boolean(d.ok), reason: d.reason || '', text: d.text ? String(d.text).slice(0, 120) : '' })),
       }, null, 2));
     } catch { /* 调试文件写不了也不能影响回话 */ }
-    return { ...msg, text: withImageText(msg.text, seen, names), images: seen };
+    return { ...msg, text: withImageText(msg.text, seen, names), images: shown, looked: seen };
   }
 
   /**

@@ -8,6 +8,8 @@ const SUMMARY_MAX_CHARS = 1200;
 const SYSTEM_SUFFIX = '你正在和一个特定的人私下聊天。状态只影响语气，不要说出来。';
 // 断层阈值：隔了半小时以上才值得标一次时间。每句都标既贵又像日志。
 const GAP_MS = 30 * 60e3;
+// 一轮最多带几张原图。截图/表情包常常三连发，全带上就是几百上千 token 白花。
+export const MAX_TURN_IMAGES = 2;
 
 /**
  * 一句话说的时刻，相对「现在」现算。
@@ -147,7 +149,12 @@ export function createLocalSession({
   }
 
   return {
-    async prompt(chatId, text, { context = '' } = {}) {
+    /**
+     * @param {string[]} [opts.images] 这一轮真的给她看的图（data URL）。
+     *   只贴在最后一条上：她当场看见原图，之后回想的仍是历史里那段文字描述——
+     *   图片字节不进历史，因为签名链接会过期、字节会把 session.json 撑爆。
+     */
+    async prompt(chatId, text, { context = '', images = [] } = {}) {
       history.push({ role: 'user', text: String(text), at: now() });
       if (history.length > compactAt) {
         const ok = await compact();
@@ -155,10 +162,27 @@ export function createLocalSession({
         if (!ok && history.length > compactAt * 3) dropOldest();
       }
 
-      const reply = await complete({
-        system: systemOf(context),
-        messages: withStamps(history, now()),
-      });
+      const msgs = withStamps(history, now());
+      const shown = (Array.isArray(images) ? images : []).filter(Boolean).slice(0, MAX_TURN_IMAGES);
+      if (shown.length && msgs.length) {
+        msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], images: shown };
+      }
+
+      let reply;
+      try {
+        reply = await complete({
+          system: systemOf(context),
+          messages: msgs,
+        });
+      } catch (error) {
+        // 换了个不收图片的模型时，不能因为她看不了图就整轮哑掉：
+        // 去掉图、只留文字再试一次。这一条比「看见原图」重要得多。
+        if (!shown.length) throw error;
+        reply = await complete({
+          system: systemOf(context),
+          messages: msgs.map(({ images, ...rest }) => rest),
+        });
+      }
       const clean = String(reply ?? '').trim();
       // 空回复（被过滤、被掐断）不要写进历史：下一轮模型会看见一条空的「她说过的话」，
       // 只会让她更不会说话。留白就留白，由上层决定发不发。

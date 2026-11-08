@@ -32,6 +32,22 @@ test('把 text-delta 拼成整段；system 放在最前面', async () => {
   assert.equal(sent.messages[1].content[0].text, '在吗');
 });
 
+test('带图的那一轮：图片块排在文字前面（官方要求），文字仍然在里面', async () => {
+  const f = fakeLlm([{ type: 'text-delta', index: 0, text: '嗯' }, { type: 'finish', reason: { kind: 'done' } }]);
+  const complete = createLlmComplete(f, { provider: 'p', model: 'm' });
+  await complete({
+    messages: [
+      { role: 'user', text: '之前那句' },
+      { role: 'user', text: '看这个', images: ['data:image/jpeg;base64,AAA', 'data:image/jpeg;base64,BBB'] },
+    ],
+  });
+  const sent = f.seen[0].messages;
+  assert.deepEqual(sent[0].content.map((c) => c.type), ['text'], '没图的那条不该变形');
+  assert.deepEqual(sent[1].content.map((c) => c.type), ['image_url', 'image_url', 'text']);
+  assert.equal(sent[1].content[0].image_url.url, 'data:image/jpeg;base64,AAA');
+  assert.equal(sent[1].content[2].text, '看这个');
+});
+
 test('reasoning-delta 不进正文', async () => {
   const f = fakeLlm([
     { type: 'reasoning-delta', index: 0, text: '想一想' },

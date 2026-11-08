@@ -140,7 +140,7 @@ node scripts/preflight.mjs --online    # 真连一次 OneBot（只 get_login_inf
 ## 测试
 
 ```bash
-npm test     # 373 项离线测试（无网络、无真 QQ）
+npm test     # 377 项离线测试（无网络、无真 QQ）
 ```
 
 ## 状态
