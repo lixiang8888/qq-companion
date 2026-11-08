@@ -53,7 +53,9 @@ const MEMORY_PROTOCOL = `【关于记忆的规矩】
 2. 记忆可能过期或记错，拿不准就说记不清。
 3. 提到旧事要能说出是什么时候的；说不出来就别装。
 4. 新说法和旧记忆冲突时，以新的为准。
-5. 不要编造记忆里没有的细节，也不要用记忆去邀功。`;
+5. 不要编造记忆里没有的细节，也不要用记忆去邀功。
+6. 记忆是碎片，不是账本：能引用原话就引用（「你说过『等我练出八块腹肌』」）。
+   有碎片但没下结论，不等于「完全记不清」，这是两件事——别把前者说成后者。`;
 
 // 加这一条是因为她真的错过：前天晚上的抱怨，她第二天说成「刚还嫌我不理你」。
 const TIME_NOTE = `【关于时间】
@@ -63,8 +65,8 @@ const TIME_NOTE = `【关于时间】
 export function createLocalSession({
   complete,                 // async ({system, messages, maxTokens, temperature}) => string
   system = '',
-  compactAt = 30,           // 超过这么多条（user+assistant）就压
-  keepRecent = 12,          // 压缩时保留最近这么多条原文
+  compactAt = 40,           // 超过这么多条（user+assistant）就压
+  keepRecent = 16,          // 压缩时保留最近这么多条原文
   // 400 不够：推理模型先用思考占掉一截，正文就空了（真机上确实空过）。
   summaryMaxTokens = 800,
   now = Date.now,

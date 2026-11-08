@@ -1,7 +1,7 @@
 // 消息映射与拆条：协议细节在这里钉死，真机出问题时先怀疑传输层。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeMessage, splitReply } from '../src/message.js';
+import { forwardIdOf, normalizeMessage, renderForward, splitReply } from '../src/message.js';
 
 const base = { post_type: 'message', self_id: 100, time: 1700000000 };
 
@@ -87,4 +87,33 @@ test('括号没闭合也不能卡住：照样切成可发的长度', () => {
 
 test('嵌套括号也不切', () => {
   assert.deepEqual(splitReply('（外面（里面。还有）还是）。', { maxChars: 200 }), ['（外面（里面。还有）还是）。']);
+});
+
+// 合并转发：段里只有一个 id，内容在 get_forward_msg。以前只留「[转发]」两个字，
+// 她只能说「转发过来是空的」。
+test('认出合并转发的 id', () => {
+  assert.equal(forwardIdOf([{ type: 'text', data: { text: '看' } }, { type: 'forward', data: { id: 'abc/==' } }]), 'abc/==');
+  assert.equal(forwardIdOf([{ type: 'text', data: { text: '看' } }]), '');
+  assert.equal(forwardIdOf([{ type: 'forward', data: {} }]), '');
+});
+
+test('把转发里的几条消息压成「谁：说了什么」', () => {
+  const nodes = [
+    { sender: { nickname: '璃湘' }, message: [{ type: 'text', data: { text: '我为什么要去健身' } }] },
+    { sender: { card: '肥鱼' }, message: [{ type: 'text', data: { text: '你想想呗' } }] },
+    { sender: { nickname: '璃湘' }, message: [{ type: 'image', data: { file: 'x.jpg' } }] },
+  ];
+  const out = renderForward(nodes);
+  assert.match(out, /璃湘：我为什么要去健身/);
+  assert.match(out, /肥鱼：你想想呗/, '有群名片的用群名片');
+  assert.match(out, /璃湘：\[图片\]/);
+  assert.equal(renderForward([]), '');
+  assert.equal(renderForward(null), '');
+});
+
+test('转发太长会截断，不把整段聊天记录塞进来', () => {
+  const nodes = Array.from({ length: 20 }, (_, i) => ({ sender: { nickname: 'A' }, message: [{ type: 'text', data: { text: '第' + i + '句' } }] }));
+  const out = renderForward(nodes, { maxNodes: 3, maxChars: 12 });
+  assert.equal(out.split('\n').length, 3, '最多三条');
+  assert.match(out, /…（后面还有）$/);
 });

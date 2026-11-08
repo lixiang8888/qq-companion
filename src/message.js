@@ -132,6 +132,32 @@ export function replyIdOf(segments) {
   return id === undefined || id === null || id === '' ? '' : String(id);
 }
 
+/**
+ * 合并转发的资源 id。转发段里只有 id，内容要另查 `get_forward_msg`。
+ * 以前这里把 whole 段压成「[转发]」两个字，她就只能说「转发过来是空的」。
+ */
+export function forwardIdOf(segments) {
+  const seg = (segments || []).find((s) => s?.type === 'forward' && s?.data?.id);
+  return seg ? String(seg.data.id) : '';
+}
+
+/** 把转发进来的几条消息压成「谁：说了什么」。图/表情只留标签，不假装看过。 */
+export function renderForward(nodes, { maxNodes = 8, maxChars = 600 } = {}) {
+  const lines = [];
+  for (const n of (Array.isArray(nodes) ? nodes : []).slice(0, maxNodes)) {
+    const who = String(n?.sender?.card || n?.sender?.nickname || '某人');
+    const body = (Array.isArray(n?.message) ? n.message : [])
+      .map(segText)
+      .join('')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (body) lines.push(`${who}：${body}`);
+  }
+  const out = lines.join('\n');
+  if (!out) return '';
+  return out.length > maxChars ? `${out.slice(0, maxChars)}…（后面还有）` : out;
+}
+
 /** 把被引用的消息压成一行，用作「他是在回复『…』」里的那句话。 */
 export function quoteLine(message, max = 60) {
   const text = (Array.isArray(message) ? message : [])

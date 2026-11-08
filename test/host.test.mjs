@@ -746,3 +746,46 @@ test('日记：23 点前写的是昨天，不会把今天写成昨天', async ()
   tick(24 * 3600e3); // 到 10-28 10:00：这时该补的是 10-27
   assert.equal(await host.diary.refresh(), '2026-10-27');
 });
+
+test('她的当下：输出预算给够了，不会被推理吃掉（60 那次就是这么空的）', async () => {
+  const { ctx, host } = lifeSetup(['在收拾东西|30']);
+  await host.life.refresh();
+  assert.ok(ctx.calls[0].maxTokens >= 200, `定当下只给了 ${ctx.calls[0].maxTokens} token，推理模型会返回空`);
+});
+
+test('合并转发：里面的聊天记录她真的读得到', async () => {
+  const asked = [];
+  const fetchImpl = async (url, init) => {
+    if (String(url).endsWith('/get_forward_msg')) {
+      asked.push(String(init?.body || ''));
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: 'ok',
+          retcode: 0,
+          data: {
+            messages: [
+              { sender: { nickname: '璃湘' }, message: [{ type: 'text', data: { text: '我为什么要去健身' } }] },
+              { sender: { nickname: '肥鱼' }, message: [{ type: 'text', data: { text: '你想想呗' } }] },
+            ],
+          },
+        }),
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
+  };
+  const { ctx, host } = lifeSetup(['嗯'], 0, { fetchImpl, mergeWindowMs: 0 });
+
+  await host.handleEvent({
+    post_type: 'message', message_type: 'private', user_id: 42, time: 1000,
+    message: [{ type: 'forward', data: { id: 'RES_ID_1' } }],
+  });
+
+  assert.equal(asked.length, 1, '应该去查了一次转发内容');
+  assert.match(asked[0], /RES_ID_1/);
+  const sent = ctx.calls[0].messages.filter((m) => m.role === 'user').at(-1);
+  const text = sent.content.map((c) => c.text || '').join('');
+  assert.match(text, /璃湘：我为什么要去健身/, '转发的正文要进她的上下文');
+  assert.match(text, /不是他说的/, '得说清这些话不是他说的');
+});

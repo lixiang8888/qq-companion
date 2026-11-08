@@ -9,7 +9,7 @@ import { join } from 'node:path';
 
 import { createJsonStore } from './store.js';
 import { createOneBot, sendText } from './onebot.js';
-import { normalizeMessage, quoteLine, replyIdOf, splitReply } from './message.js';
+import { forwardIdOf, normalizeMessage, quoteLine, renderForward, replyIdOf, splitReply } from './message.js';
 import { ANIMATION_PROMPT, MAX_IMAGE_BYTES, dataUrlOf, describeImage, extractGifFrames, imageSegmentsOf, imageSourceOf, mimeOf, sniffMime, videoSegmentsOf, withImageText } from './vision.js';
 import { MAX_VIDEO_BYTES, VIDEO_PROMPT, findFfmpeg, videoSheet, withVideoText } from './video.js';
 import { extractQuestions, leftoverQuestions, pendingLine } from './topics.js';
@@ -95,7 +95,7 @@ const DEFAULT_CONFIG = {
   onebot: { httpUrl: 'http://127.0.0.1:3000', wsUrl: 'ws://127.0.0.1:3001', token: '' },
   model: { provider: '', model: '' },
   persona: '小鲸鱼',
-  session: { compactAt: 30, keepRecent: 12, replyDelayMs: 800 },
+  session: { compactAt: 40, keepRecent: 16, replyDelayMs: 800 },
   // 余额低于这个数，她才会主动提钱。
   budget: { lowBalance: 5 },
   proactive: { ...PROACTIVE_DEFAULTS },
@@ -230,8 +230,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   const session = createLocalSession({
     complete,
     system: () => personaText(personaDir, config.persona),
-    compactAt: config.session?.compactAt ?? 30,
-    keepRecent: config.session?.keepRecent ?? 12,
+    compactAt: config.session?.compactAt ?? 40,
+    keepRecent: config.session?.keepRecent ?? 16,
     now,
     initial: sessionStore.load(),
     persist: (snap) => sessionStore.save(snap),
@@ -357,7 +357,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
 
   async function askLife(t) {
     try {
-      const text = await complete({ system: LIFE_PROMPT, messages: [{ role: 'user', text: lifeFacts(t) }], maxTokens: 60 });
+      // 60 不够：推理模型先用思考吃掉预算，正文就是空的——她于是永远定不下「我此刻在干什么」。
+    const text = await complete({ system: LIFE_PROMPT, messages: [{ role: 'user', text: lifeFacts(t) }], maxTokens: 300 });
       return parsePlan(text);
     } catch (e) {
       log.warn?.(`定不下她的当下：${e.message}`);
@@ -735,6 +736,25 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     }
   }
 
+  /**
+   * 他转发了聊天记录：转发段里只有一个 id，内容在 `get_forward_msg` 里。
+   * 以前只留「[转发]」两个字，她只能说「转发过来是空的」。
+   * 明确写出「不是他说的」——转发里的话可能是任何人的，别让她当成他的态度。
+   */
+  async function withForward(msg) {
+    const id = forwardIdOf(msg.segments);
+    if (!id) return msg;
+    try {
+      const r = await onebot.call('get_forward_msg', { id });
+      const body = renderForward(r?.messages);
+      if (!body) return { ...msg, text: `${msg.text}（他转发了一段聊天记录，但里面没读出文字）` };
+      return { ...msg, text: `${msg.text}（他转发了一段聊天记录，下面这些话不是他说的：\n${body}）` };
+    } catch (e) {
+      log.warn?.(`查转发内容失败：${e.message}`);
+      return { ...msg, text: `${msg.text}（他转发了一段聊天记录，但你没拿到内容——就说看不到，别猜）` };
+    }
+  }
+
   async function handleEvent(ev) {
     const msg = normalizeMessage(ev);
     if (!msg || msg.kind !== 'private') return { ignored: 'not-private' };
@@ -744,13 +764,14 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     if (msg.text.length > MAX_INBOUND_CHARS) {
       msg.text = `${msg.text.slice(0, MAX_INBOUND_CHARS)}…（后面太长，没看完）`;
     }
-    // 只有带图、带视频或带引用时才先异步补信息；纯文本必须同步入队，
+    // 只有带图、带视频、带转发或带引用时才先异步补信息；纯文本必须同步入队，
     // 否则连发合并的窗口会晚一个微任务才开（测试钉着这条）。
     const needsWork = imageSegmentsOf(msg.segments).length > 0
       || videoSegmentsOf(msg.segments).length > 0
+      || Boolean(forwardIdOf(msg.segments))
       || Boolean(replyIdOf(msg.segments));
     if (!needsWork) return mailbox.push(msg);
-    return mailbox.push(await withQuote(await withImages(await withVideos(msg))));
+    return mailbox.push(await withQuote(await withImages(await withVideos(await withForward(msg)))));
   }
 
   /** 一轮：可能来自一条消息，也可能是刚才连发的几条。 */
@@ -931,7 +952,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         const text = await complete({
           system: `${personaText(personaDir, config.persona)}\n\n你在自己的空间里回别人的评论。`,
           messages: [{ role: 'user', text: composeCommentPrompt({ post: qz.lastText || '', comment: c.text }) }],
-          maxTokens: 60,
+          // 同上：一句话的评论也要给够预算，不然推理吃掉之后她就是「想回但没回」。
+          maxTokens: 200,
         });
         parsed = parseCommentReply(text);
       } catch (e) {

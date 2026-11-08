@@ -61,7 +61,7 @@ token 那一格留空表示「不改」。
   },
   "model": { "provider": "", "model": "" },   // 留空 = 用 DSH 的第一个 provider/model
   "persona": "小鲸鱼",
-  "session": { "compactAt": 30, "keepRecent": 12, "replyDelayMs": 800 },
+  "session": { "compactAt": 40, "keepRecent": 16, "replyDelayMs": 800 },
   "budget": { "lowBalance": 5 },             // 余额低于这个数，她才会主动提钱
   "proactive": {
     "enabled": true,         // 关掉她就一次都不会先开口
@@ -140,7 +140,7 @@ node scripts/preflight.mjs --online    # 真连一次 OneBot（只 get_login_inf
 ## 测试
 
 ```bash
-npm test     # 377 项离线测试（无网络、无真 QQ）
+npm test     # 382 项离线测试（无网络、无真 QQ）
 ```
 
 ## 状态
