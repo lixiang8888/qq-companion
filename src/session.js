@@ -72,6 +72,7 @@ export function createLocalSession({
   now = Date.now,
   initial = null,           // 上次落盘的状态：{summary, history, compactions}
   persist = null,           // (snapshot) => void，每轮之后调用
+  onMessage = null,         // ({role,text,at}) => void，每条真的进历史的话都记一笔（归档用）
 } = {}) {
   if (typeof complete !== 'function') throw new Error('createLocalSession 需要 complete()');
 
@@ -92,7 +93,8 @@ export function createLocalSession({
     const head = history.slice(0, history.length - keepRecent);
     if (!head.length) return false;
     // 压缩的入参也带时间戳：不带的话，压完这三次之后的旧事就再也没有年龄了。
-    const transcript = withStamps(head, now()).map((m) => `${m.role === 'user' ? '他' : '我'}：${m.text}`).join('\n');    let next = '';
+    const transcript = withStamps(head, now()).map((m) => `${m.role === 'user' ? '他' : '我'}：${m.text}`).join('\n');
+    let next = '';
     try {
       // 不要传 temperature：有些推理模型会直接拒绝这个参数，而主对话（不传）是好的——
       // 结果就是「聊天正常、压缩每次都失败」，且失败被静默吞掉。
@@ -157,7 +159,10 @@ export function createLocalSession({
      *   图片字节不进历史，因为签名链接会过期、字节会把 session.json 撑爆。
      */
     async prompt(chatId, text, { context = '', images = [] } = {}) {
-      history.push({ role: 'user', text: String(text), at: now() });
+      const at = now();
+      history.push({ role: 'user', text: String(text), at });
+      // 归档在压缩之前：压缩会把原文吃掉，而这里正是原文还在的那一瞬。
+      try { onMessage?.({ role: 'user', text: String(text), at }); } catch { /* 归档失败不影响回话 */ }
       if (history.length > compactAt) {
         const ok = await compact();
         // 压不动就别硬扛：历史涨到三倍阈值还失败，丢老的保命。
@@ -188,7 +193,11 @@ export function createLocalSession({
       const clean = String(reply ?? '').trim();
       // 空回复（被过滤、被掐断）不要写进历史：下一轮模型会看见一条空的「她说过的话」，
       // 只会让她更不会说话。留白就留白，由上层决定发不发。
-      if (clean) history.push({ role: 'assistant', text: clean, at: now() });
+      if (clean) {
+        const at2 = now();
+        history.push({ role: 'assistant', text: clean, at: at2 });
+        try { onMessage?.({ role: 'assistant', text: clean, at: at2 }); } catch { /* 归档失败不影响回话 */ }
+      }
       save();
       return clean;
     },
@@ -202,6 +211,7 @@ export function createLocalSession({
       const clean = String(text ?? '').trim();
       if (!clean) return false;
       history.push({ role, text: clean, at });
+      try { onMessage?.({ role, text: clean, at }); } catch { /* 归档失败不影响回话 */ }
       save();
       return true;
     },

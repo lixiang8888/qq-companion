@@ -125,6 +125,7 @@ node scripts/preflight.mjs --online    # 真连一次 OneBot（只 get_login_inf
   weather.json         外面的天气（半小时一次，实测值）
   facts.json           她查过的事 + 来源（一天内算新鲜）
   video-debug.json     最近一次看视频的结果（几帧、失败原因）
+  transcript-2026-11.jsonl  聊天原文归档（按月一个文件，只追加）
   diary/*.md           她自己写的日记
   personas/*.md        人格卡
 ```
@@ -140,7 +141,7 @@ node scripts/preflight.mjs --online    # 真连一次 OneBot（只 get_login_inf
 ## 测试
 
 ```bash
-npm test     # 382 项离线测试（无网络、无真 QQ）
+npm test     # 393 项离线测试（无网络、无真 QQ）
 ```
 
 ## 状态

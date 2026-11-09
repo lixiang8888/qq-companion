@@ -27,6 +27,7 @@ import { createMailbox, DEFAULT_WINDOW_MS, mergeTexts } from './mailbox.js';
 import { applyInsights, composePrompt as insightsPrompt, createInsights, dueInsights, parseInsights, renderInsights } from './insights.js';
 import { composeCommentPrompt, composePostPrompt, decidePost, notePosted, parseCommentReply, parsePostReply } from './qzone-post.js';
 import { comment as qzoneComment, detail as qzoneDetail, freshComments, publish as qzonePublish, remove as qzoneRemove } from './qzone.js';
+import { appendTranscript, looksLikeRecall, readTranscript, recallLine, searchTranscript } from './transcript.js';
 import { renderPanel } from './panel.js';
 import { rollbackTraits } from './affect/personality.js';
 import { replyPlan } from './affect/behavior.js';
@@ -106,6 +107,8 @@ const DEFAULT_CONFIG = {
   search: { enabled: false, key: '', maxPerDay: 5 },
   // 看视频：抽帧要 ffmpeg。ffmpeg 留空则依次找 <dataDir>/bin/ 和 PATH。
   video: { enabled: true, ffmpeg: '', maxSeconds: 90 },
+  // 聊天原文归档（按月一个 jsonl）：压缩之后能翻回原话的唯一地方。
+  transcript: { enabled: true },
 };
 
 export function defaultDataDir() {
@@ -237,6 +240,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     now,
     initial: sessionStore.load(),
     persist: (snap) => sessionStore.save(snap),
+    // 每条原文都进归档：压缩之后她就只剩摘要，唯一能翻回原话的地方就是这里。
+    onMessage: (m) => { if (config.transcript?.enabled !== false) appendTranscript(dataDir, m); },
   });
 
   const onebot = createOneBot({
@@ -248,6 +253,22 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
 
   // 他问过、她还没答的问题。内存里存着就够：重启后丢掉，比追一笔旧账好。
   let pendingQuestions = [];
+  // 这一轮「翻到的原话」。只有他明显在回忆时才去翻，翻完这一轮就清掉。
+  let recallLines = '';
+
+  /** 他在回忆（记得/上次/之前/说过…）时，去归档里翻几句原话出来。 */
+  async function recallFor(text) {
+    if (config.transcript?.enabled === false) return '';
+    if (!looksLikeRecall(text)) return '';
+    try {
+      const rows = readTranscript(dataDir, { now: now() });
+      const hits = searchTranscript(rows, text, { exclude: text });
+      return recallLine(hits, { now: now() });
+    } catch (e) {
+      log.warn?.(`翻聊天记录失败：${e.message}`);
+      return '';
+    }
+  }
 
   /**
    * 拉一次 QQ 系统表情名单，把 face 的 id 变成名字（流泪/调皮/……）。
@@ -325,7 +346,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     }
   }
 
-  /** 每轮给她的额外上下文：此刻几点、外面什么天、她查过什么、刚才不在多久、在干什么，加上钱。 */
+  /** 每轮给她的额外上下文：此刻几点、外面什么天、她查过什么、翻到的原话、刚才不在多久、在干什么，加上钱。 */
   async function contextBlock() {
     const t = now();
     // 过期就当场问一次：她开口时天气应该是当下的，而不是十分钟前的。
@@ -340,6 +361,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       clockLine(t),
       weatherTextLine,
       factLine(latestFact(factsStore.load(), t)),
+      recallLines,
       awakeLine(),
       renderInsights(insightsStore.load()),
       (await lifeBlock()),
@@ -828,6 +850,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const msg = { ...batch.last, text: mergeTexts(batch.texts), parts: batch.texts };
     // 他出声了：连发改零，等着的那个期待点作废。
     pokeStore.save(noteSaidByUser(pokeStore.load()));
+    // 他在回忆就先去翻旧账（不是回忆就清空，免得把上一轮的原话带进这一轮）。
+    recallLines = await recallFor(msg.text);
     // 这一轮的问题：最后一条是她在答的，前面的挂到下一轮。
     const asked = extractQuestions(batch.texts.join(''));
     const r = await companion.handleMessage(msg);
@@ -849,11 +873,11 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       history: session.snapshot().history,
       cfg: { ...PROACTIVE_DEFAULTS, ...(config.proactive || {}) },
     }));
+    recallLines = ''; // 原话只活这一轮：下一轮要么重新翻，要么没有
     return { ...r, sent: parts.length, plan, merged: batch.texts.length };
   }
 
-  const saveConfig = (patch = {}) => {
-    const before = { onebot: { ...(config.onebot || {}) }, enabled: config.enabled };
+  const saveConfig = (patch = {}) => {    const before = { onebot: { ...(config.onebot || {}) }, enabled: config.enabled };
     Object.assign(config, patch);
     if (patch.onebot) config.onebot = { ...before.onebot, ...patch.onebot };
     writeFileSync(configFile, JSON.stringify(config, null, 2));
@@ -1281,7 +1305,7 @@ function loadConfig(file, log) {
 /** 嵌套对象按层合并：用户只写 ownerQQ 时，onebot 的默认地址不能被整块抹掉。 */
 export function mergeConfig(base, patch) {
   const out = { ...base, ...(patch || {}) };
-  for (const key of ['onebot', 'model', 'session', 'proactive', 'budget', 'weather', 'search', 'video']) {
+  for (const key of ['onebot', 'model', 'session', 'proactive', 'budget', 'weather', 'search', 'video', 'transcript']) {
     if (patch?.[key] && typeof patch[key] === 'object') out[key] = { ...(base?.[key] || {}), ...patch[key] };
   }
   return out;
