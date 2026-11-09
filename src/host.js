@@ -9,7 +9,7 @@ import { join } from 'node:path';
 
 import { createJsonStore } from './store.js';
 import { createOneBot, sendText } from './onebot.js';
-import { forwardIdOf, normalizeMessage, quoteLine, renderForward, replyIdOf, splitReply } from './message.js';
+import { forwardIdOf, normalizeMessage, quoteLine, renderForward, replyIdOf, setEmojiNames, setFaceNames, splitReply } from './message.js';
 import { ANIMATION_PROMPT, MAX_IMAGE_BYTES, dataUrlOf, describeImage, extractGifFrames, imageSegmentsOf, imageSourceOf, mimeOf, sniffMime, videoSegmentsOf, withImageText } from './vision.js';
 import { MAX_VIDEO_BYTES, VIDEO_PROMPT, findFfmpeg, videoSheet, withVideoText } from './video.js';
 import { extractQuestions, leftoverQuestions, pendingLine } from './topics.js';
@@ -151,6 +151,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   const weatherStore = createJsonStore(join(dataDir, 'weather.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
   // 她查过的真事：带来源，一天内算新鲜。
   const factsStore = createJsonStore(join(dataDir, 'facts.json'), { defaults: () => ({ items: [] }), log: (m) => log.warn?.(m) });
+  // QQ 系统表情的 id → 名字。存一份是为了重启后不用再拉一次（一周内都算新）。
+  const facesStore = createJsonStore(join(dataDir, 'faces.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
   const bootAt = now();
   const aliveBefore = Number(aliveStore.load()?.at) || 0;
   aliveStore.save({ at: bootAt });
@@ -246,6 +248,44 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
 
   // 他问过、她还没答的问题。内存里存着就够：重启后丢掉，比追一笔旧账好。
   let pendingQuestions = [];
+
+  /**
+   * 拉一次 QQ 系统表情名单，把 face 的 id 变成名字（流泪/调皮/……）。
+   * 不硬编码：编号一旦对不上，她会把「流泪」说成「白眼」——那比不知道更糟。
+   */
+  let facesReady = false;
+  async function ensureFaceNames({ force = false } = {}) {
+    if (facesReady && !force) return;
+    facesReady = true;
+    const cached = facesStore.load();
+    const fresh = cached?.at && now() - cached.at < 7 * 86400e3;
+    if (cached && (cached.byId || cached.map)) {
+      setFaceNames(cached.byId || cached.map);
+      setEmojiNames(cached.byEmoji || {});
+      if (fresh && !force) return;
+    }
+    try {
+      const r = await onebot.call('fetch_sys_faces', {});
+      const byId = {};
+      const byEmoji = {};
+      for (const pack of r?.packs || []) {
+        for (const e of pack?.emojis || []) {
+          const name = String(e?.q_des || '').replace(/^\//, '').trim();
+          if (!name) continue;
+          const sid = Number(e?.q_sid);
+          if (Number.isFinite(sid)) byId[sid] = name;
+          const code = Number(e?.em_code);
+          if (Number.isFinite(code)) byEmoji[code] = name;
+        }
+      }
+      if (!Object.keys(byId).length && !Object.keys(byEmoji).length) return;
+      setFaceNames(byId);
+      setEmojiNames(byEmoji);
+      facesStore.save({ at: now(), byId, byEmoji, map: byId });
+    } catch (e) {
+      log.warn?.(`拉表情名单失败：${e.message}`);
+    }
+  }
 
   const companion = createCompanion({
     load: () => store.load(),
@@ -620,23 +660,29 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       let bytes;
       try {
         bytes = await imageBytesOf(seg);
-        if (bytes.length > MAX_IMAGE_BYTES) { seen.push({ ok: false, reason: '太大' }); continue; }
+        if (bytes.length > MAX_IMAGE_BYTES) { seen.push({ ok: false, reason: '太大', bytes: bytes.length }); continue; }
       } catch (e) {
         seen.push({ ok: false, reason: e.message });
         continue;
       }
-      // 扩展名会说谎（表情包常是 .jpg 其实是 gif），按字节判断真实格式。
-      const mime = sniffMime(bytes) || mimeOf(String(seg?.data?.url || seg?.data?.file || ''));
+      // 以前这里 sniffMime 认不出就退回「image/jpeg」——那是在说谎。
+      // 超级表情的 url 给的是一个 zip，把它当 jpeg 发出去就是 HTTP 400，一整轮白瞎。
+      const sniffed = sniffMime(bytes);
+      if (!sniffed) {
+        seen.push({ ok: false, reason: '不是图片（多半是表情压缩包）', bytes: bytes.length });
+        continue;
+      }
+      const mime = sniffed;
       // 动图：抽几帧一起看，否则模型只拿到第一帧（真机上「疯狂点头」会变成一张静止的脸）。
       const anim = await extractGifFrames(bytes).catch(() => null);
       if (anim?.frames?.length > 1) {
         const r = await describeImage({ dataUrls: anim.frames, prompt: ANIMATION_PROMPT, key, fetchImpl, timeoutMs: 45000 });
-        seen.push({ ...r, frames: anim.frames.length, pages: anim.pages });
+        seen.push({ ...r, frames: anim.frames.length, pages: anim.pages, bytes: bytes.length, mime });
         shown.push(...anim.frames.slice(0, MAX_TURN_IMAGES));
       } else {
         const url = dataUrlOf(bytes, mime);
         shown.push(url);
-        seen.push(await describeImage({ dataUrl: url, key, fetchImpl }));
+        seen.push({ ...(await describeImage({ dataUrl: url, key, fetchImpl })), bytes: bytes.length, mime });
       }
     }
     if (!seen.some((d) => d.ok)) log.warn?.(`看图没看成：${seen.map((d) => d.reason).join('；')}`);
@@ -645,7 +691,10 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       writeFileSync(join(dataDir, 'vision-debug.json'), JSON.stringify({
         at: now(),
         names,
-        attempts: seen.map((d) => ({ ok: Boolean(d.ok), reason: d.reason || '', text: d.text ? String(d.text).slice(0, 120) : '' })),
+        attempts: seen.map((d) => ({
+          ok: Boolean(d.ok), reason: d.reason || '', text: d.text ? String(d.text).slice(0, 120) : '',
+          bytes: d.bytes || 0, mime: d.mime || '', frames: d.frames || 0,
+        })),
       }, null, 2));
     } catch { /* 调试文件写不了也不能影响回话 */ }
     return { ...msg, text: withImageText(msg.text, seen, names), images: shown, looked: seen };
@@ -820,6 +869,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   if (typeof ctx.effect === 'function') {
     ctx.effect(() => {
       if (autoStart && config.enabled && config.onebot?.wsUrl) onebot.start();
+      // 表情名单：她收不到表情图，至少要知道是哪个表情。只在真跑的时候拉，测试不联网。
+      if (autoStart) ensureFaceNames().catch(() => {});
       return () => onebot.stop();
     }, 'qq-companion: QQ 网关');
   } else if (autoStart && config.enabled && config.onebot?.wsUrl) {

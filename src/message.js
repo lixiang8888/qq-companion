@@ -15,6 +15,34 @@ const SEG_LABEL = {
   markdown: '[卡片]',
 };
 
+// QQ 系统表情的 id → 名字（「流泪」「调皮」这些）。名单从网关注册表里拉一次，不硬编码：
+// 硬编码表一旦编号对不上，她会把「流泪」说成「白眼」，那比不知道更糟。
+let FACE_NAMES = new Map();
+// 商城表情/超级表情走另一套编号（em_code），和 face 的 id 不是一个空间，分开存。
+let EMOJI_NAMES = new Map();
+
+export function setFaceNames(map) {
+  FACE_NAMES = map instanceof Map ? map : new Map(Object.entries(map || {}).map(([k, v]) => [Number(k), v]));
+}
+
+export function setEmojiNames(map) {
+  EMOJI_NAMES = map instanceof Map ? map : new Map(Object.entries(map || {}).map(([k, v]) => [Number(k), v]));
+}
+
+export function faceNameOf(id) {
+  return FACE_NAMES.get(Number(id)) || '';
+}
+
+export function emojiNameOf(id) {
+  return EMOJI_NAMES.get(Number(id)) || '';
+}
+
+/** 表情段自带的那个名字（商城表情常有 summary，比如 [动画表情]）。 */
+function summaryNameOf(data = {}) {
+  const raw = String(data.summary || data.text || '').trim();
+  return raw.replace(/^[\[【]|[\]】]$/g, '').trim();
+}
+
 function segText(seg) {
   if (!seg || typeof seg !== 'object') return '';
   if (seg.type === 'text') return String(seg.data?.text ?? '');
@@ -22,6 +50,20 @@ function segText(seg) {
   if (seg.type === 'at') {
     const name = seg.data?.name ? `@${seg.data.name}` : '@某人';
     return `${name} `;
+  }
+  // 表情：说得出名字就说名字。她看不到图，至少要知道是个什么表情。
+  if (seg.type === 'face') {
+    const name = faceNameOf(seg.data?.id);
+    return name ? `[表情：${name}]` : '[表情]';
+  }
+  if (seg.type === 'mface') {
+    const name = summaryNameOf(seg.data) || emojiNameOf(seg.data?.emoji_id);
+    return name ? `[表情：${name}]` : '[表情]';
+  }
+  // 商城表情其实是 image 段，带 emoji_id——以前一律当 [图片]，等于告诉她"这是张照片"。
+  if (seg.type === 'image' && seg.data?.emoji_id) {
+    const name = emojiNameOf(seg.data.emoji_id) || summaryNameOf(seg.data);
+    return name ? `[表情：${name}]` : '[表情]';
   }
   return SEG_LABEL[seg.type] || `[${seg.type}]`;
 }

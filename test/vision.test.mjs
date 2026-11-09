@@ -115,14 +115,18 @@ test('动图抽帧：单帧图不当动图处理', async () => {
   assert.equal(await extractGifFrames(Buffer.from('x'), { sharpImpl: fake }), null);
 });
 
-test('动图抽帧：多帧时每帧都变成一张 png', async () => {
+test('动图抽帧：多帧时每帧缩成 jpeg，且取单帧必须带 pages:1', async () => {
   const { extractGifFrames } = await import('../src/vision.js');
-  const fake = () => ({
-    metadata: async () => ({ pages: 4 }),
-    png: () => ({ toBuffer: async () => Buffer.from([0x89, 0x50, 0x4e, 0x47]) }),
-  });
+  const seen = [];
+  const out = Buffer.from([0xff, 0xd8, 0xff]);
+  const chain = { resize: () => chain, jpeg: () => chain, toBuffer: async () => out };
+  // 只给 { page } 时 sharp 返回「从这页往下全部」的叠加图：一个 300×11700 的表情包
+  // 会变成 300×8700、1.6MB 的大图，接口直接 400。这条测试钉住 pages:1。
+  const fake = (buf, opts) => { seen.push(opts); return { metadata: async () => ({ pages: 4 }), ...chain }; };
   const r = await extractGifFrames(Buffer.from('x'), { sharpImpl: fake });
   assert.equal(r.pages, 4);
   assert.equal(r.frames.length, 4);
-  assert.ok(r.frames[0].startsWith('data:image/png;base64,'));
+  assert.ok(r.frames[0].startsWith('data:image/jpeg;base64,'), '必须是 jpeg，png 太大');
+  assert.ok(seen.some((o) => o?.page !== undefined && o?.pages === 1), '取单帧必须带 pages:1');
+  assert.ok(seen.every((o) => o?.pages === undefined || o?.pages === 1), '只有 metadata 那次可以不限页数');
 });

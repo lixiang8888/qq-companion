@@ -94,7 +94,12 @@ export async function describeImage({ dataUrl, dataUrls, key, prompt = '', fetch
       }),
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
+    // 400 的正文里通常写着到底哪不对（格式、大小、内容），只报状态码等于什么都没说。
+    if (!res.ok) {
+      const raw = await res.text().catch(() => '');
+      const why = raw.replace(/\s+/g, ' ').trim().slice(0, 120);
+      return { ok: false, reason: `HTTP ${res.status}${why ? `：${why}` : ''}` };
+    }
     const body = await res.json().catch(() => null);
     const text = String(body?.choices?.[0]?.message?.content ?? '').trim();
     if (!text) return { ok: false, reason: '模型没给描述' };
@@ -139,10 +144,14 @@ export function pickFrameIndexes(pages, max = 4) {
 }
 
 /**
- * 动图抽帧：把 GIF / 动态 WebP 拆成几张 PNG。
+ * 动图抽帧：把 GIF / 动态 WebP 拆成几张图。
  * sharp 只在真的需要时才 import——没装或者坏掉的话，退化成「只看第一帧」，不该拖垮回话。
+ *
+ * 一定要缩、一定要转 JPEG：真机上收过一个 300×11700 的表情包，四帧 PNG 合计 3.4 MB，
+ * base64 之后请求体 4.5 MB，接口直接 400——她只能说「还是看不到」。
+ * 表情包是给人瞥一眼的，320px 的 JPEG 足够看清在干嘛。
  */
-export async function extractGifFrames(bytes, { max = 4, sharpImpl = null } = {}) {
+export async function extractGifFrames(bytes, { max = 4, sharpImpl = null, size = 320, budgetBytes = 1_200_000 } = {}) {
   let sharp = sharpImpl;
   if (!sharp) {
     try { sharp = (await import('sharp')).default; } catch { return null; }
@@ -152,9 +161,19 @@ export async function extractGifFrames(bytes, { max = 4, sharpImpl = null } = {}
     const pages = Number(meta?.pages) || 1;
     if (pages <= 1) return null;
     const frames = [];
+    let total = 0;
     for (const page of pickFrameIndexes(pages, max)) {
-      const png = await sharp(bytes, { animated: true, page }).png().toBuffer();
-      frames.push(dataUrlOf(png, 'image/png'));
+      // pages: 1 是必须的。只给 { page } 的话 sharp 返回的是「从这一页开始、往下全部」的叠加图
+      // ——一个 300×11700 的表情包会变成 300×8700、1.6MB 的大图，接口直接 400。
+      const jpg = await sharp(bytes, { animated: true, page, pages: 1 })
+        .resize(size, size, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 80 })
+        .toBuffer();
+      const url = dataUrlOf(jpg, 'image/jpeg');
+      // 预算兜底：攒超了就只留已经拿到的（至少有一帧能看）。
+      if (total + url.length > budgetBytes && frames.length) break;
+      frames.push(url);
+      total += url.length;
     }
     return { pages, frames };
   } catch {
