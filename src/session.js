@@ -62,11 +62,39 @@ const TIME_NOTE = `【关于时间】
 对话里某句前面带括号（比如「（昨天 21:44）」）的，那是那句话说的时刻；不带括号的就是紧接着上一句。
 说「刚刚」「今天」「昨天」之前先看那个括号——别把前天的事说成刚发生。`;
 
+/**
+ * 压缩之后留多少条原文。
+ *
+ * 按时间算，不按条数算：他一个晚上聊四十句，条数阈值当晚就满，整晚的原文被压成一句摘要——
+ * 而「记得住最近这一阵」正是她最该有的东西。所以先问「这些话有多老」，
+ * 老过 keepHours 才值得压；上限 maxRecent 是防跑飞的硬闸。
+ *
+ * keepHours = 0 表示不看时间，只按条数（老行为）。
+ */
+export function recentCount(history = [], now = 0, { keepHours = 0, keepRecent = 16, maxRecent = 0 } = {}) {
+  if (!keepHours) {
+    let keep = keepRecent;
+    if (maxRecent) keep = Math.min(maxRecent, keep);
+    return keep;
+  }
+  const cut = Number(now) - keepHours * 3600e3;
+  let n = 0;
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    if ((Number(history[i]?.at) || 0) < cut) break;
+    n += 1;
+  }
+  let keep = Math.max(keepRecent, n);
+  if (maxRecent) keep = Math.min(maxRecent, keep);
+  return keep;
+}
+
 export function createLocalSession({
   complete,                 // async ({system, messages, maxTokens, temperature}) => string
   system = '',
-  compactAt = 40,           // 超过这么多条（user+assistant）就压
-  keepRecent = 16,          // 压缩时保留最近这么多条原文
+  compactAt = 40,           // 超过这么多条（user+assistant）才考虑压
+  keepRecent = 16,          // 至少保留最近这么多条原文
+  keepHours = 0,            // 比这更年轻的原文不压（0 = 不看时间，只按条数）
+  maxRecent = 0,            // 原文条数硬上限（0 = 不设）
   // 400 不够：推理模型先用思考占掉一截，正文就空了（真机上确实空过）。
   summaryMaxTokens = 800,
   now = Date.now,
@@ -77,7 +105,7 @@ export function createLocalSession({
   if (typeof complete !== 'function') throw new Error('createLocalSession 需要 complete()');
 
   /** @type {{role:'user'|'assistant',text:string,at:number}[]} */
-  let history = Array.isArray(initial?.history) ? initial.history.slice(-keepRecent * 2) : [];
+  let history = Array.isArray(initial?.history) ? initial.history.slice(-(maxRecent || keepRecent * 2)) : [];
   let summary = typeof initial?.summary === 'string' ? initial.summary : '';
   let compactions = Number(initial?.compactions) || 0;
   // 压缩为什么失败：以前这里 catch 完什么都不留，结果 84 条历史、0 次压缩，谁也不知道发生了什么。
@@ -90,7 +118,8 @@ export function createLocalSession({
     .filter(Boolean).join('\n\n');
 
   async function compact() {
-    const head = history.slice(0, history.length - keepRecent);
+    const keep = recentCount(history, now(), { keepHours, keepRecent, maxRecent });
+    const head = history.slice(0, history.length - keep);
     if (!head.length) return false;
     // 压缩的入参也带时间戳：不带的话，压完这三次之后的旧事就再也没有年龄了。
     const transcript = withStamps(head, now()).map((m) => `${m.role === 'user' ? '他' : '我'}：${m.text}`).join('\n');
@@ -114,7 +143,7 @@ export function createLocalSession({
       return false;
     }
     summary = await capSummary(summary ? `${summary}\n${text}` : text);
-    history = history.slice(-keepRecent);
+    history = history.slice(-keep);
     compactions += 1;
     try { persist?.({ summary, history: history.slice(), compactions }); } catch { /* 落盘失败不影响继续 */ }
     return true;
@@ -128,9 +157,10 @@ export function createLocalSession({
    * 到 compactAt×3 还压不动，就丢掉最老的部分保命——有损，但不会让她一直背着全部记录。
    */
   function dropOldest() {
-    const dropped = history.length - keepRecent;
+    const keep = recentCount(history, now(), { keepHours, keepRecent, maxRecent });
+    const dropped = history.length - keep;
     if (dropped <= 0) return false;
-    history = history.slice(-keepRecent);
+    history = history.slice(-keep);
     droppedNote = '（更早的一部分对话没压住，丢了）';
     compactions += 1;
     lastError = { at: now(), message: `压缩失败，已丢弃最老的 ${dropped} 条` };
@@ -164,9 +194,15 @@ export function createLocalSession({
       // 归档在压缩之前：压缩会把原文吃掉，而这里正是原文还在的那一瞬。
       try { onMessage?.({ role: 'user', text: String(text), at }); } catch { /* 归档失败不影响回话 */ }
       if (history.length > compactAt) {
-        const ok = await compact();
-        // 压不动就别硬扛：历史涨到三倍阈值还失败，丢老的保命。
-        if (!ok && history.length > compactAt * 3) dropOldest();
+        // 条数够了也要看年龄：比 keepHours 更年轻的一句都不压。
+        // 不这样的话，一个晚上聊四十句，当晚就把整晚原文压成一句摘要。
+        const tooOld = !keepHours || (Number(history[0]?.at) || 0) < at - keepHours * 3600e3;
+        const overCap = maxRecent > 0 && history.length > maxRecent;
+        if (tooOld || overCap) {
+          const ok = await compact();
+          // 压不动就别硬扛：历史涨到三倍阈值还失败，丢老的保命。
+          if (!ok && history.length > compactAt * 3) dropOldest();
+        }
       }
 
       const msgs = withStamps(history, now());

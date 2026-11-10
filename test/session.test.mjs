@@ -1,7 +1,7 @@
 // 会话层：多轮上下文、压缩触发、压缩失败不丢历史。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createLocalSession, stampOf, withStamps } from '../src/session.js';
+import { createLocalSession, recentCount, stampOf, withStamps } from '../src/session.js';
 
 function fake({ reply = '嗯', summary = '早先聊过猫' } = {}) {
   const calls = [];
@@ -296,4 +296,66 @@ test('压缩的入参也带时间，摘要才不会把旧事洗成永远新鲜',
   assert.ok(summaryCall, '应该触发压缩');
   assert.match(summaryCall.messages[0].text, /前天 21:44/);
   assert.match(summaryCall.system, /什么时候/);
+});
+
+// ---- 留多少原文：按时间，不按条数 ----
+// 以前压缩只看条数：一个晚上聊四十句，当晚整晚原文就被压成一句摘要，
+// 而她最该记住的恰恰是「最近这一阵」。
+
+test('留多少条：keepHours=0 就是老行为，只看条数', () => {
+  const hist = Array.from({ length: 40 }, (_, i) => ({ at: NOW + i, role: 'user', text: 'x' }));
+  assert.equal(recentCount(hist, NOW + 40, { keepRecent: 16 }), 16);
+});
+
+test('留多少条：一天内的全留，超出的只留下限', () => {
+  const hour = 3600e3;
+  const hist = [
+    { at: NOW - 30 * hour, role: 'user', text: '前天' },
+    { at: NOW - 2 * hour, role: 'user', text: '刚才' },
+    { at: NOW - 1 * hour, role: 'user', text: '一小时前' },
+  ];
+  assert.equal(recentCount(hist, NOW, { keepHours: 24, keepRecent: 1 }), 2, '只剩两小时内的两条');
+  assert.equal(recentCount(hist, NOW, { keepHours: 24, keepRecent: 16 }), 16, '下限优先：至少 16 条');
+  assert.equal(recentCount(hist, NOW, { keepHours: 24, keepRecent: 1, maxRecent: 1 }), 1, '硬上限优先');
+});
+
+test('一天之内聊到天亮也不压：当晚的原话一句都不少', async () => {
+  const f = fake();
+  let clock = at(8, 21, 0);
+  const s = createLocalSession({
+    complete: f.complete, system: '', compactAt: 4, keepRecent: 2,
+    keepHours: 24, maxRecent: 200, now: () => clock,
+  });
+  for (let i = 0; i < 10; i += 1) { clock += 60e3; await s.prompt('p', `第${i}句`); }
+  assert.equal(s.snapshot().compactions, 0, '20 条、一小时，条数早过阈值也不该压');
+  assert.equal(s.size, 20);
+  assert.equal(s.snapshot().summary, '');
+});
+
+test('过了时间窗才压，压完剩下的仍然是一天内的原话', async () => {
+  const f = fake();
+  let clock = at(8, 21, 0);
+  const s = createLocalSession({
+    complete: f.complete, system: '', compactAt: 4, keepRecent: 1,
+    keepHours: 24, maxRecent: 200, now: () => clock,
+  });
+  for (let i = 0; i < 10; i += 1) { clock += 60e3; await s.prompt('p', `第${i}句`); }
+  clock += 25 * 3600e3; // 第二天晚上
+  await s.prompt('p', '第二天了');
+  const snap = s.snapshot();
+  assert.ok(snap.compactions >= 1, '老过一天就该压');
+  assert.match(snap.summary, /猫/);
+  assert.equal(snap.history.length, 2, '只剩今天的一问一答：昨天那 20 条已经进摘要');
+});
+
+test('条数硬上限：一天之内也不会无限涨', async () => {
+  const f = fake();
+  let clock = at(8, 21, 0);
+  const s = createLocalSession({
+    complete: f.complete, system: '', compactAt: 2, keepRecent: 1,
+    keepHours: 24, maxRecent: 6, now: () => clock,
+  });
+  for (let i = 0; i < 10; i += 1) { clock += 60e3; await s.prompt('p', `第${i}句`); }
+  assert.ok(s.snapshot().compactions > 0, '到了硬上限还是要压');
+  assert.ok(s.size <= 7, `一天之内的条数也得有闸，实际 ${s.size}`);
 });

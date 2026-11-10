@@ -114,7 +114,7 @@ const DEFAULT_CONFIG = {
   onebot: { httpUrl: 'http://127.0.0.1:3000', wsUrl: 'ws://127.0.0.1:3001', token: '' },
   model: { provider: '', model: '' },
   persona: '小鲸鱼',
-  session: { compactAt: 40, keepRecent: 16, replyDelayMs: 800 },
+  session: { compactAt: 40, keepRecent: 16, keepHours: 24, maxRecent: 160, replyDelayMs: 800 },
   // 余额低于这个数，她才会主动提钱。
   budget: { lowBalance: 5 },
   proactive: { ...PROACTIVE_DEFAULTS },
@@ -255,6 +255,9 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     system: () => personaCore(),
     compactAt: config.session?.compactAt ?? 40,
     keepRecent: config.session?.keepRecent ?? 16,
+    // 一天之内的原话一句都不压：他昨晚说的，今天早上她还得看得见原句。
+    keepHours: config.session?.keepHours ?? 24,
+    maxRecent: config.session?.maxRecent ?? 160,
     now,
     initial: sessionStore.load(),
     persist: (snap) => sessionStore.save(snap),
@@ -1181,6 +1184,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         session: {
           size: session.size,
           compactions: session.snapshot().compactions,
+          keepHours: config.session?.keepHours ?? 24,
           lastError: session.snapshot().lastError || null,
         },
       };

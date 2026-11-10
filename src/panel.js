@@ -182,7 +182,7 @@ ${section('记忆', `<p>共 ${mem.total} 条（清晰 ${mem.vivid || 0} / 清楚
 ${section('最近想起', recalls.length    ? `<ul>${recalls.map((r) => `<li><span class="tag">${escapeHtml(new Date(r.at).toLocaleTimeString())}</span>「${escapeHtml(r.query)}」→ ${r.picks.length ? r.picks.map((t) => escapeHtml(t)).join('、') : '<span class="dim">没想起什么</span>'}</li>`).join('')}</ul>`
     : '<p class="dim">还没有聊过</p>')}
 ${section('最近对话', chatText)}
-${section('运行', `<p>网关：${escapeHtml(gateway)} · 会话 ${session.size ?? 0} 条 · 已压缩 ${session.compactions ?? 0} 次 · 人格 ${escapeHtml(persona || '未设置')}</p>${session.lastError ? `<p class="dim">上次压缩失败：${escapeHtml(session.lastError.message)}</p>` : ''}`)}
+${section('运行', `<p>网关：${escapeHtml(gateway)} · 会话 ${session.size ?? 0} 条（最近 ${session.keepHours ?? 0} 小时内的原话一句不压）· 已压缩 ${session.compactions ?? 0} 次 · 人格 ${escapeHtml(persona || '未设置')}</p>${session.lastError ? `<p class="dim">上次压缩失败：${escapeHtml(session.lastError.message)}</p>` : ''}`)}
 ${section('钱包', moneyText)}
 ${section('设置', `<form method="post" action="config">
   <label>ownerQQ（只回这个人的私聊；不填她谁都不回）<input name="ownerQQ" value="${escapeHtml(cfg.ownerQQ || '')}"></label>
