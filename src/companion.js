@@ -22,7 +22,7 @@ const PATTERN_DELTAS = {
  * @param {string} [o.ownerQQ] 只服务这一个人；留空表示谁都不回（没配主人时宁可不说话）
  * @param {() => number} [o.now]
  * @param {(msg: object) => Promise<string>} [o.memoryBlock] 记忆块（由 meow-memory 或自建提供）
- * @param {() => Promise<string>} [o.extraContext] 「她此刻在干什么」这一类由上层拼的上下文
+ * @param {(msg: object) => Promise<string>} [o.extraContext] 「她此刻在干什么」这一类由上层拼的上下文
  */
 export function createCompanion({ load, save, session, ownerQQ = '', now = Date.now, memoryBlock = async () => '', extraContext = async () => '' }) {
   return {
@@ -47,8 +47,8 @@ export function createCompanion({ load, save, session, ownerQQ = '', now = Date.
 
       const context = buildContext(st);
       const memory = await memoryBlock(msg, { mood: st.emotion }).catch(() => '');
-      // 「她此刻在干什么」由 host 拼（要读 life.json、要问她），这里只负责接上去。
-      const life = await extraContext().catch(() => '');
+      // 「她此刻在干什么」由 host 拼（要读 life.json、要看这一轮是什么场合），这里只负责接上去。
+      const life = await extraContext(msg).catch(() => '');
       const reply = await session.prompt(msg.chatId, msg.text, {
         context: [context, life, memory].filter(Boolean).join('\n'),
         images: msg.images,

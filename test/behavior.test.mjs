@@ -36,3 +36,11 @@ test('条数上限不超过 3：再高兴也不该连发六条', () => {
   const veryHappy = { ...base, mood: { ...base.mood, v: 0.99 } };
   assert.ok(replyPlan(veryHappy).maxParts <= 3);
 });
+
+test('他明确要一段长的：允许破例多发几条，但仍有上限', () => {
+  const calm = replyPlan(base);
+  const long = replyPlan(base, { room: 2 });
+  assert.ok(long.maxParts > calm.maxParts, `他要长的就该多给：${calm.maxParts} → ${long.maxParts}`);
+  assert.ok(long.maxParts <= 5, '破例 ≠ 刷屏');
+  assert.equal(replyPlan(base, { room: 0 }).maxParts, calm.maxParts, '没要长的就一点都不变');
+});

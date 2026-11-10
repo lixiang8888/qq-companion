@@ -789,3 +789,41 @@ test('合并转发：里面的聊天记录她真的读得到', async () => {
   assert.match(text, /璃湘：我为什么要去健身/, '转发的正文要进她的上下文');
   assert.match(text, /不是他说的/, '得说清这些话不是他说的');
 });
+
+// ---- 人格分层 ----
+const NOON = new Date(2026, 0, 1, 14, 0, 0).getTime();
+const say = (raw) => ({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: raw, time: Math.floor(NOON / 1000) });
+
+test('人格卡分层：system 里只有内核和风格默认，情境按这一轮另拼', async () => {
+  const { ctx, host } = lifeSetup(['嗯'], NOON, { mergeWindowMs: 0 });
+  await host.handleEvent(say('在吗'));
+  const sys = systemOf(ctx.calls[0]);
+  assert.match(sys, /大肥鱼/, '内核一个字都不能少');
+  assert.match(sys, /1~10 字/, '风格默认也要在');
+  assert.doesNotMatch(sys, /劝过一次就够/, '中午说「在吗」不该拿到深夜那条情境');
+});
+
+test('他要一段长的：条数放宽，对应的情境也跟着进上下文', async () => {
+  const { ctx, host } = lifeSetup(['那得从很早说起了'], NOON, { mergeWindowMs: 0 });
+  const r = await host.handleEvent(say('给我讲讲你以前的事'));
+  const sys = systemOf(ctx.calls[0]);
+  assert.match(sys, /可以连发几条/, '「讲讲」是明确要一段长的');
+  assert.equal(r.plan.maxParts, 4, '平常心情 2 条，加 2 条余量；不能还是 2');
+});
+
+test('讲道理不是要长内容：不给她破例', async () => {
+  const { ctx, host } = lifeSetup(['嗯'], NOON, { mergeWindowMs: 0 });
+  const r = await host.handleEvent(say('别跟我讲道理'));
+  assert.doesNotMatch(systemOf(ctx.calls[0]), /可以连发几条/);
+  assert.equal(r.plan.maxParts, 2);
+});
+
+test('她绕回来了：连着三轮催睡，第三轮之后要点她一下', async () => {
+  const { ctx, host } = lifeSetup(['去睡吧', '快去睡吧', '去睡啦', '嗯'], NOON, { mergeWindowMs: 0 });
+  await host.handleEvent(say('还不困'));
+  await host.handleEvent(say('再聊会'));
+  await host.handleEvent(say('我不困'));
+  assert.doesNotMatch(systemOf(ctx.calls[0]), /绕回来/, '第一轮就提示会变成噪音');
+  await host.handleEvent(say('真的不困'));
+  assert.match(systemOf(ctx.calls[3]), /你已经绕回来了/);
+});
