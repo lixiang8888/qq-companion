@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DAY_MS, TRAIT_BASE, initState } from '../src/affect/core.js';
-import { eligiblePatterns, monthlyDrift, notePattern, rollbackTraits, traitLine } from '../src/affect/personality.js';
+import { driftLine, eligiblePatterns, monthlyDrift, notePattern, rollbackTraits, traitLine } from '../src/affect/personality.js';
 import { buildContext } from '../src/affect/inject.js';
 
 const T0 = Date.UTC(2026, 0, 5);
@@ -33,7 +33,8 @@ test('月度结算：同月不重复，跨月才漂，且留快照、写叙事',
   assert.ok(next.applied.attachment > 0);
   assert.ok(next.state.self.attachment > TRAIT_BASE.attachment);
   assert.equal(next.state.self.snapshots.length, 1);
-  assert.match(next.state.self.narrative, /在意/);
+  assert.ok(next.state.self.drift?.at, '漂移要记下发生在哪一刻——「最近」靠它才判得出真假');
+  assert.match(driftLine(next.state.self, Date.UTC(2026, 1, 3)), /在意/);
   assert.deepEqual(next.state.self.patterns, {}, '结算后清零');
 
   const again = monthlyDrift(next.state, Date.UTC(2026, 1, 20));
@@ -81,4 +82,26 @@ test('注入：反复漂移之后会说自己变了，且回拉让漂移收敛',
   const text = buildContext(st);
   assert.match(text, /在意|黏/);
   assert.match(text, /不要说出口/);
+});
+
+// ---- 「我最近」的时效 ----
+// 这两条钉住的是同一类错误：一句话生成一次，之后每轮重放，而它的「现在」早就过期了。
+
+test('漂移的「最近」有期限：一个月后不再说，变化交给特质本身说', () => {
+  const at = Date.UTC(2026, 1, 2);
+  const st = initState(at);
+  // 直接造一个够分量的漂移：这条测的是时效，不是怎么漂出来的。
+  st.self.attachment = TRAIT_BASE.attachment + 0.08;
+  st.self.drift = { applied: { attachment: 0.08 }, at };
+  assert.match(driftLine(st.self, at + 7 * DAY_MS), /在意/, '一周内还在说');
+  assert.equal(driftLine(st.self, at + 40 * DAY_MS), '', '一个月后不许再说「最近」');
+  assert.match(traitLine(st), /在意/, '但特质本身还在，只是不再自称「最近」');
+});
+
+test('幅度太小的漂移不说出口：0.005 不配写成一句话', () => {
+  let st = initState(T0);
+  for (let i = 0; i < 13; i++) st = notePattern(st, '被夸', { sensitivity: -0.005 }, T0 + i * DAY_MS);
+  const r = monthlyDrift(st, Date.UTC(2026, 1, 2));
+  assert.ok(r.applied.sensitivity < 0, `确实漂了，实际 ${r.applied.sensitivity}`);
+  assert.equal(driftLine(r.state.self, Date.UTC(2026, 1, 2)), '', '这点变化看不见，就不该说成「我最近没那么在意细节了」');
 });

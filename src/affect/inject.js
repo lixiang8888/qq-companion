@@ -6,7 +6,7 @@
 //
 // 文本要短且顺序固定：它每轮都在 prompt 尾部，变长等于每轮多付 token。
 
-import { traitLine } from './personality.js';
+import { driftLine, traitLine } from './personality.js';
 
 export function moodLabel(v) {
   if (v >= 0.7) return '不错';
@@ -40,17 +40,19 @@ export function stateLine(st) {
 /**
  * 每轮注入块。返回空串表示这轮没什么可说的（状态全在基线）。
  * @param {object} st 已 settle 的状态
+ * @param {number} [now] 现在。人格那句「我最近」要现拼，需要它才判得出过没过期。
  */
-export function buildContext(st) {
+export function buildContext(st, now = 0) {
   const m = moodLabel(st.mood.v);
   const hint = MOOD_HINT[m] || '';
+  const t = Number(now) || Number(st?.self?.at) || 0;
   const parts = [];
   if (hint) parts.push(`心情${m}：${hint}`);
   const g = GUARD_HINT(st.relation.guard);
   parts.push(`${TRUST_HINT(st.relation.trust)}${g ? '，' + g : ''}`);
   // 人格只在偏离基线明显时提一句，否则每天重复同一个形容词会把性格念死。
-  // 有自我叙事时用它（那是「她对自己变化的说法」），没有才退回到特质词。
-  const line = st.self?.narrative ? `（${st.self.narrative}）` : traitLine(st);
+  // 有漂移叙事时用它（那是「她对自己变化的说法」），过期了才退回到特质词。
+  const line = driftLine(st.self, t) || traitLine(st);
   if (line) parts.push(line.replace(/^（|）$/g, ''));
 
   return `（你现在的状态：${parts.join('；')}。这些只影响你怎么说话，不要说出口、不要解释；事实、数字、承诺、对他的评价一个字都不能变。）`;

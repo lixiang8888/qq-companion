@@ -55,7 +55,7 @@ export function initState(now = 0) {
     },
     self: {
       ...TRAIT_BASE, at: now, dayKey: dayKeyOf(now), dayDrift: 0, driftVersion: 0,
-      patterns: {}, snapshots: [], narrative: '', monthKey: monthOf(now),
+      patterns: {}, snapshots: [], monthKey: monthOf(now),
     },
   };
 }

@@ -24,11 +24,12 @@ import { advance, applyPlan, clockOf, createLife, LIFE_PROMPT, lifeLine, offLine
 import { baselineOf, composePrompt, diff as diaryDiff, dueDay, hasDiary, readDiaries, snapshot as diarySnapshot, writeDiary } from './diary.js';
 import { addUsage, createBudget, fetchBalance, moneyBlock, usageOf } from './budget.js';
 import { createMailbox, DEFAULT_WINDOW_MS, mergeTexts } from './mailbox.js';
-import { applyInsights, composePrompt as insightsPrompt, createInsights, dueInsights, parseInsights, renderInsights } from './insights.js';
+import { applyInsights, composePrompt as insightsPrompt, createInsights, dueInsights, insightsLastAt, parseInsights, renderInsights, INSIGHT_TTL } from './insights.js';
 import { composeCommentPrompt, composePostPrompt, decidePost, notePosted, parseCommentReply, parsePostReply } from './qzone-post.js';
 import { comment as qzoneComment, detail as qzoneDetail, freshComments, publish as qzonePublish, remove as qzoneRemove } from './qzone.js';
 import { appendTranscript, looksLikeRecall, readTranscript, recallLine, searchTranscript } from './transcript.js';
 import { STUCK_LINE, looksStuck, situationText, situationsFor, systemPersona } from './persona.js';
+import { HOUR, assemble, blk } from './fresh.js';
 import { renderPanel } from './panel.js';
 import { rollbackTraits } from './affect/personality.js';
 import { replyPlan } from './affect/behavior.js';
@@ -384,19 +385,23 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       : '';
     // 她最近三条回复在说同一件事时点一下。判据是她自己绕圈，不是这一句像不像上一句。
     const said = (session.snapshot().history || []).filter((m) => m.role === 'assistant').map((m) => m.text);
-    return [
-      clockLine(t),
-      situationText(personaFull(), situationsFor(msg?.text, { at: t })),
-      looksStuck(said) ? STUCK_LINE : '',
-      weatherTextLine,
-      factLine(latestFact(factsStore.load(), t)),
-      recallLines,
-      awakeLine(),
-      renderInsights(insightsStore.load()),
-      (await lifeBlock()),
-      pendingLine(pendingQuestions),
-      moneyNow(),
-    ].filter(Boolean).join('\n');
+    const ins = insightsStore.load();
+    // 每一块都交代「生于何时、能活多久」。以前这里是一个裸数组，谁新加一块就默认永久有效——
+    // 周自述和人格叙事都能一年后还在说「最近」。规矩现在由 fresh.js 强制。
+    return assemble([
+      blk('clock', clockLine(t), t),
+      blk('situation', situationText(personaFull(), situationsFor(msg?.text, { at: t })), t),
+      blk('stuck', looksStuck(said) ? STUCK_LINE : '', t),
+      // 天气是几小时前查的：过了半天还在说，就是拿早上的天说下午的话。
+      blk('weather', weatherTextLine, Number(w?.at) || t, 12 * HOUR),
+      blk('facts', factLine(latestFact(factsStore.load(), t)), t),
+      blk('recall', recallLines, t),
+      blk('awake', awakeLine(), t),
+      blk('insights', renderInsights(ins, t), insightsLastAt(ins) || t, INSIGHT_TTL),
+      blk('life', await lifeBlock(), t),
+      blk('pending', pendingLine(pendingQuestions), t),
+      blk('money', moneyNow(), t),
+    ], { now: t });
   }
 
   /**

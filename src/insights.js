@@ -6,6 +6,9 @@
 import { rankForPrompt } from './memory/card.js';
 
 export const WEEK_MS = 7 * 86400e3;
+// 「你最近的想法」能叫「最近」的时限。周更一次，所以两周 = 漏了一轮还能用，
+// 漏两轮就不该再自称「最近」了——那时她已经变了，旧的那句是假的。
+export const INSIGHT_TTL = 14 * 86400e3;
 export const PER_KIND_MAX = 20;
 const TEXT_MAX = 40;
 export const KINDS = ['work', 'us', 'growth'];
@@ -42,7 +45,10 @@ export function parseInsights(text) {
 /** 追加到自己的历史里：同类最多 20 条，留最新的；同样的句子不重复记。 */
 export function applyInsights(ins, lines, now) {
   const prev = Array.isArray(ins?.lines) ? ins.lines : [];
-  const fresh = (lines || []).filter((l) => KINDS.includes(l.kind) && l.text && !prev.some((p) => p.kind === l.kind && p.text === l.text));
+  const fresh = (lines || [])
+    .filter((l) => KINDS.includes(l.kind) && l.text && !prev.some((p) => p.kind === l.kind && p.text === l.text))
+    // 每句带自己的时刻：整份文件只记「上次什么时候写的」，一句可能是三周前写的。
+    .map((l) => ({ kind: l.kind, text: l.text, at: now }));
   let next = [...prev, ...fresh];
   for (const kind of KINDS) {
     const mine = next.filter((l) => l.kind === kind);
@@ -54,11 +60,24 @@ export function applyInsights(ins, lines, now) {
   return { at: now, lines: next };
 }
 
-/** 注入用：三类各取最新一句，拼成一行。没有就返回空串（不写占位句）。 */
-export function renderInsights(ins) {
+/** 这一句写于何时。老文件没有逐句的时刻，就退回整份文件的时刻。 */
+export const lineAt = (line, ins) => Number(line?.at) || Number(ins?.at) || 0;
+
+/** 她最近的想法里，最新那句写于何时（给上下文块当 at 用）。 */
+export function insightsLastAt(ins) {
+  return (ins?.lines || []).reduce((max, l) => Math.max(max, lineAt(l, ins)), 0);
+}
+
+/**
+ * 注入用：三类各取最新一句，拼成一行。没有就返回空串（不写占位句）。
+ * @param {number} [now] 现在。过了 INSIGHT_TTL 的句子不再算「最近的想法」，直接丢掉。
+ */
+export function renderInsights(ins, now = 0) {
+  const t = Number(now) || Number(ins?.at) || 0;
+  const alive = (l) => !(t && t - lineAt(l, ins) >= INSIGHT_TTL);
   const parts = [];
   for (const kind of KINDS) {
-    const mine = (ins?.lines || []).filter((l) => l.kind === kind);
+    const mine = (ins?.lines || []).filter((l) => l.kind === kind && alive(l));
     if (!mine.length) continue;
     parts.push(`${LABEL[kind]}：${mine[mine.length - 1].text}`);
   }

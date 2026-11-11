@@ -127,7 +127,7 @@ test('面板：她的房间——关机多久也写上（她唯一亲身经历�
 test('面板：空记忆/空人格也不崩', () => {
   const html = renderPanel({ state: initState(T0), memory: createCard(T0), now: T0 });
   assert.match(html, /记忆卡还是空的/);
-  assert.match(html, /还没有发生过漂移/);
+  assert.match(html, /最近没变过/);
 });
 
 test('面板：她的房间——此刻在做什么、到几点', () => {

@@ -10,6 +10,7 @@ import { moodLabel, stateLine } from './affect/inject.js';
 import { clockOf, gapText } from './life.js';
 import { balanceLine, spendLine } from './budget.js';
 import { renderInsights } from './insights.js';
+import { driftLine } from './affect/personality.js';
 import { weatherLine } from './weather.js';
 
 export function escapeHtml(value) {
@@ -177,7 +178,7 @@ ${section('她会不会来找你', (() => {
   return `<p>期待时间：${escapeHtml(when)}${why}</p>${verdict}`
     + `<p class="dim">今天主动 ${p.count || 0} 次 · 连发没回 ${p.consecutive || 0} 条 · 想过 ${p.thinks?.n || 0} 次</p>${thought}${out}${factText}`;
 })())}
-${section('人格', `${traits}<p class="dim">${escapeHtml(state.self.narrative || '还没有发生过漂移')}</p><p class="dim">待结算的模式：</p>${patternText}<p class="dim">快照 ${(state.self.snapshots || []).length} 版</p>${snaps ? `<ul>${snaps}</ul>` : ''}`)}
+${section('人格', `${traits}<p class="dim">${escapeHtml(driftLine(state.self, now) || '最近没变过')}</p><p class="dim">待结算的模式：</p>${patternText}<p class="dim">快照 ${(state.self.snapshots || []).length} 版</p>${snaps ? `<ul>${snaps}</ul>` : ''}`)}
 ${section('记忆', `<p>共 ${mem.total} 条（清晰 ${mem.vivid || 0} / 清楚 ${mem.clear || 0} / 模糊 ${mem.fuzzy || 0} / 只剩印象 ${mem.trace || 0}），已遗忘 ${mem.forgotten || 0}</p>${memoryList}${staleText}${goneText}`)}
 ${section('最近想起', recalls.length    ? `<ul>${recalls.map((r) => `<li><span class="tag">${escapeHtml(new Date(r.at).toLocaleTimeString())}</span>「${escapeHtml(r.query)}」→ ${r.picks.length ? r.picks.map((t) => escapeHtml(t)).join('、') : '<span class="dim">没想起什么</span>'}</li>`).join('')}</ul>`
     : '<p class="dim">还没有聊过</p>')}

@@ -77,3 +77,19 @@ test('提示词：只给真实记忆，并且允许她写不出来', () => {
 
   assert.equal(composePrompt(createCard(T), { now: T }), '', '没有记忆就什么都不问');
 });
+
+// 「你最近的想法」里的「最近」以前没有任何东西保证。她 11-02 写的那三句，
+// 到 11-20 还在自称「最近」——因为 LABEL 是个常量。
+test('过了时限的句子不再是「最近的想法」', () => {
+  const ins = applyInsights(createInsights(0), [{ kind: 'work', text: '最近总在等他说完话' }], T);
+  assert.match(renderInsights(ins, T + 7 * DAY), /等他说完/, '一周内还算最近');
+  assert.equal(renderInsights(ins, T + 15 * DAY), '', '两周后不许再说「最近」');
+});
+
+test('每句带自己的时刻：新写的那句不会把旧的续命', () => {
+  let ins = applyInsights(createInsights(0), [{ kind: 'work', text: '旧的那句' }], T);
+  ins = applyInsights(ins, [{ kind: 'us', text: '新的那句' }], T + 15 * DAY);
+  const line = renderInsights(ins, T + 15 * DAY);
+  assert.doesNotMatch(line, /旧的那句/, '它两周前写的，已经不算最近了');
+  assert.match(line, /新的那句/);
+});

@@ -45,7 +45,7 @@ export function createCompanion({ load, save, session, ownerQQ = '', now = Date.
       st = monthlyDrift(st, t).state; // 同月是空操作；跨月才结算
       save(st);
 
-      const context = buildContext(st);
+      const context = buildContext(st, t);
       const memory = await memoryBlock(msg, { mood: st.emotion }).catch(() => '');
       // 「她此刻在干什么」由 host 拼（要读 life.json、要看这一轮是什么场合），这里只负责接上去。
       const life = await extraContext(msg).catch(() => '');
