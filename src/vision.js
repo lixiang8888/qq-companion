@@ -10,6 +10,9 @@ export const VISION_MODEL = 'deepseek-flash';
 export const VISION_BASE = 'https://api.deepseek.com';
 /** 保守上限：超过就不看，别为了看图把请求撑爆。 */
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+// 本地文件的读取额度比「发给接口」的上限宽得多：读进来还能压，接口那边可不能收 20MB。
+// 真机上那张「我的天」是 20MB 的 GIF，名字却叫 .jpg——按 8MB 卡掉，她只能说「看不到」。
+export const MAX_LOCAL_BYTES = 64 * 1024 * 1024;
 
 const MIME_BY_EXT = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' };
 
@@ -114,8 +117,7 @@ export async function describeImage({ dataUrl, dataUrls, key, prompt = '', fetch
  * 看不到的时候，如果 QQ 自己带了表情名（summary，例如「[哈哈]」），就把这个名字说出来——
  * 名字是腾讯给的，不是她猜的。
  */
-export function withImageText(text, descriptions = [], names = []) {
-  const usable = descriptions.filter((d) => d?.ok && d.text);
+export function withImageText(text, descriptions = [], names = []) {  const usable = descriptions.filter((d) => d?.ok && d.text);
   if (!usable.length) {
     const known = (names || []).filter(Boolean);
     const hint = known.length ? `他发的表情叫「${known[0]}」` : '他发了一张图';
@@ -132,6 +134,26 @@ export function withImageText(text, descriptions = [], names = []) {
 
 
 
+
+/**
+ * 静态大图先缩小再发。QQ 的「原图」动辄十几兆，直接 base64 过去接口会 400。
+ * 只要第一帧（pages: 1）：这个函数是给「抽帧失败、又不是普通小图」的兜底用的。
+ * 压不动返回 null——宁可说看不到，也不要发一个注定被拒的请求。
+ */
+export async function shrinkImage(bytes, { max = 1024, sharpImpl = null, quality = 78 } = {}) {
+  let sharp = sharpImpl;
+  if (!sharp) {
+    try { sharp = (await import('sharp')).default; } catch { return null; }
+  }
+  try {
+    return await sharp(bytes, { pages: 1 })
+      .resize({ width: max, height: max, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality })
+      .toBuffer();
+  } catch {
+    return null;
+  }
+}
 
 /** 从 pages 帧里挑几张：均匀采样，首尾都取到。 */
 export function pickFrameIndexes(pages, max = 4) {

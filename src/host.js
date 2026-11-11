@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { createJsonStore } from './store.js';
 import { createOneBot, sendText } from './onebot.js';
 import { forwardIdOf, normalizeMessage, quoteLine, renderForward, replyIdOf, setEmojiNames, setFaceNames, splitReply } from './message.js';
-import { ANIMATION_PROMPT, MAX_IMAGE_BYTES, dataUrlOf, describeImage, extractGifFrames, imageSegmentsOf, imageSourceOf, mimeOf, sniffMime, videoSegmentsOf, withImageText } from './vision.js';
+import { ANIMATION_PROMPT, MAX_IMAGE_BYTES, MAX_LOCAL_BYTES, dataUrlOf, describeImage, extractGifFrames, imageSegmentsOf, imageSourceOf, mimeOf, shrinkImage, sniffMime, videoSegmentsOf, withImageText } from './vision.js';
 import { MAX_VIDEO_BYTES, VIDEO_PROMPT, findFfmpeg, videoSheet, withVideoText } from './video.js';
 import { extractQuestions, leftoverQuestions, pendingLine } from './topics.js';
 import { createLlmComplete } from './llm.js';
@@ -715,7 +715,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const src = imageSourceOf(seg);
     if (!src) throw new Error('认不出来源');
     if (src.kind === 'file') {
-      if (statSync(src.value).size > MAX_IMAGE_BYTES) throw new Error('太大');
+      // 本地文件读进来还能压，所以这里的额度是「发给接口」上限的好几倍。
+      if (statSync(src.value).size > MAX_LOCAL_BYTES) throw new Error('太大');
       return readFileSync(src.value);
     }
     const res = await fetchImpl(src.value, { signal: AbortSignal.timeout(20000) });
@@ -743,7 +744,6 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       let bytes;
       try {
         bytes = await imageBytesOf(seg);
-        if (bytes.length > MAX_IMAGE_BYTES) { seen.push({ ok: false, reason: '太大', bytes: bytes.length }); continue; }
       } catch (e) {
         seen.push({ ok: false, reason: e.message });
         continue;
@@ -757,15 +757,23 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       }
       const mime = sniffed;
       // 动图：抽几帧一起看，否则模型只拿到第一帧（真机上「疯狂点头」会变成一张静止的脸）。
-      const anim = await extractGifFrames(bytes).catch(() => null);
+      // 十几兆的大动图只抽两帧：再多也只是多花内存，认得出是什么就够了。
+      const anim = await extractGifFrames(bytes, { max: bytes.length > MAX_IMAGE_BYTES ? 2 : 4 }).catch(() => null);
       if (anim?.frames?.length > 1) {
         const r = await describeImage({ dataUrls: anim.frames, prompt: ANIMATION_PROMPT, key, fetchImpl, timeoutMs: 45000 });
         seen.push({ ...r, frames: anim.frames.length, pages: anim.pages, bytes: bytes.length, mime });
         shown.push(...anim.frames.slice(0, MAX_TURN_IMAGES));
       } else {
-        const url = dataUrlOf(bytes, mime);
+        // 静态大图：先缩小再发。以前这里直接判「太大」跳过，于是十几兆的原图永远看不到。
+        let out = bytes;
+        if (out.length > MAX_IMAGE_BYTES) {
+          const small = await shrinkImage(out);
+          if (!small) { seen.push({ ok: false, reason: '太大且压不小', bytes: out.length, mime }); continue; }
+          out = small;
+        }
+        const url = dataUrlOf(out, sniffMime(out) || mime);
         shown.push(url);
-        seen.push({ ...(await describeImage({ dataUrl: url, key, fetchImpl })), bytes: bytes.length, mime });
+        seen.push({ ...(await describeImage({ dataUrl: url, key, fetchImpl })), bytes: out.length, mime: sniffMime(out) || mime });
       }
     }
     if (!seen.some((d) => d.ok)) log.warn?.(`看图没看成：${seen.map((d) => d.reason).join('；')}`);
