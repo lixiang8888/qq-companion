@@ -11,6 +11,7 @@ import { clockOf, gapText } from './life.js';
 import { balanceLine, spendLine } from './budget.js';
 import { renderInsights } from './insights.js';
 import { driftLine } from './affect/personality.js';
+import { screenLine } from './screen.js';
 import { weatherLine } from './weather.js';
 
 export function escapeHtml(value) {
@@ -38,9 +39,12 @@ function section(title, body) {
 /**
  * @param {{state: object, memory: object, gateway: string, session: object, persona: string, config: object, now: number}} o
  */
-export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', session = {}, history = [], checks = [], persona = '', config = {}, life = null, diaries = [], budget = null, alive = null, insights = null, qzone = null, proactive = null, weather = null, facts = null, now = Date.now() } = {}) {
+export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', session = {}, history = [], checks = [], persona = '', config = {}, life = null, diaries = [], budget = null, alive = null, insights = null, qzone = null, proactive = null, weather = null, facts = null, screen = null, now = Date.now() } = {}) {
   const cfg = config || {};
   const conn = cfg.onebot || {};
+  const screenText = !cfg.screen?.enabled
+    ? '屏幕感知关着（设置里可以打开）'
+    : (screenLine(screen, now) || '开着，但这五分钟没读到');
   const traits = TRAITS.map((k) => {
     const v = state.self[k];
     const dev = v - TRAIT_BASE[k];
@@ -183,7 +187,7 @@ ${section('记忆', `<p>共 ${mem.total} 条（清晰 ${mem.vivid || 0} / 清楚
 ${section('最近想起', recalls.length    ? `<ul>${recalls.map((r) => `<li><span class="tag">${escapeHtml(new Date(r.at).toLocaleTimeString())}</span>「${escapeHtml(r.query)}」→ ${r.picks.length ? r.picks.map((t) => escapeHtml(t)).join('、') : '<span class="dim">没想起什么</span>'}</li>`).join('')}</ul>`
     : '<p class="dim">还没有聊过</p>')}
 ${section('最近对话', chatText)}
-${section('运行', `<p>网关：${escapeHtml(gateway)} · 会话 ${session.size ?? 0} 条（最近 ${session.keepHours ?? 0} 小时内的原话一句不压）· 已压缩 ${session.compactions ?? 0} 次 · 人格 ${escapeHtml(persona || '未设置')}</p>${session.lastError ? `<p class="dim">上次压缩失败：${escapeHtml(session.lastError.message)}</p>` : ''}`)}
+${section('运行', `<p>网关：${escapeHtml(gateway)} · 会话 ${session.size ?? 0} 条（最近 ${session.keepHours ?? 0} 小时内的原话一句不压）· 已压缩 ${session.compactions ?? 0} 次 · 人格 ${escapeHtml(persona || '未设置')}</p><p class="dim">他那边：${escapeHtml(screenText)}</p>${session.lastError ? `<p class="dim">上次压缩失败：${escapeHtml(session.lastError.message)}</p>` : ''}`)}
 ${section('钱包', moneyText)}
 ${section('设置', `<form method="post" action="config">
   <label>ownerQQ（只回这个人的私聊；不填她谁都不回）<input name="ownerQQ" value="${escapeHtml(cfg.ownerQQ || '')}"></label>
@@ -192,6 +196,13 @@ ${section('设置', `<form method="post" action="config">
   <label>OneBot token（HTTP 用；留空表示不改）<input name="token" type="password" placeholder="${conn.token ? '已设置，留空不改' : '没开鉴权就留空'}"></label>
   <label>WS 单独的 token（SnowLuma 的 HTTP/WS 常不一样；一样就留空）<input name="wsToken" type="password" placeholder="${conn.wsToken ? '已设置，留空不改' : '和 HTTP 相同就留空'}"></label>
   <label>人格名<input name="persona" value="${escapeHtml(cfg.persona || '')}" placeholder="小鲸鱼"></label>
+  <label>让她知道你电脑上在干什么（只读前台应用名和窗口标题，不截屏、不传画面）
+    <select name="screen">
+      <option value="">不改</option>
+      <option value="1"${cfg.screen?.enabled ? ' selected' : ''}>开</option>
+      <option value="0"${cfg.screen?.enabled ? '' : ' selected'}>关</option>
+    </select>
+  </label>
   <button type="submit">保存</button>
 </form>`)}
 </body></html>`;

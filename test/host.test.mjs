@@ -827,3 +827,53 @@ test('她绕回来了：连着三轮催睡，第三轮之后要点她一下', as
   await host.handleEvent(say('真的不困'));
   assert.match(systemOf(ctx.calls[3]), /你已经绕回来了/);
 });
+
+// ---- 她知道你在电脑上干什么 ----
+test('开关：默认关，关着的时候一次都不去读', async () => {
+  let reads = 0;
+  const { ctx, host } = lifeSetup(['嗯'], NOON, {
+    mergeWindowMs: 0,
+    screenReader: async () => { reads += 1; return { app: 'Code', title: 'x' }; },
+  });
+  await host.handleEvent(say('在吗'));
+  assert.equal(reads, 0, '没开就一次都不许碰他的屏幕');
+  assert.doesNotMatch(systemOf(ctx.calls[0]), /他此刻/);
+});
+
+test('开着：她知道你在哪个窗口，五分钟内不重复去读', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-screen-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42', screen: { enabled: true } }));
+  let clock = NOON;
+  let reads = 0;
+  const ctx = fakeCtx({ replies: ['嗯', '啊', '？'] });
+  const host = createHost(ctx, {
+    dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0,
+    screenReader: async () => { reads += 1; return { app: 'Code', title: 'qq-companion — host.js' }; },
+  });
+  const hi = (t) => ({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: t, time: Math.floor(clock / 1000) });
+
+  await host.handleEvent(hi('在吗'));
+  assert.match(systemOf(ctx.calls[0]), /他此刻：在 Code「qq-companion — host\.js」/);
+  assert.match(systemOf(ctx.calls[0]), /刚刚看到的/);
+
+  clock += 60e3;
+  await host.handleEvent(hi('在吗在吗'));
+  assert.equal(reads, 1, '一分钟内再聊，不该又 spawn 一次 PowerShell');
+
+  clock += 6 * 60e3;
+  await host.handleEvent(hi('人呢'));
+  assert.equal(reads, 2, '过了时限才重新读');
+});
+
+test('读到了密码管理器：她什么都没看见', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-screen2-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42', screen: { enabled: true } }));
+  const ctx = fakeCtx({ replies: ['嗯'] });
+  const host = createHost(ctx, {
+    dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0,
+    screenReader: async () => ({ app: '1Password', title: 'vault' }),
+  });
+  await host.handleEvent(say('在吗'));
+  assert.doesNotMatch(systemOf(ctx.calls[0]), /1Password/);
+  assert.doesNotMatch(systemOf(ctx.calls[0]), /他此刻/);
+});

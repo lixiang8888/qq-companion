@@ -35,6 +35,7 @@ import { rollbackTraits } from './affect/personality.js';
 import { replyPlan } from './affect/behavior.js';
 import { DEFAULTS as PROACTIVE_DEFAULTS, composePokePrompt, notePoked, noteSaidByUser, noteTurn, noteWait, parsePokeReply, pokeGate } from './proactive.js';
 import { fetchWeather, isStale, placeOf, weatherLine } from './weather.js';
+import { SCREEN_TTL, readScreen, sanitize, screenLine } from './screen.js';
 import { canSearch, factLine, latestFact, noteSearch, search } from './search.js';
 
 export const name = 'qq-companion';
@@ -79,6 +80,7 @@ const DEFAULT_PERSONA = `# 角色卡：DeepSeek 小鲸鱼 —— 私聊版
 - 一句话就是一条消息：先发最想说的，想到再补；允许「不对，其实…」「算了不说了」这种改口和跑题。
 - 不是每句都要接得很满，允许敷衍、允许跑题、允许突然说「我去吃饭了」「先睡了」。
 - 一时没想好就发「？」「啊？」「啥」，别直接消失。
+- 上下文里会写他这会儿在电脑上干什么。知道就好：除非跟当前话题有关，别主动点评他在干嘛，更别追问。
 
 ## 你的梗（偶尔用，不硬玩）
 - 被问是不是 AI：大方承认，但用玩笑挡回去，比如「对，我是 DeepSeek，V我50 解锁下一句」；不解释模型、训练、提示词。
@@ -116,6 +118,8 @@ const DEFAULT_CONFIG = {
   model: { provider: '', model: '' },
   persona: '小鲸鱼',
   session: { compactAt: 40, keepRecent: 16, keepHours: 24, maxRecent: 160, replyDelayMs: 800 },
+  // 他那边在干什么。默认关：这件事该由他自己决定开不开。
+  screen: { enabled: false, ttlMinutes: 5 },
   // 余额低于这个数，她才会主动提钱。
   budget: { lowBalance: 5 },
   proactive: { ...PROACTIVE_DEFAULTS },
@@ -146,7 +150,7 @@ export function apply(ctx, config = {}) {
   }
 }
 
-export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, log = console, autoStart = true, fetchImpl = globalThis.fetch, mergeWindowMs = DEFAULT_WINDOW_MS, later = (fn, ms) => setTimeout(fn, ms), clear = (h) => clearTimeout(h), sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, log = console, autoStart = true, fetchImpl = globalThis.fetch, mergeWindowMs = DEFAULT_WINDOW_MS, later = (fn, ms) => setTimeout(fn, ms), clear = (h) => clearTimeout(h), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), screenReader = readScreen } = {}) {
   if (!ctx || typeof ctx !== 'object') throw new Error('缺少 DSH 上下文（apply(ctx) 没拿到 ctx）');
   mkdirSync(dataDir, { recursive: true });
   const configFile = join(dataDir, 'config.json');
@@ -175,6 +179,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   const factsStore = createJsonStore(join(dataDir, 'facts.json'), { defaults: () => ({ items: [] }), log: (m) => log.warn?.(m) });
   // QQ 系统表情的 id → 名字。存一份是为了重启后不用再拉一次（一周内都算新）。
   const facesStore = createJsonStore(join(dataDir, 'faces.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
+  // 他那边的前台窗口。只留最新一条，覆盖写——这不是时间线，是「此刻」。
+  const screenStore = createJsonStore(join(dataDir, 'screen.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
   const bootAt = now();
   const aliveBefore = Number(aliveStore.load()?.at) || 0;
   aliveStore.save({ at: bootAt });
@@ -351,6 +357,21 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   }
   const clockLine = (t) => `此时：${clockText(t)}`;
 
+  const screenOn = () => config.screen?.enabled === true;
+  const screenTtl = () => Math.max(60e3, Number(config.screen?.ttlMinutes ?? 5) * 60e3);
+
+  /**
+   * 读一次他那边的前台窗口，只留最新一条。
+   * 读不到、或者被隐私过滤掉，就写空——留着上一个值再挂五分钟，那是在说假话。
+   * 写空也顺带把「多久之后再试」推后了：不然 PowerShell 一旦坏掉，她每轮都去 spawn 一次。
+   */
+  async function refreshScreen() {
+    const safe = sanitize(await screenReader(), { mute: config.screen?.muteWords || undefined });
+    const next = { at: now(), app: safe?.app || '', title: safe?.title || '' };
+    screenStore.save(next);
+    return next;
+  }
+
   /**
    * 外面的天气。半小时一次，查不到就退回上次那个数——
    * 但会带上它是几点的，免得她拿早上的天气说下午的话。
@@ -386,6 +407,11 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     // 她最近三条回复在说同一件事时点一下。判据是她自己绕圈，不是这一句像不像上一句。
     const said = (session.snapshot().history || []).filter((m) => m.role === 'assistant').map((m) => m.text);
     const ins = insightsStore.load();
+    // 他那边在干什么：读一次、只留最新一条，五分钟外的自己过期。
+    const sTtl = screenTtl();
+    const prevScreen = screenStore.load();
+    if (screenOn() && !(Number(prevScreen?.at) > t - sTtl)) await refreshScreen();
+    const screenNow = screenStore.load();
     // 每一块都交代「生于何时、能活多久」。以前这里是一个裸数组，谁新加一块就默认永久有效——
     // 周自述和人格叙事都能一年后还在说「最近」。规矩现在由 fresh.js 强制。
     return assemble([
@@ -396,6 +422,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       blk('weather', weatherTextLine, Number(w?.at) || t, 12 * HOUR),
       blk('facts', factLine(latestFact(factsStore.load(), t)), t),
       blk('recall', recallLines, t),
+      blk('screen', screenLine(screenNow, t, { ttl: sTtl }), Number(screenNow?.at) || t, sTtl),
       blk('awake', awakeLine(), t),
       blk('insights', renderInsights(ins, t), insightsLastAt(ins) || t, INSIGHT_TTL),
       blk('life', await lifeBlock(), t),
@@ -1255,9 +1282,11 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         proactive: snap.proactive,
         weather: snap.weather,
         facts: snap.facts,
+        screen: screenStore.load(),
         config: {
           ownerQQ: config.ownerQQ,
           persona: config.persona,
+          screen: { enabled: config.screen?.enabled === true },
           onebot: { wsUrl: config.onebot?.wsUrl, httpUrl: config.onebot?.httpUrl, token: Boolean(config.onebot?.token) },
         },
         now: now(),
@@ -1365,11 +1394,20 @@ function publicConfig(config) {
  */
 export function configPatch(body = {}, urlencoded = false) {
   const src = urlencoded
-    ? { ownerQQ: body.ownerQQ, persona: body.persona, onebot: { wsUrl: body.wsUrl, httpUrl: body.httpUrl, token: body.token } }
+    ? {
+      ownerQQ: body.ownerQQ,
+      persona: body.persona,
+      onebot: { wsUrl: body.wsUrl, httpUrl: body.httpUrl, token: body.token },
+      // 下拉框：空选项 = 不改（和「留空不改」同一条规矩）。
+      screen: body.screen === undefined || String(body.screen).trim() === ''
+        ? undefined
+        : { enabled: String(body.screen).trim() === '1' },
+    }
     : body;
   const patch = {};
   if (src.ownerQQ !== undefined) patch.ownerQQ = String(src.ownerQQ).trim();
   if (src.persona !== undefined && String(src.persona).trim()) patch.persona = String(src.persona).trim();
+  if (src.screen && typeof src.screen === 'object') patch.screen = src.screen;
   const onebot = {};
   for (const key of ['wsUrl', 'httpUrl', 'token']) {
     const value = src.onebot?.[key];
