@@ -8,7 +8,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { createJsonStore } from './store.js';
-import { createOneBot, sendText } from './onebot.js';
+import { createOneBot, sendImage, sendText } from './onebot.js';
 import { forwardIdOf, normalizeMessage, quoteLine, renderForward, replyIdOf, setEmojiNames, setFaceNames, splitReply } from './message.js';
 import { ANIMATION_PROMPT, MAX_IMAGE_BYTES, MAX_LOCAL_BYTES, dataUrlOf, describeImage, extractGifFrames, imageSegmentsOf, imageSourceOf, mimeOf, shrinkImage, sniffMime, videoSegmentsOf, withImageText } from './vision.js';
 import { MAX_VIDEO_BYTES, VIDEO_PROMPT, findFfmpeg, videoSheet, withVideoText } from './video.js';
@@ -1243,7 +1243,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       const qzDelete = q.get('qzdelete');
       const qzTest = q.get('qztest');
       const qzCheck = q.get('qzcheck');
-      if ((at || pinId || forgetId || restoreId || unsupersedeId || qzDelete || qzTest || qzCheck) && !sameSiteOnly(req)) {
+      const sendImg = q.get('sendimg');
+      if ((at || pinId || forgetId || restoreId || unsupersedeId || qzDelete || qzTest || qzCheck || sendImg) && !sameSiteOnly(req)) {
         return '跨站请求被拒绝：面板上的操作只接受本页点击。';
       }
       if (at) {
@@ -1263,6 +1264,15 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       }
       if (qzTest) await evaluatePost({ force: true });
       if (qzCheck) await refreshQzoneComments({ force: true });
+      // 发图自检：?sendimg=<网络地址 或 本机路径>。发一张给她自己看看通不通。
+      if (sendImg) {
+        try {
+          await sendImage(onebot, { kind: 'private', userId: String(config.ownerQQ), chatId: `private:${config.ownerQQ}` }, sendImg);
+          log.info?.(`发图自检：已发 ${sendImg.slice(0, 80)}`);
+        } catch (e) {
+          log.warn?.(`发图自检失败：${e.message}`);
+        }
+      }
       if (qzDelete) {
         const qz = qzoneStore.load();
         if (qz.lastTid) {
