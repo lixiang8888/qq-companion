@@ -28,6 +28,7 @@ import { applyInsights, composePrompt as insightsPrompt, createInsights, dueInsi
 import { composeCommentPrompt, composePostPrompt, decidePost, notePosted, parseCommentReply, parsePostReply } from './qzone-post.js';
 import { comment as qzoneComment, detail as qzoneDetail, freshComments, publish as qzonePublish, remove as qzoneRemove } from './qzone.js';
 import { appendTranscript, looksLikeRecall, readTranscript, recallLine, searchTranscript } from './transcript.js';
+import { appendBehavior, entryOf, readBehavior, statsText, weekStats, WEEK_MS } from './behavior-log.js';
 import { STUCK_LINE, looksStuck, situationText, situationsFor, systemPersona } from './persona.js';
 import { HOUR, assemble, blk } from './fresh.js';
 import { renderPanel } from './panel.js';
@@ -563,7 +564,12 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const t = now();
     const cur = insightsStore.load();
     if (!dueInsights(cur, t)) return cur;
-    const prompt = insightsPrompt(maintain(memoryStore.load(), t), { now: t });
+    // 这一周她自己的说话习惯：喂数字，不喂评价。少于十轮就当没说够，不拿它下结论。
+    const st = weekStats(readBehavior(dataDir, { from: t - WEEK_MS, to: t }));
+    const prompt = insightsPrompt(maintain(memoryStore.load(), t), {
+      now: t,
+      extra: st && st.turns >= 10 ? statsText(st) : '',
+    });
     if (!prompt) return cur;
     const text = await complete({
       system: `${personaCore()}\n\n你在写只给自己看的东西。`,
@@ -1073,6 +1079,20 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       cfg: { ...PROACTIVE_DEFAULTS, ...(config.proactive || {}) },
     }));
     recallLines = ''; // 原话只活这一轮：下一轮要么重新翻，要么没有
+    // 行为账本：只记她这一轮怎么说的。一个字的他的原话都不进账——这是给她照镜子的，不是监控。
+    try {
+      const saidNow = (session.snapshot().history || []).filter((m) => m.role === 'assistant').map((m) => m.text);
+      appendBehavior(dataDir, entryOf({
+        at: turnEnd,
+        parts: parts.length,
+        chars: act.text.length,
+        situations: situationsFor(msg.text, { at: turnEnd }),
+        said: act.text,
+        stuck: looksStuck(saidNow),
+      }));
+    } catch (e) {
+      log.warn?.(`行为账本没写成：${e.message}`); // 账本坏了不能让这一轮哑掉
+    }
     return { ...r, sent: parts.length, plan, sticker, merged: batch.texts.length };
   }
 
@@ -1351,6 +1371,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         proactive: { ...pokeStore.load(), gate: pokeNow() },
         weather: weatherStore.load(),
         facts: factsStore.load(),
+        behavior: weekStats(readBehavior(dataDir, { from: now() - WEEK_MS, to: now() })),
         session: {
           size: session.size,
           compactions: session.snapshot().compactions,
@@ -1455,6 +1476,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         proactive: snap.proactive,
         weather: snap.weather,
         facts: snap.facts,
+        behavior: snap.behavior,
         screen: screenStore.load(),
         stickers: (() => {
           const items = stickerStore.load().items || [];

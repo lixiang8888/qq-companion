@@ -1062,3 +1062,24 @@ test('面板表情：图能看见、名字能改、试发真的发出去', async
   await call('/qq-companion/api/panel?sendst=m1');
   assert.ok(sent.some((b) => b.includes('qq_expression/m1')), '试发要真的发出去');
 });
+
+test('一轮说完就往账本里记一行，且不记他说的内容', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-blog-host-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  const sent = [];
+  const fetchImpl = async (url, init) => gwOk(sent, init?.body);
+  const ctx = fakeCtx({ replies: ['嗯，我在呢'] });
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent(say('在吗'));
+
+  const d = new Date(NOON);
+  const file = join(dataDir, `behavior-${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}.jsonl`);
+  const lines = readFileSync(file, 'utf8').trim().split('\n');
+  assert.equal(lines.length, 1, '一轮一行');
+  const e = JSON.parse(lines[0]);
+  assert.ok(e.parts >= 1);
+  assert.ok(e.chars > 0);
+  assert.equal(e.open, '嗯，我在呢');
+  assert.equal(JSON.stringify(e).includes('在吗'), false, '他说的一个字都不进账本');
+});

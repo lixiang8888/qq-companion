@@ -39,7 +39,7 @@ function section(title, body) {
 /**
  * @param {{state: object, memory: object, gateway: string, session: object, persona: string, config: object, now: number}} o
  */
-export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', session = {}, history = [], checks = [], persona = '', config = {}, life = null, diaries = [], budget = null, alive = null, insights = null, qzone = null, proactive = null, weather = null, facts = null, screen = null, stickers = null, now = Date.now() } = {}) {
+export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', session = {}, history = [], checks = [], persona = '', config = {}, life = null, diaries = [], budget = null, alive = null, insights = null, qzone = null, proactive = null, weather = null, facts = null, screen = null, stickers = null, behavior = null, now = Date.now() } = {}) {
   const cfg = config || {};
   const conn = cfg.onebot || {};
   const screenText = !cfg.screen?.enabled
@@ -207,6 +207,7 @@ ${section('她会不会来找你', (() => {
     + `<p class="dim">今天主动 ${p.count || 0} 次 · 连发没回 ${p.consecutive || 0} 条 · 想过 ${p.thinks?.n || 0} 次</p>${thought}${out}${factText}`;
 })())}
 ${section('人格', `${traits}<p class="dim">${escapeHtml(driftLine(state.self, now) || '最近没变过')}</p><p class="dim">待结算的模式：</p>${patternText}<p class="dim">快照 ${(state.self.snapshots || []).length} 版</p>${snaps ? `<ul>${snaps}</ul>` : ''}`)}
+${behavior?.turns ? section('这周她的说话习惯', `<p>${behavior.turns} 轮 · 平均 ${behavior.avgParts} 条 / ${behavior.avgChars} 字 · 六个字以内 ${behavior.short} 次 · 打转 ${behavior.stuck} 次 · 疑似拒绝 ${behavior.refused} 次</p>${behavior.topOpen ? `<p class="dim">最常开头：「${escapeHtml(behavior.topOpen.text)}」${behavior.topOpen.n} 次</p>` : ''}<p class="dim">只记她怎么说的，一个字都不记你说了什么。</p>`) : ''}
 ${section('记忆', `<p>共 ${mem.total} 条（清晰 ${mem.vivid || 0} / 清楚 ${mem.clear || 0} / 模糊 ${mem.fuzzy || 0} / 只剩印象 ${mem.trace || 0}），已遗忘 ${mem.forgotten || 0}</p>${memoryList}${staleText}${goneText}`)}
 ${section('最近想起', recalls.length    ? `<ul>${recalls.map((r) => `<li><span class="tag">${escapeHtml(new Date(r.at).toLocaleTimeString())}</span>「${escapeHtml(r.query)}」→ ${r.picks.length ? r.picks.map((t) => escapeHtml(t)).join('、') : '<span class="dim">没想起什么</span>'}</li>`).join('')}</ul>`
     : '<p class="dim">还没有聊过</p>')}

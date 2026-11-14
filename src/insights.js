@@ -86,16 +86,19 @@ export function renderInsights(ins, now = 0) {
 }
 
 /** 拼给她的提示词。一条记忆都没有就不问——没东西可想的时候硬想，只会想出假话。 */
-export function composePrompt(card, { now = 0, limit = 12 } = {}) {
+export function composePrompt(card, { now = 0, limit = 12, extra = '' } = {}) {
   const picks = rankForPrompt(card, { now }).slice(0, limit).filter((r) => r?.text);
   if (!picks.length) return '';
+  // 行为统计是可选的：没有账本（或这一周没说话）就跟以前一样只拿记忆说话。
+  const behavior = String(extra || '').trim();
   return `你一个人待着的时候，回头想了想最近。
 你记得这些事：
 ${picks.map((r) => `- ${r.text}`).join('\n')}
-
+${behavior ? `\n${behavior}\n` : ''}
 只写三行，每行一个类别，格式「类别|一句不超过 40 字的话」：
 work|我最近是怎么过的/怎么对她的
 us|我们现在是什么关系、我怎么看我们
 growth|我学到了什么、哪里变了
+${behavior ? '上面有数字的话，这一行尽量用上它——写「这周我有 12 次在说同一个意思」，比写「我要更用心」有用。' : ''}
 写不出来那一类就写「-」。不要编，不要总结成道理，不要提这是你被要求写的。`;
 }
