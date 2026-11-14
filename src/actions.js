@@ -37,6 +37,3 @@ function tidy(s) {
     .replace(/[\s]+$/g, '')
     .trim();
 }
-
-/** 文本里还有没有指令（用来判断「这一轮要不要重来一次」）。 */
-export const hasSearch = (text) => parseActions(text).searches.length > 0;

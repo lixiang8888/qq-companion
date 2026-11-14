@@ -1,7 +1,7 @@
 // 她回复里的方括号指令：一条协议管「发表情」和「查东西」。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hasSearch, parseActions } from '../src/actions.js';
+import { parseActions } from '../src/actions.js';
 
 test('表情：标记从文本里剔掉，他说到的应该是话', () => {
   const a = parseActions('不用猜了[表情:无语]');
@@ -33,7 +33,6 @@ test('剔掉标记后不留下开头的标点', () => {
   assert.equal(parseActions('[表情:无语]，你继续').text, '你继续');
 });
 
-test('hasSearch 是「要不要重来一次」的判据', () => {
-  assert.equal(hasSearch('我查一下[查:明天天气]'), true);
-  assert.equal(hasSearch('不用猜了[表情:无语]'), false);
+test('没有指令的普通句子原样返回', () => {
+  assert.deepEqual(parseActions('今天好累啊'), { text: '今天好累啊', stickers: [], searches: [] });
 });

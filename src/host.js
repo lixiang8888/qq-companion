@@ -1398,6 +1398,10 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         weather: snap.weather,
         facts: snap.facts,
         screen: screenStore.load(),
+        stickers: (() => {
+          const items = stickerStore.load().items || [];
+          return { total: items.length, named: items.filter((s) => s.name).length };
+        })(),
         config: {
           ownerQQ: config.ownerQQ,
           persona: config.persona,
