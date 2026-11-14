@@ -115,6 +115,9 @@ export function createLocalSession({
   // 压不动、丢了老记录时的那句说明。单独放，不和真摘要混在一起：
   // 真摘要用「摘要」标签，丢档说明用「更早的对话」标签。
   let droppedNote = '';
+  // 这一轮给她看的图。不进历史（字节太大、链接会过期），但要留给 retry：
+  // 她说了 `[查:…]` 之后要重答一次，重答时还是同一轮，图还得在眼前。
+  let lastImages = [];
 
   const systemOf = (context = '') => [typeof system === 'function' ? system() : system, SYSTEM_SUFFIX, MEMORY_PROTOCOL, TIME_NOTE, summary ? `【更早的对话摘要】${summary}` : '', droppedNote ? `【更早的对话】${droppedNote}` : '', context]
     .filter(Boolean).join('\n\n');
@@ -209,6 +212,7 @@ export function createLocalSession({
 
       const msgs = withStamps(history, now());
       const shown = (Array.isArray(images) ? images : []).filter(Boolean).slice(0, MAX_TURN_IMAGES);
+      lastImages = shown;
       if (shown.length && msgs.length) {
         msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], images: shown };
       }
@@ -248,6 +252,11 @@ export function createLocalSession({
      */
     async retry(context = '') {
       const msgs = withStamps(history, now());
+      // 图贴回「他刚说的那句」。不能贴在末尾——末尾这时候是她第一版的草稿。
+      if (lastImages.length) {
+        const i = msgs.findLastIndex((m) => m.role === 'user');
+        if (i >= 0) msgs[i] = { ...msgs[i], images: lastImages };
+      }
       const reply = await complete({ system: systemOf(context), messages: msgs });
       const clean = String(reply ?? '').trim();
       if (clean) {

@@ -226,6 +226,20 @@ test('一轮最多带两张图：三连发不该白烧 token', async () => {
   assert.equal(calls[0].messages.at(-1).images.length, 2);
 });
 
+// 她说了 [查:…]，查完要重答一次。重答是同一轮，图还得在眼前；
+// 但这时候历史末尾是她第一版草稿，贴上去就成了「她给自己发了张图」。
+test('retry 不丢图，而且贴在他刚说的那句上', async () => {
+  const { calls, complete } = fake();
+  const s = createLocalSession({ complete, system: '', now: () => NOW });
+  await s.prompt('p', '看这个', { images: ['data:image/jpeg;base64,AAA'] });
+  await s.retry('你刚查到的材料');
+
+  const sent = calls[1].messages;
+  const i = sent.findLastIndex((m) => m.role === 'user');
+  assert.equal(sent[i].images.length, 1, '重答时图不能丢');
+  assert.ok(!sent.filter((m) => m.role !== 'user').some((m) => m.images), '不能贴在她的草稿上');
+});
+
 test('模型不收图片时：去掉图再试一次，不能整轮哑掉', async () => {
   const seen = [];
   let n = 0;

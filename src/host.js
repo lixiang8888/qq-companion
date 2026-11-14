@@ -361,23 +361,31 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
    * 她说 `[查:…]` 时去查，把材料拿回来。返回空串表示这一轮不用重来。
    * 查不到也要给一句「没查到」——让她照着说「查不到」，比让她装作知道好。
    */
+  // 一轮里最多查两条：一次查三条，一天的额度就没了，材料也塞不进上下文。
+  const MAX_SEARCHES_PER_TURN = 2;
+
   async function searchFor(reply) {
     const { searches } = parseActions(reply);
-    const q = searches[0];
-    if (!q) return '';
+    if (!searches.length) return '';
     if (config.search?.enabled !== true) return '（你想查，但搜索没开。直接告诉他你查不了。）';
-    if (!canSearch(factsStore.load(), now(), config.search?.maxPerDay ?? 5)) {
-      return '（今天的搜索额度用完了。别装作查过，就说你没查到。）';
+    const lines = [];
+    for (const q of searches.slice(0, MAX_SEARCHES_PER_TURN)) {
+      if (!canSearch(factsStore.load(), now(), config.search?.maxPerDay ?? 5)) {
+        lines.push('（今天的搜索额度用完了。别装作查过，就说你没查到。）');
+        break;
+      }
+      try {
+        const fact = await search({ query: q, key: config.search?.key, fetchImpl, now });
+        // 认真查的这次也记进账：额度是真花了，而且下次她心里还留着这件事。
+        factsStore.save(noteSearch(factsStore.load(), { now: now(), fact }));
+        const material = materialLines(fact);
+        if (material) lines.push(material);
+      } catch (e) {
+        log.warn?.(`查「${q}」没查成：${e.message}`);
+        lines.push(`（你试着查「${q}」，没查成：${e.message}。就说没查到，别编。）`);
+      }
     }
-    try {
-      const fact = await search({ query: q, key: config.search?.key, fetchImpl, now });
-      // 认真查的这次也记进账：额度是真花了，而且下次她心里还留着这件事。
-      factsStore.save(noteSearch(factsStore.load(), { now: now(), fact }));
-      return materialLines(fact);
-    } catch (e) {
-      log.warn?.(`查「${q}」没查成：${e.message}`);
-      return `（你试着查「${q}」，没查成：${e.message}。就说没查到，别编。）`;
-    }
+    return lines.join('\n');
   }
 
   /**

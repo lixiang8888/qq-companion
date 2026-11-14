@@ -952,3 +952,57 @@ test('她说要查：搜完带着材料重说一遍，发出去的是第二版',
   assert.match(sent.at(-1), /带伞/, '发出去的是第二版');
   assert.doesNotMatch(sent.join(''), /\[查/, '指令不能发出去');
 });
+
+test('一条回复里写两个 [查]：两个都查，不只查第一个', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-search2-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+    ownerQQ: '42', search: { enabled: true, key: 'k', maxPerDay: 5 },
+  }));
+  const sent = [];
+  const asked = [];
+  const fetchImpl = async (url, init) => {
+    if (String(url).includes('tavily.com')) {
+      const q = JSON.parse(init.body).query;
+      asked.push(q);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ answer: `${q}的答案`, results: [{ title: 't', url: 'https://ex.example.com/a', content: `${q}的正文` }] }),
+      };
+    }
+    return gwOk(sent, init?.body);
+  };
+  const ctx = fakeCtx({ replies: ['我查一下[查:杭州天气][查:明天限行]', '天气和限行都查了'] });
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent(say('明天出门要注意啥'));
+
+  assert.deepEqual(asked, ['杭州天气', '明天限行'], '两个都要真的查');
+  const sys = systemOf(ctx.calls[1]);
+  assert.match(sys, /杭州天气的正文/);
+  assert.match(sys, /明天限行的正文/);
+  assert.doesNotMatch(sent.join(''), /\[查/, '指令不能发出去');
+});
+
+test('三个 [查] 只查前两条：一次把一天的额度烧光不值得', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-search3-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+    ownerQQ: '42', search: { enabled: true, key: 'k', maxPerDay: 5 },
+  }));
+  const sent = [];
+  const asked = [];
+  const fetchImpl = async (url, init) => {
+    if (String(url).includes('tavily.com')) {
+      const q = JSON.parse(init.body).query;
+      asked.push(q);
+      return { ok: true, status: 200, json: async () => ({ answer: `${q}的答案`, results: [{ title: 't', url: 'https://ex.example.com/a', content: `${q}的正文` }] }) };
+    }
+    return gwOk(sent, init?.body);
+  };
+  const ctx = fakeCtx({ replies: ['[查:a1][查:b1][查:c1]', '查到了'] });
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent(say('帮我查三件事'));
+
+  assert.equal(asked.length, 2);
+});
