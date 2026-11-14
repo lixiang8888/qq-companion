@@ -14,12 +14,13 @@ import { ANIMATION_PROMPT, MAX_IMAGE_BYTES, MAX_LOCAL_BYTES, dataUrlOf, describe
 import { MAX_VIDEO_BYTES, VIDEO_PROMPT, findFfmpeg, videoSheet, withVideoText } from './video.js';
 import { extractQuestions, leftoverQuestions, pendingLine } from './topics.js';
 import { createLlmComplete } from './llm.js';
-import { createLocalSession, MAX_TURN_IMAGES } from './session.js';
+import { createLocalSession, MAX_TURN_IMAGES, stampOf } from './session.js';
 import { createCompanion } from './companion.js';
 import { initState } from './affect/core.js';
 import { stateLine } from './affect/inject.js';
 import { createCard, forget, maintain, rankForPrompt, remember, render, restore, stats as memoryStats } from './memory/card.js';
 import { sanitizeSecrets } from './memory/sanitize.js';
+import { search as memorySearch } from './memory/search.js';
 import { advance, applyPlan, clockOf, createLife, LIFE_PROMPT, lifeLine, offLine, parsePlan } from './life.js';
 import { baselineOf, composePrompt, diff as diaryDiff, dueDay, hasDiary, readDiaries, snapshot as diarySnapshot, writeDiary } from './diary.js';
 import { addUsage, createBudget, fetchBalance, moneyBlock, usageOf } from './budget.js';
@@ -218,12 +219,45 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     return '';
   }
 
+  /**
+   * 想起某件事，就把那天的前后两句一起带出来。
+   * 只在这句真的命中了某条记忆时才去翻归档——不然每轮都读一遍，为她并不在想的事买单。
+   */
+  const SCENE_GAP_MS = 30 * 60e3;
+  const SCENE_CHARS = 60;
+  function sceneFor(text, t) {
+    if (config.transcript?.enabled === false) return '';
+    try {
+      const live = memoryStore.load().records.filter((r) => r.forgottenAt === undefined);
+      const hit = memorySearch(live, text, { now: t, limit: 1 })[0];
+      if (!hit) return '';
+      const rows = readTranscript(dataDir, { now: t, months: 1 });
+      // 取离记账那一刻最近的一句，不是第一句落在半小时内的——否则会带出更早那轮的尾巴。
+      let i = -1;
+      let best = Infinity;
+      rows.forEach((r, k) => {
+        const d = Math.abs(r.at - hit.rec.createdAt);
+        if (d <= SCENE_GAP_MS && d < best) { best = d; i = k; }
+      });
+      if (i < 0) return '';
+      const near = rows.slice(Math.max(0, i - 1), i + 2)
+        .map((r) => `- ${stampOf(r.at, t)} ${r.role === 'user' ? '他' : '你'}：${String(r.text).slice(0, SCENE_CHARS)}`)
+        .join('\n');
+      return `【那天的前后】（你想起「${String(hit.rec.text).slice(0, 20)}」那会儿，你们在说这些）\n${near}`;
+    } catch (e) {
+      log.warn?.(`带出那天前后失败：${e.message}`);
+      return '';
+    }
+  }
+
   async function memoryBlock(msg, { mood = null, heat = null } = {}) {
     const t = now();
     let card = maintain(memoryStore.load(), t);
     // 先渲染再记：这一句已经在本轮对话里了，再塞进记忆块就是让「过去」冒充「现在」，
     // 还白占 2200 字预算。她要在「下一轮」才想起这句话。
     const block = render(card, { now: t, maxChars: 2200, query: msg.text });
+    // 想起来的那件事，顺手把那天的前后两句带上——光有结论没有场景，她接不住。
+    const scene = sceneFor(msg.text, t);
     // 记住「这一轮想起了什么」：调检索时没有这个观测点就是盲调。
     recallLog.unshift({
       at: t,
@@ -246,7 +280,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       card = remember(card, text, { now: t, owner, direct: true, mood, heat: h, askedBy, detail: pic ? pic[1] : '' });
     }
     memoryStore.save(card);
-    return block;
+    return [block, scene].filter(Boolean).join('\n');
   }
 
   let selection = null;

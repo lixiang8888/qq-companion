@@ -5,6 +5,7 @@ import { mkdtempSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHost } from '../src/host.js';
+import { appendTranscript } from '../src/transcript.js';
 import { apply } from '../src/host.js';
 import { initState } from '../src/affect/core.js';
 import { createCard, remember } from '../src/memory/card.js';
@@ -1082,4 +1083,32 @@ test('一轮说完就往账本里记一行，且不记他说的内容', async ()
   assert.ok(e.chars > 0);
   assert.equal(e.open, '嗯，我在呢');
   assert.equal(JSON.stringify(e).includes('在吗'), false, '他说的一个字都不进账本');
+});
+
+test('想起一件事：把那天的前后两句一起带出来', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-scene-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  const ctx = fakeCtx();
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false });
+
+  appendTranscript(dataDir, { at: NOON - 60e3, role: 'user', text: '明天有个面试' });
+  appendTranscript(dataDir, { at: NOON, role: 'assistant', text: '会是哪家呀' });
+  appendTranscript(dataDir, { at: NOON + 60e3, role: 'user', text: '一家做芯片的' });
+  await host.memory.block({ text: '他明天有面试', parts: ['他明天有面试'], userId: '42' });
+
+  const block = await host.memory.block({ text: '那个面试怎么样了', parts: ['那个面试怎么样了'], userId: '42' });
+  assert.match(block, /那天的前后/);
+  assert.match(block, /明天有个面试/);
+  assert.match(block, /一家做芯片的/, '前后各一条，结论才有场景');
+});
+
+test('没命中任何记忆：不去翻归档，也不占上下文', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-scene2-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  const ctx = fakeCtx();
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false });
+  await host.memory.block({ text: '他明天有面试', parts: ['他明天有面试'], userId: '42' });
+
+  const block = await host.memory.block({ text: '今天天气咋样', parts: ['今天天气咋样'], userId: '42' });
+  assert.doesNotMatch(block, /那天的前后/);
 });
