@@ -23,8 +23,10 @@ const PATTERN_DELTAS = {
  * @param {() => number} [o.now]
  * @param {(msg: object) => Promise<string>} [o.memoryBlock] 记忆块（由 meow-memory 或自建提供）
  * @param {(msg: object) => Promise<string>} [o.extraContext] 「她此刻在干什么」这一类由上层拼的上下文
+ * @param {(reply: string) => Promise<string>} [o.refine] 她说出 `[查:…]` 时，去查、把材料拿回来；
+ *   返回非空就带着材料再问她一遍，用第二版回复
  */
-export function createCompanion({ load, save, session, ownerQQ = '', now = Date.now, memoryBlock = async () => '', extraContext = async () => '' }) {
+export function createCompanion({ load, save, session, ownerQQ = '', now = Date.now, memoryBlock = async () => '', extraContext = async () => '', refine = null }) {
   return {
     async handleMessage(msg) {
       if (msg.kind !== 'private') return { ignored: 'not-private' };
@@ -53,6 +55,15 @@ export function createCompanion({ load, save, session, ownerQQ = '', now = Date.
         context: [context, life, memory].filter(Boolean).join('\n'),
         images: msg.images,
       });
+
+      // 她自己说要查东西：查完带材料再问一遍。只重来一次——查完还要查，那是另一个量级的事。
+      if (refine) {
+        const extra = await refine(reply).catch(() => '');
+        if (extra) {
+          const again = await session.retry([context, life, memory, extra].filter(Boolean).join('\n'));
+          return { state: st, context, damage: a.damage, hash: stateHash(st), reply: again, searched: true };
+        }
+      }
 
       return { state: st, context, damage: a.damage, hash: stateHash(st), reply };
     },

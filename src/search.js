@@ -77,6 +77,25 @@ export function factLine(fact) {
   return `你查过一件事：「${fact.query}」→ ${said}${src ? `（网上这么说，来源：${src}）` : '（网上这么说）'}`;
 }
 
+/**
+ * 「想了解一件事」要的是材料，不是结论。
+ *
+ * factLine 把一切压成一句——那是「他想知道一个数」的形状。她说「我查一下」的时候，
+ * 压成一句就是替她总结了，她只能把那句转述出去。所以这里给 2~3 条带来源的要点，
+ * 让她自己组织语言。
+ */
+export function materialLines(fact, { max = 3, maxChars = 120 } = {}) {
+  if (!fact?.query) return '';
+  const items = (fact.results || [])
+    .slice(0, max)
+    .map((r) => String(r.content || '').replace(/\s+/g, ' ').trim().slice(0, maxChars))
+    .filter(Boolean);
+  const bullet = items.length ? items : [String(fact.answer || '').replace(/\s+/g, ' ').trim().slice(0, maxChars)].filter(Boolean);
+  if (!bullet.length) return '';
+  const src = sourcesLine(fact.results, 3);
+  return `【你刚查到的】（网上这么说，不是他说的；来源：${src || '未知'}）\n${bullet.map((b) => `- ${b}`).join('\n')}`;
+}
+
 export function canSearch(state = {}, now = Date.now(), cap = MAX_PER_DAY) {
   return (state?.day === dayKeyOf(now) ? num(state.n, 0) : 0) < cap;
 }

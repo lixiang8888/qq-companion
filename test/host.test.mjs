@@ -877,3 +877,78 @@ test('读到了密码管理器：她什么都没看见', async () => {
   assert.doesNotMatch(systemOf(ctx.calls[0]), /1Password/);
   assert.doesNotMatch(systemOf(ctx.calls[0]), /他此刻/);
 });
+
+// ---- 表情包与上网：她回复里的方括号指令 ----
+const gwOk = (record, body) => {
+  record.push(String(body));
+  return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
+};
+
+test('她发表情：标记不发给他的话，图另起一条', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-sticker-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  writeFileSync(join(dataDir, 'stickers.json'), JSON.stringify({
+    at: NOON,
+    items: [{ md5: 'a', url: 'https://p.qpic.cn/qq_expression/a/0', name: '无语' }],
+  }));
+  const sent = [];
+  const fetchImpl = async (url, init) => gwOk(sent, init?.body);
+  const ctx = fakeCtx({ replies: ['不用猜了[表情:无语]'] });
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  const r = await host.handleEvent(say('他自己也糊涂了'));
+
+  const texts = sent.filter((b) => b.includes('"text"'));
+  const images = sent.filter((b) => b.includes('"image"'));
+  assert.equal(texts.length, 1, '先说一句');
+  assert.match(texts[0], /不用猜了/);
+  assert.doesNotMatch(texts[0], /表情:/, '方括号指令不能发到他手机上');
+  assert.equal(images.length, 1, '表情单独一条');
+  assert.match(images[0], /p\.qpic\.cn/);
+  assert.deepEqual(r.sticker, { sent: true, name: '无语' });
+});
+
+test('表情挑不到：不发，也不报错', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-sticker2-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  writeFileSync(join(dataDir, 'stickers.json'), JSON.stringify({ at: NOON, items: [{ md5: 'a', url: 'https://p.qpic.cn/a/0', name: '无语' }] }));
+  const sent = [];
+  const fetchImpl = async (url, init) => gwOk(sent, init?.body);
+  const ctx = fakeCtx({ replies: ['笑死[表情:狂笑]'] });
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+  const r = await host.handleEvent(say('哈哈'));
+  assert.equal(sent.filter((b) => b.includes('"image"')).length, 0);
+  assert.equal(r.sticker.sent, false);
+});
+
+test('她说要查：搜完带着材料重说一遍，发出去的是第二版', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-search-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+    ownerQQ: '42', search: { enabled: true, key: 'k', maxPerDay: 5 },
+  }));
+  const sent = [];
+  const fetchImpl = async (url, init) => {
+    if (String(url).includes('tavily.com')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          answer: '杭州明天小雨',
+          results: [{ title: '天气', url: 'https://weather.example.com/hz', content: '杭州明天小雨转阴，8~14℃，东北风 3 级' }],
+        }),
+      };
+    }
+    return gwOk(sent, init?.body);
+  };
+  const ctx = fakeCtx({ replies: ['我查一下[查:杭州明天天气]', '明天下雨，带伞'] });
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent(say('明天什么天气'));
+
+  assert.equal(ctx.calls.length, 2, '查完要再问她一遍');
+  assert.match(systemOf(ctx.calls[1]), /你刚查到的/);
+  assert.match(systemOf(ctx.calls[1]), /weather\.example\.com/, '得带来源');
+  assert.match(systemOf(ctx.calls[1]), /8~14℃/, '给她的是材料，不是一句总结');
+  assert.match(sent.at(-1), /带伞/, '发出去的是第二版');
+  assert.doesNotMatch(sent.join(''), /\[查/, '指令不能发出去');
+});

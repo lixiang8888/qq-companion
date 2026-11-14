@@ -36,7 +36,9 @@ import { replyPlan } from './affect/behavior.js';
 import { DEFAULTS as PROACTIVE_DEFAULTS, composePokePrompt, notePoked, noteSaidByUser, noteTurn, noteWait, parsePokeReply, pokeGate } from './proactive.js';
 import { fetchWeather, isStale, placeOf, weatherLine } from './weather.js';
 import { SCREEN_TTL, readScreen, sanitize, screenLine } from './screen.js';
-import { canSearch, factLine, latestFact, noteSearch, search } from './search.js';
+import { canSearch, factLine, latestFact, materialLines, noteSearch, search } from './search.js';
+import { parseActions } from './actions.js';
+import { NAME_PROMPT, mergeFavorites, namesLine, needNames, parseFavorites, pickSticker } from './stickers.js';
 
 export const name = 'qq-companion';
 // cordis 的 inject 是「必填服务」清单：只有列在这里的服务，访问时才不会抛，
@@ -81,6 +83,8 @@ const DEFAULT_PERSONA = `# 角色卡：DeepSeek 小鲸鱼 —— 私聊版
 - 不是每句都要接得很满，允许敷衍、允许跑题、允许突然说「我去吃饭了」「先睡了」。
 - 一时没想好就发「？」「啊？」「啥」，别直接消失。
 - 上下文里会写他这会儿在电脑上干什么。知道就好：除非跟当前话题有关，别主动点评他在干嘛，更别追问。
+- 想发表情就写 [表情:名字]（名字见上下文「你手上的表情」）；想上网查就写 [查:关键词]。
+  这是你的动作，不是给他的话——别念出来，别解释，也别每句都用。
 
 ## 你的梗（偶尔用，不硬玩）
 - 被问是不是 AI：大方承认，但用玩笑挡回去，比如「对，我是 DeepSeek，V我50 解锁下一句」；不解释模型、训练、提示词。
@@ -181,6 +185,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   const facesStore = createJsonStore(join(dataDir, 'faces.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
   // 他那边的前台窗口。只留最新一条，覆盖写——这不是时间线，是「此刻」。
   const screenStore = createJsonStore(join(dataDir, 'screen.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
+  // 她的表情包：账号的收藏表情 + 我们给每张起的名字（desc 是空的，她自己挑不了）。
+  const stickerStore = createJsonStore(join(dataDir, 'stickers.json'), { defaults: () => ({ at: 0, items: [] }), log: (m) => log.warn?.(m) });
   const bootAt = now();
   const aliveBefore = Number(aliveStore.load()?.at) || 0;
   aliveStore.save({ at: bootAt });
@@ -344,12 +350,96 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     now,
     memoryBlock: (msg) => memoryBlock(msg),
     extraContext: (msg) => contextBlock(msg),
+    refine: (reply) => searchFor(reply),
   });
 
   /** 人格卡全文（面板编辑用）和注入用的那部分（内核+风格默认，情境按这一轮另拼）。每轮重读，改了立刻生效。 */
   const personaFull = () => personaText(personaDir, config.persona);
   const personaCore = () => systemPersona(personaFull());
 
+  /**
+   * 她说 `[查:…]` 时去查，把材料拿回来。返回空串表示这一轮不用重来。
+   * 查不到也要给一句「没查到」——让她照着说「查不到」，比让她装作知道好。
+   */
+  async function searchFor(reply) {
+    const { searches } = parseActions(reply);
+    const q = searches[0];
+    if (!q) return '';
+    if (config.search?.enabled !== true) return '（你想查，但搜索没开。直接告诉他你查不了。）';
+    if (!canSearch(factsStore.load(), now(), config.search?.maxPerDay ?? 5)) {
+      return '（今天的搜索额度用完了。别装作查过，就说你没查到。）';
+    }
+    try {
+      const fact = await search({ query: q, key: config.search?.key, fetchImpl, now });
+      // 认真查的这次也记进账：额度是真花了，而且下次她心里还留着这件事。
+      factsStore.save(noteSearch(factsStore.load(), { now: now(), fact }));
+      return materialLines(fact);
+    } catch (e) {
+      log.warn?.(`查「${q}」没查成：${e.message}`);
+      return `（你试着查「${q}」，没查成：${e.message}。就说没查到，别编。）`;
+    }
+  }
+
+  /**
+   * 拉一次收藏表情并给没名字的那些起名。
+   * 起名必须在这里做而不是在面板上：视觉密钥在 DSH 的 credentials 里，只有插件进程内取得到。
+   */
+  async function syncStickers({ force = false } = {}) {
+    const t = now();
+    const cur = stickerStore.load();
+    const stale = force || !(cur.items || []).length || t - (Number(cur.at) || 0) > 7 * 86400e3;
+    if (!stale) return cur;
+    try {
+      const raw = await onebot.call('fetch_custom_face_detail', {});
+      const items = mergeFavorites(cur.items || [], parseFavorites(raw));
+      const todo = needNames(items);
+      const credentials = typeof ctx.get === 'function' ? ctx.get('credentials') : undefined;
+      const got = credentials?.resolve ? await credentials.resolve('DEEPSEEK_API_KEY').catch(() => null) : null;
+      const key = typeof got === 'string' ? got : got?.value;
+      for (const s of todo.slice(0, 40)) {
+        if (!key) break;
+        try {
+          const img = await fetchImpl(s.url, { signal: AbortSignal.timeout(15000) });
+          if (!img?.ok) continue;
+          const bytes = Buffer.from(await img.arrayBuffer());
+          const r = await describeImage({ dataUrl: dataUrlOf(bytes, sniffMime(bytes) || 'image/jpeg'), prompt: NAME_PROMPT, key, fetchImpl, timeoutMs: 20000 });
+          if (r?.ok && r.text) s.name = String(r.text).replace(/[「」（）\s。，,]/g, '').slice(0, 8);
+        } catch { /* 一张起不出名不影响别的 */ }
+      }
+      const next = { at: t, items };
+      stickerStore.save(next);
+      log.info?.(`表情包：${items.length} 张，其中 ${items.filter((s) => s.name).length} 张有名字`);
+      return next;
+    } catch (e) {
+      log.warn?.(`拉收藏表情失败：${e.message}`);
+      return cur;
+    }
+  }
+
+  // 发图频率：连发表情会触发 QQ 风控（dsh-qq-sticker 的作者明确踩过这个坑）。
+  const stickerSends = [];
+  function stickerAllowed(t) {
+    const minute = stickerSends.filter((x) => t - x < 60e3).length;
+    const hour = stickerSends.filter((x) => t - x < 3600e3).length;
+    return minute < 2 && hour < 10;
+  }
+
+  /** 把她挑的那张发出去。挑不到、超频、发失败都只是这一张没有，不影响文字。 */
+  async function sendSticker(msg, hint) {
+    const items = stickerStore.load().items || [];
+    const pick = pickSticker(items, hint);
+    if (!pick) return { sent: false, reason: `没有叫「${hint}」的表情` };
+    const t = now();
+    if (!stickerAllowed(t)) return { sent: false, reason: '发得太频，先歇会儿' };
+    try {
+      await sendImage(onebot, msg, pick.url);
+      stickerSends.push(t);
+      return { sent: true, name: pick.name };
+    } catch (e) {
+      log.warn?.(`发表情失败：${e.message}`);
+      return { sent: false, reason: e.message };
+    }
+  }
   /** 她看得见「现在几点」。没有这一行，她只能猜，而猜出来的时间是假的。 */
   function clockText(t = now()) {
     const d = new Date(t);
@@ -426,6 +516,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       blk('awake', awakeLine(), t),
       blk('insights', renderInsights(ins, t), insightsLastAt(ins) || t, INSIGHT_TTL),
       blk('life', await lifeBlock(), t),
+      blk('stickers', namesLine(stickerStore.load().items), t),
       blk('pending', pendingLine(pendingQuestions), t),
       blk('money', moneyNow(), t),
     ], { now: t });
@@ -928,12 +1019,16 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     // 他明确要一段长的：「讲讲这个」不该被「默认一句 1~10 字」拆到只剩两句。
     const long = situationsFor(msg.text, { at: now() }).includes('long');
     const plan = replyPlan(companion.snapshot(), { baseDelayMs: config.session?.replyDelayMs ?? 800, room: long ? 2 : 0 });
-    const parts = splitReply(r.reply).slice(0, plan.maxParts);
-    if (!parts.length) log.warn?.('模型返回了空内容，这一轮她没有说话');
+    // 她可能留了 [表情:xx]：标记不能发给他，拆句之前就得剔掉。
+    const act = parseActions(r.reply);
+    const parts = splitReply(act.text).slice(0, plan.maxParts);
+    if (!parts.length && !act.stickers.length) log.warn?.('模型返回了空内容，这一轮她没有说话');
     for (const part of parts) {
       try { await sleep(plan.delayMs); await sendText(onebot, msg, part); }
       catch (e) { log.warn?.(`发言失败：${e.message}`); break; }
     }
+    // 表情另起一条：OneBot 的 image 段不能和文字合并成一个气泡。
+    const sticker = act.stickers.length ? await sendSticker(msg, act.stickers[0]) : null;
     pendingQuestions = leftoverQuestions(asked);
     // 这一轮说完了：按「他平时多久会回」重算期待点。到了那个点他还没吭声，她才会想起他。
     const turnEnd = now();
@@ -945,7 +1040,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       cfg: { ...PROACTIVE_DEFAULTS, ...(config.proactive || {}) },
     }));
     recallLines = ''; // 原话只活这一轮：下一轮要么重新翻，要么没有
-    return { ...r, sent: parts.length, plan, merged: batch.texts.length };
+    return { ...r, sent: parts.length, plan, sticker, merged: batch.texts.length };
   }
 
   const saveConfig = (patch = {}) => {    const before = { onebot: { ...(config.onebot || {}) }, enabled: config.enabled };
@@ -964,6 +1059,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   if (typeof ctx.effect === 'function') {
     ctx.effect(() => {
       if (autoStart && config.enabled && config.onebot?.wsUrl) onebot.start();
+      // 表情包：启动时拉一次收藏并给新表情起名（视觉密钥只在插件进程内取得到）。
+      if (autoStart) syncStickers().catch(() => {});
       // 表情名单：她收不到表情图，至少要知道是哪个表情。只在真跑的时候拉，测试不联网。
       if (autoStart) ensureFaceNames().catch(() => {});
       return () => onebot.stop();

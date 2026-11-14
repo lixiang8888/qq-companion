@@ -241,6 +241,26 @@ export function createLocalSession({
     },
 
     /**
+     * 同一轮里再要一次回复：她在上一版里写了 `[查:…]`，我们去查了，把材料补进 context 再问一遍。
+     *
+     * 第一版的回复作废——它被第二轮取代了。留着的话，她下一轮会看见自己说过两遍同一句话，
+     * 而且第一遍里还带着没兑现的方括号。
+     */
+    async retry(context = '') {
+      const msgs = withStamps(history, now());
+      const reply = await complete({ system: systemOf(context), messages: msgs });
+      const clean = String(reply ?? '').trim();
+      if (clean) {
+        const at = now();
+        if (history.at(-1)?.role === 'assistant') history[history.length - 1] = { role: 'assistant', text: clean, at };
+        else history.push({ role: 'assistant', text: clean, at });
+        try { onMessage?.({ role: 'assistant', text: clean, at }); } catch { /* 归档失败不影响回话 */ }
+      }
+      save();
+      return clean;
+    },
+
+    /**
      * 记一句「她真的发出去过的话」，但不叫模型。
      * 主动搭话走的是独立调用，不经过这里；可她确实对他说了那句话，
      * 不记下来的话，他下一句接上时她会完全不知道自己刚说过什么。
