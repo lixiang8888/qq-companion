@@ -199,7 +199,25 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
 
   /** 每轮：先按天结算记忆卡，再渲染「过去」，最后把这句记下来（主人私聊）。 */
   const recallLog = [];
-  async function memoryBlock(msg, { mood = null } = {}) {
+  // 图注是这个形状，发给他之前贴在他那句话前面（见 vision.js 的 withImageText）。
+  const IMAGE_NOTE = /^（你看了一眼他刚发来的图：([\s\S]*?)知道就行，别复述）/;
+  // 「你刚说」只能指刚才：隔了一夜的上一句，说「刚」就是骗人。
+  const ASK_WINDOW_MS = 10 * 60e3;
+
+  /** 上一轮他说的话（不是这一轮：这一轮还没进历史）。 */
+  function lastAsk(t) {
+    const hist = session.snapshot().history || [];
+    for (let i = hist.length - 1; i >= 0; i -= 1) {
+      const m = hist[i];
+      if (m?.role !== 'user') continue;
+      const at = Number(m.at) || 0;
+      if (!at || t - at > ASK_WINDOW_MS) return '';
+      return String(m.text || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+    }
+    return '';
+  }
+
+  async function memoryBlock(msg, { mood = null, heat = null } = {}) {
     const t = now();
     let card = maintain(memoryStore.load(), t);
     // 先渲染再记：这一句已经在本轮对话里了，再塞进记忆块就是让「过去」冒充「现在」，
@@ -216,8 +234,15 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     // 分类和召回都会跟着坏。渲染用的是合并后的整段（当 query 更准）。
     const parts = Array.isArray(msg.parts) && msg.parts.length ? msg.parts : [msg.text];
     const owner = String(msg.userId) === String(config.ownerQQ);
+    const askedBy = lastAsk(t);
+    // 这一句自己的情绪强度优先；认不出（发图多半认不出）就用当前情绪折算。
+    const h = Number.isFinite(heat) ? heat : (Number(mood?.intensity) || 0) / 2;
     for (const part of parts) {
-      card = remember(card, sanitizeSecrets(part), { now: t, owner, direct: true, mood });
+      const raw = sanitizeSecrets(part);
+      const pic = IMAGE_NOTE.exec(raw);
+      // 画面描述不进正文：存「他发了一张图」，细节放 detail——否则每轮上下文里都有画面。
+      const text = pic ? `他发了一张图${raw.slice(pic[0].length).replace(/\s+/g, ' ').trim()}` : raw;
+      card = remember(card, text, { now: t, owner, direct: true, mood, heat: h, askedBy, detail: pic ? pic[1] : '' });
     }
     memoryStore.save(card);
     return block;

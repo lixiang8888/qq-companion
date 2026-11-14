@@ -24,7 +24,8 @@ export function tokenize(text) {
 export function buildIndex(records) {
   const df = new Map();
   const docs = records.map((r) => {
-    const toks = tokenize(`${r.text}`);
+    // 上一句也要能搜：「金发那个」应该能把「她叫菲比」翻出来。
+    const toks = tokenize(`${r.text} ${r.askedBy || ''}`);
     const tf = new Map();
     for (const t of toks) tf.set(t, (tf.get(t) || 0) + 1);
     for (const t of tf.keys()) df.set(t, (df.get(t) || 0) + 1);

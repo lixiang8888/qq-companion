@@ -1007,8 +1007,38 @@ test('三个 [查] 只查前两条：一次把一天的额度烧光不值得', a
   assert.equal(asked.length, 2);
 });
 
-test('面板表情：图能看见、名字能改、试发真的发出去', async () => {
-  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-sticker-panel-'));
+test('发图那一轮：正文只留「他发了一张图」，画面描述进 detail 不进上下文', async () => {
+  const { host } = setup();
+  const pic = '（你看了一眼他刚发来的图：一个穿红裙子的女孩站在雨里。知道就行，别复述）好不好看';
+  await host.memory.block({ text: pic, parts: [pic], userId: '42' }, { heat: 0.8 });
+
+  const rec = host.memory.card().records.at(-1);
+  assert.equal(rec.text, '他发了一张图好不好看');
+  assert.match(rec.detail, /红裙子/, '画面留在 detail 里，不丢');
+  assert.equal(rec.heat, 0.8, '那一刻的重量要存下来');
+
+  const block = await host.memory.block({ text: '再聊点别的', parts: ['再聊点别的'], userId: '42' });
+  assert.match(block, /他发了一张图/, '她得记得发过图');
+  assert.doesNotMatch(block, /红裙子/, '但不能每轮都把画面念一遍');
+});
+
+test('记忆带上下文：下一轮记得上一轮他问的那句', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-ask-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  const sent = [];
+  const fetchImpl = async (url, init) => gwOk(sent, init?.body);
+  const ctx = fakeCtx({ replies: ['金发那个啊', '她叫菲比'] });
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent(say('金发那个叫什么'));
+  await host.handleEvent(say('她叫菲比'));
+
+  const rec = host.memory.card().records.at(-1);
+  assert.equal(rec.text, '她叫菲比');
+  assert.equal(rec.askedBy, '金发那个叫什么', '「她」是谁，得跟着那句话一起记住');
+});
+
+test('面板表情：图能看见、名字能改、试发真的发出去', async () => {  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-sticker-panel-'));
   writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
   writeFileSync(join(dataDir, 'stickers.json'), JSON.stringify({
     at: NOON,

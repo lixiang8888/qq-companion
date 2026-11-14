@@ -48,7 +48,7 @@ export function createCompanion({ load, save, session, ownerQQ = '', now = Date.
       save(st);
 
       const context = buildContext(st, t);
-      const memory = await memoryBlock(msg, { mood: st.emotion }).catch(() => '');
+      const memory = await memoryBlock(msg, { mood: st.emotion, heat: a.emotion?.intensity }).catch(() => '');
       // 「她此刻在干什么」由 host 拼（要读 life.json、要看这一轮是什么场合），这里只负责接上去。
       const life = await extraContext(msg).catch(() => '');
       const reply = await session.prompt(msg.chatId, msg.text, {

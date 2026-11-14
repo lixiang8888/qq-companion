@@ -59,6 +59,37 @@ test('主人重要记忆：不会跌到只剩印象', () => {
   assert.equal(targetClarity(card.records[1], T0 + 400 * DAY_MS), 'clear');
 });
 
+test('情绪重量：那一刻很重的半年后还记得，不重的照旧会忘', () => {
+  let card = remember(createCard(T0), '她说她叫菲比', { now: T0, owner: true, heat: 0.9 });
+  card = remember(card, '嗯', { now: T0, heat: 0.05 });
+  const [hot, cold] = card.records;
+
+  const later = maintain(card, T0 + 180 * DAY_MS);
+  const h = later.records.find((r) => r.id === hot.id);
+  const c = later.records.find((r) => r.id === cold.id);
+  assert.ok(['vivid', 'clear'].includes(h.clarity), `热的应该还清楚，实际 ${h.clarity}`);
+  assert.equal(h.forgottenAt, undefined, '热过的事不能被清掉');
+  assert.ok(c.forgottenAt !== undefined, '不重的日常闲话该忘就忘');
+});
+
+test('负向高热：记得「发生了什么」，但不给最清楚（你选的 A）', () => {
+  // 先垫一条：空卡片的第一条会被当成「初次相遇」置顶，那是另一条规则。
+  const seed = () => remember(createCard(T0), '随便说一句', { now: T0 });
+  const bad = remember(seed(), '你凶我了', { now: T0, owner: true, heat: 0.9, mood: { v: 0.2, a: 0.7 } }).records.at(-1);
+  assert.equal(targetClarity(bad, T0 + 30 * DAY_MS), 'clear', '难受的事细节降档，不是删掉');
+
+  const good = remember(seed(), '你说喜欢我', { now: T0, owner: true, heat: 0.9, mood: { v: 0.85, a: 0.5 } }).records.at(-1);
+  assert.equal(targetClarity(good, T0 + 30 * DAY_MS), 'vivid', '好的记忆该全留');
+});
+
+test('上下文：闲话记得他刚问的那句，身份类不加', () => {
+  const card = remember(createCard(T0), '她叫菲比', { now: T0, owner: true, askedBy: '金发那个叫什么' });
+  assert.match(render(card, { now: T0 }), /你刚说「金发那个叫什么」，答：她叫菲比/);
+
+  const own = remember(createCard(T0), '我养了只猫', { now: T0, owner: true, askedBy: '刚才说什么呢' });
+  assert.equal(own.records[0].askedBy, undefined, '身份类自己站得住，加了是重复一遍');
+});
+
 test('遗忘：不重要又很久的，被标记遗忘而不是立刻消失（可找回）', () => {
   let card = remember(createCard(T0), '嗯', { now: T0 });
   card = maintain(card, T0 + 60 * DAY_MS);

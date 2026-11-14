@@ -18,6 +18,17 @@ const CONFLICT_WORDS = ['吵架', '生气', '道歉', '和好', '误会', '冷�
 
 const hits = (text, words) => words.reduce((n, w) => n + (text.includes(w) ? 1 : 0), 0);
 
+// 情绪重量：那一刻这件事有多重（0~1），写入时冻结。
+// 不重算是有意的——按「此刻的心情」重算等于让她每次心情差就觉得过去全不重要。
+export const HEAT_KEEP = 0.6;   // 高于它：长期清楚、不清除
+export const HEAT_GIST = 0.35;  // 低于它：按日常闲话老化，最后可以忘掉
+
+/** 老记录没有 heat，按重要度折算兜底；不冒充当时的情绪，也不让它们全被判成「不重要」。 */
+export function heatOf(rec) {
+  if (Number.isFinite(rec?.heat)) return Math.max(0, Math.min(1, rec.heat));
+  return Math.min(0.6, ((Number(rec?.importance) || 0) / 100) * 0.6);
+}
+
 /**
  * 重要度：纯函数、不调模型。
  * 主人私聊 +42 / 群里 +32，情绪浓度 +0~24，第一次 +30，约定 +16，矛盾 +14。
@@ -127,19 +138,25 @@ export function undoSupersede(card, id) {
   return next;
 }
 
-/** 记录的目标清晰度：由重要度、被想起次数、最近性、时间惩罚共同决定。 */
+/** 记录的目标清晰度：由重要度、被想起次数、最近性、情绪重量、时间惩罚共同决定。 */
 export function targetClarity(rec, now) {
   if (rec.pinned || rec.first) return 'vivid';
   // 关于他是谁的东西不会因为"很久没提"就变成只剩印象——那正是陪伴体最该记住的部分。
   if (rec.kind === 'identity') return (now - rec.lastSeenAt) / DAY_MS <= 7 ? 'vivid' : 'clear';
+  const heat = heatOf(rec);
   const days = Math.max(0, (now - rec.createdAt) / DAY_MS);
   const sinceSeen = Math.max(0, (now - rec.lastSeenAt) / DAY_MS);
   let retention = rec.importance
     + Math.min(12, (rec.recallCount || 0) * 2)
     + (sinceSeen <= 7 ? 18 : 0)
+    + Math.round(heat * 30)
     - Math.max(0, days - 7) * (rec.owner ? 0.12 : 0.35);
   if (rec.owner && rec.importance >= 65) retention = Math.max(55, retention);
   if (sinceSeen <= 7) retention = Math.max(50, retention);
+  // 那一刻很重的，不按日常闲话老化：它可能三个月没人提，但一提就是那件事。
+  if (heat >= HEAT_KEEP) retention = Math.max(76, retention);
+  // A（你定的）：负向高热记得的是「发生了什么事 + 我当时多难受」，不是原话细节。
+  if (heat >= HEAT_KEEP && Number(rec.feel?.v) <= 0.4) return 'clear';
   if (days > 60 && rec.importance < 50 && !rec.owner) return 'trace';
   if (retention >= 75) return 'vivid';
   if (retention >= 50) return 'clear';
@@ -182,7 +199,7 @@ export function maintain(card, now) {
       kept.push(r);
       continue;
     }
-    const forgettable = r.clarity === 'trace' && !r.pinned && !r.first && !r.owner && r.kind !== 'identity' && r.importance < 20;
+    const forgettable = r.clarity === 'trace' && !r.pinned && !r.first && !r.owner && r.kind !== 'identity' && r.importance < 20 && heatOf(r) < HEAT_GIST;
     if (forgettable) {
       // 真删改成软删除：标上时间，90 天内都能从面板找回来。
       r.forgottenAt = now;
@@ -234,7 +251,7 @@ export function restore(card, id) {
 }
 
 /** 记住一条。去重（同文不同次），主人的话优先。 */
-export function remember(card, text, { now = 0, owner = false, inGroup = false, direct = false, pinned = false, maxRecords = MAX_RECORDS, mood = null, source = 'said', quote = '' } = {}) {
+export function remember(card, text, { now = 0, owner = false, inGroup = false, direct = false, pinned = false, maxRecords = MAX_RECORDS, mood = null, source = 'said', quote = '', heat = null, askedBy = '', detail = '' } = {}) {
   const t = String(text || '').trim();
   if (!t) return card;
   const next = structuredClone(card);
@@ -275,6 +292,12 @@ export function remember(card, text, { now = 0, owner = false, inGroup = false, 
     owner: Boolean(owner),
   };
   if (feel) rec.feel = feel;
+  if (Number.isFinite(heat)) rec.heat = round2(Math.max(0, Math.min(1, heat)));
+  // 「她叫菲比」这种闲话离开上一句就没了主语，存下来，注入时才有得补。
+  // 身份类/事件类自己站得住，加了反而是「（你刚说「我养了只猫」）我养了只猫」。
+  if (askedBy && kind === 'chatter') rec.askedBy = String(askedBy).slice(0, 40);
+  // 图的画面只留在 detail 里：她记得「你发过图」，不必每轮都把画面念一遍。
+  if (detail) rec.detail = String(detail).slice(0, 400);
   // 先判断覆盖，再入栈：不然新记录会和自己比，把自己的两字窗当成「同一件事」。
   const victim = findSupersedeTarget(next, t);
   next.records.push(rec);
@@ -340,7 +363,12 @@ export function render(card, { now = 0, maxChars = 2200, query = '' } = {}) {
     const feeling = feelLabel(r.feel);
     if (feeling) bits.push(feeling);
     const tag = bits.length ? `（${bits.join('，')}）` : '';
-    const line = `- [${when}]${tag} ${r.text}`;
+    // 带上他当时那句话：不然「她叫菲比」里的「她」是谁，只能靠她猜。
+    // 只给短片段加——长句自己带够了信息，实测每条要多花 45 字，2200 字预算会少装二十多条。
+    const ask = String(r.askedBy || '').trim();
+    const line = ask && String(r.text).length <= 12
+      ? `- [${when}]${tag} 你刚说「${ask}」，答：${r.text}`
+      : `- [${when}]${tag} ${r.text}`;
     if (used + line.length > maxChars) break;
     lines.push(line);
     used += line.length + 1;
