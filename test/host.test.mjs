@@ -1006,3 +1006,29 @@ test('三个 [查] 只查前两条：一次把一天的额度烧光不值得', a
 
   assert.equal(asked.length, 2);
 });
+
+test('面板表情：图能看见、名字能改、试发真的发出去', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-sticker-panel-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  writeFileSync(join(dataDir, 'stickers.json'), JSON.stringify({
+    at: NOON,
+    items: [{ md5: 'm1', url: 'https://p.qpic.cn/qq_expression/m1/0', name: '' }],
+  }));
+  const sent = [];
+  const fetchImpl = async (url, init) => gwOk(sent, init?.body);
+  const ctx = fakeCtx();
+  createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, fetchImpl });
+  const panel = ctx.routes.find((r) => r.path.endsWith('/panel'));
+  const call = async (url) => { let out = ''; await panel.handler({ url }, { setHeader() {}, end: (s) => { out = s; } }); return out; };
+
+  const html = await call('/qq-companion/api/panel');
+  assert.match(html, /qq_expression\/m1/, '面板上要看得到那张图');
+  assert.match(html, /没名字/, '没名字的要标出来');
+
+  await call(`/qq-companion/api/panel?ren=m1&as=${encodeURIComponent('震惊')}`);
+  const saved = JSON.parse(readFileSync(join(dataDir, 'stickers.json'), 'utf8'));
+  assert.equal(saved.items[0].name, '震惊', '改的名字要落盘，不然重启就白改了');
+
+  await call('/qq-companion/api/panel?sendst=m1');
+  assert.ok(sent.some((b) => b.includes('qq_expression/m1')), '试发要真的发出去');
+});

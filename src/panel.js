@@ -49,6 +49,19 @@ export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', 
   const stickerText = !stickers?.total
     ? '还没同步过（重启后自动拉一次收藏）'
     : `${stickers.total} 张，${stickers.named} 张有名字${stickers.named < stickers.total ? '（没名字的挑不到，发不出去）' : ''}`;
+  // 图库：她挑图靠名字，名字错了她就会说「无语」发一张笑脸。所以图和名字要能一眼对上。
+  const stickerItems = stickers?.items || [];
+  const stickerGrid = stickerItems.length
+    ? `<div class="stickers">${stickerItems.map((s) => `<div class="sticker">
+      <img src="${escapeHtml(s.url)}" alt="" loading="lazy">
+      <form method="get" action="">
+        <input type="hidden" name="ren" value="${escapeHtml(s.md5)}">
+        <input name="as" value="${escapeHtml(s.name || '')}" placeholder="没名字" maxlength="8">
+        <button type="submit">存</button>
+      </form>
+      <a href="?sendst=${encodeURIComponent(s.md5)}">发我看看</a>
+    </div>`).join('')}</div>`
+    : '<p class="dim">还没拉到收藏表情</p>';
   const traits = TRAITS.map((k) => {
     const v = state.self[k];
     const dev = v - TRAIT_BASE[k];
@@ -144,6 +157,13 @@ export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', 
   form input { width: 100%; box-sizing: border-box; padding: 5px 7px; margin-top: 2px;
     border: 1px solid rgba(127,127,127,.4); border-radius: 6px; background: transparent; color: inherit; font: inherit; }
   form button { margin-top: 10px; padding: 6px 16px; border-radius: 6px; border: 0; background: #4d6bfe; color: #fff; font: inherit; }
+  .stickers { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; margin-top: 8px; }
+  .sticker { text-align: center; }
+  .sticker img { width: 72px; height: 72px; object-fit: contain; display: block; margin: 0 auto 4px; }
+  .sticker form { display: flex; gap: 4px; }
+  .sticker form input { width: auto; flex: 1; min-width: 0; padding: 3px 5px; margin: 0; font-size: 12px; }
+  .sticker form button { margin: 0; padding: 3px 8px; font-size: 12px; }
+  .sticker a { font-size: 12px; }
 </style></head>
 <body>
 <h1>QQ 陪伴体</h1>
@@ -192,6 +212,7 @@ ${section('最近想起', recalls.length    ? `<ul>${recalls.map((r) => `<li><sp
     : '<p class="dim">还没有聊过</p>')}
 ${section('最近对话', chatText)}
 ${section('运行', `<p>网关：${escapeHtml(gateway)} · 会话 ${session.size ?? 0} 条（最近 ${session.keepHours ?? 0} 小时内的原话一句不压）· 已压缩 ${session.compactions ?? 0} 次 · 人格 ${escapeHtml(persona || '未设置')}</p><p class="dim">他那边：${escapeHtml(screenText)} · 表情：${escapeHtml(stickerText)}</p>${session.lastError ? `<p class="dim">上次压缩失败：${escapeHtml(session.lastError.message)}</p>` : ''}`)}
+${section('表情', `${stickerGrid}${stickers?.note ? `<p class="dim">${escapeHtml(stickers.note)}</p>` : ''}<p class="dim">名字是随便起的，不对就直接改——她只会照着名字挑。</p>`)}
 ${section('钱包', moneyText)}
 ${section('设置', `<form method="post" action="config">
   <label>ownerQQ（只回这个人的私聊；不填她谁都不回）<input name="ownerQQ" value="${escapeHtml(cfg.ownerQQ || '')}"></label>

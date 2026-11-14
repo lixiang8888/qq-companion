@@ -38,7 +38,7 @@ import { fetchWeather, isStale, placeOf, weatherLine } from './weather.js';
 import { SCREEN_TTL, readScreen, sanitize, screenLine } from './screen.js';
 import { canSearch, factLine, latestFact, materialLines, noteSearch, search } from './search.js';
 import { parseActions } from './actions.js';
-import { NAME_PROMPT, mergeFavorites, namesLine, needNames, parseFavorites, pickSticker } from './stickers.js';
+import { MAX_NAME, NAME_PROMPT, mergeFavorites, namesLine, needNames, parseFavorites, pickSticker } from './stickers.js';
 
 export const name = 'qq-companion';
 // cordis 的 inject 是「必填服务」清单：只有列在这里的服务，访问时才不会抛，
@@ -1349,7 +1349,11 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       const qzTest = q.get('qztest');
       const qzCheck = q.get('qzcheck');
       const sendImg = q.get('sendimg');
-      if ((at || pinId || forgetId || restoreId || unsupersedeId || qzDelete || qzTest || qzCheck || sendImg) && !sameSiteOnly(req)) {
+      const renMd5 = q.get('ren');
+      const renAs = String(q.get('as') ?? '').trim().slice(0, MAX_NAME);
+      const sendSt = q.get('sendst');
+      let panelNote = '';
+      if ((at || pinId || forgetId || restoreId || unsupersedeId || qzDelete || qzTest || qzCheck || sendImg || renMd5 || sendSt) && !sameSiteOnly(req)) {
         return '跨站请求被拒绝：面板上的操作只接受本页点击。';
       }
       if (at) {
@@ -1366,6 +1370,27 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         if (restoreId) card = restore(card, restoreId);
         if (unsupersedeId) card = undoSupersede(card, unsupersedeId);
         memoryStore.save(card);
+      }
+      // 表情改名：视觉模型起的名只是起个头，改对了她挑图才不会张冠李戴。
+      if (renMd5 && renAs) {
+        const cur = stickerStore.load();
+        const items = (cur.items || []).map((s) => (s.md5 === renMd5 ? { ...s, name: renAs } : s));
+        stickerStore.save({ ...cur, items });
+        panelNote = `「${renAs}」已改名`;
+      }
+      // 表情试发：直接发到他私聊，看一眼网关那边认不认这个 url。
+      if (sendSt) {
+        const item = (stickerStore.load().items || []).find((s) => s.md5 === sendSt);
+        if (!item?.url) panelNote = '这张没有 url，发不出去';
+        else {
+          try {
+            await sendImage(onebot, { kind: 'private', userId: String(config.ownerQQ), chatId: `private:${config.ownerQQ}` }, item.url);
+            panelNote = `试发了「${item.name || item.md5.slice(0, 6)}」`;
+          } catch (e) {
+            panelNote = `试发失败：${e.message}`;
+            log.warn?.(`表情试发失败：${e.message}`);
+          }
+        }
       }
       if (qzTest) await evaluatePost({ force: true });
       if (qzCheck) await refreshQzoneComments({ force: true });
@@ -1408,7 +1433,12 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         screen: screenStore.load(),
         stickers: (() => {
           const items = stickerStore.load().items || [];
-          return { total: items.length, named: items.filter((s) => s.name).length };
+          return {
+            total: items.length,
+            named: items.filter((s) => s.name).length,
+            items: items.map((s) => ({ md5: s.md5, name: s.name || '', url: s.url || '' })),
+            note: panelNote,
+          };
         })(),
         config: {
           ownerQQ: config.ownerQQ,
