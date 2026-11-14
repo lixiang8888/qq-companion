@@ -44,7 +44,8 @@ export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', 
   const conn = cfg.onebot || {};
   const screenText = !cfg.screen?.enabled
     ? '屏幕感知关着（设置里可以打开）'
-    : (screenLine(screen, now) || '开着，但这五分钟没读到');
+    // 过期和「读不到」是两件事：读到过但要等下一轮才更新，别把它说成没读到。
+    : (screenLine(screen, now) || (screen?.app ? `上次看到 ${screen.app}，这会儿没刷新` : '开着，但还没读到'));
   const stickerText = !stickers?.total
     ? '还没同步过（重启后自动拉一次收藏）'
     : `${stickers.total} 张，${stickers.named} 张有名字${stickers.named < stickers.total ? '（没名字的挑不到，发不出去）' : ''}`;
