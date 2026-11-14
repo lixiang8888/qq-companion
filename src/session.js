@@ -238,7 +238,8 @@ export function createLocalSession({
       if (clean) {
         const at2 = now();
         history.push({ role: 'assistant', text: clean, at: at2 });
-        try { onMessage?.({ role: 'assistant', text: clean, at: at2 }); } catch { /* 归档失败不影响回话 */ }
+        // 这里不再归档：这一版可能被 retry 换掉，而第一版从来没发出去过。
+        // 真正发出去之后由 host 归档。
       }
       save();
       return clean;
@@ -263,7 +264,7 @@ export function createLocalSession({
         const at = now();
         if (history.at(-1)?.role === 'assistant') history[history.length - 1] = { role: 'assistant', text: clean, at };
         else history.push({ role: 'assistant', text: clean, at });
-        try { onMessage?.({ role: 'assistant', text: clean, at }); } catch { /* 归档失败不影响回话 */ }
+        // 也不在这里归档：两版都归了档，以后翻旧账会翻到那句没说出口的草稿。
       }
       save();
       return clean;

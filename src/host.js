@@ -408,7 +408,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     session,
     ownerQQ: config.ownerQQ || '',
     now,
-    memoryBlock: (msg) => memoryBlock(msg),
+    // 第二个参数（mood/heat）必须传下去：漏了它，情绪重量和「记下它时的心情」就一起丢了。
+    memoryBlock: (msg, opts) => memoryBlock(msg, opts),
     extraContext: (msg) => contextBlock(msg),
     refine: (reply) => searchFor(reply),
   });
@@ -502,6 +503,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     try {
       await sendImage(onebot, msg, pick.url);
       stickerSends.push(t);
+      // 只留最近一小时：不然这个数组只增不减，一年下来几千个数躺在内存里。
+      while (stickerSends.length && t - stickerSends[0] > 3600e3) stickerSends.shift();
       return { sent: true, name: pick.name };
     } catch (e) {
       log.warn?.(`发表情失败：${e.message}`);
@@ -743,7 +746,10 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     if (!g.ok) return { poked: false, reason: g.reason };
 
     const lastLine = [...hist].reverse().find((m) => m.role === 'user')?.text || '';
-    const hint = rankForPrompt(memoryStore.load(), { now: t }).find((r) => !r.pinned && !r.first)?.text || '';
+    // 「还挂着件事」只能指最近：拿三个月前的记忆当此刻的念头，是替她编。
+    const fresh = t - 24 * 3600e3;
+    const hint = rankForPrompt(memoryStore.load(), { now: t })
+      .find((r) => !r.pinned && !r.first && (Number(r.createdAt) || 0) >= fresh)?.text || '';
     const prompt = composePokePrompt({
       clock: clockText(t),
       idle: `他已经 ${g.idleHours} 小时没跟你说话了`,
@@ -762,7 +768,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         maxTokens: 400,
       }) || '');
     } catch (e) {
-      pokeStore.save(noteWait({ state, now: t }));
+      pokeStore.save(noteWait({ state, now: t, cfg }));
       log.warn?.(`主动搭话前想不动：${e.message}`);
       return { poked: false, reason: `想的时候出错了：${e.message}` };
     }
@@ -789,7 +795,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     }
 
     if (!decided.send) {
-      pokeStore.save(noteWait({ state: withThought, now: t, minutes: decided.waitMinutes }));
+      pokeStore.save(noteWait({ state: withThought, now: t, minutes: decided.waitMinutes, cfg }));
       return { poked: false, reason: decided.reason || '想过了，先不说', waitMinutes: decided.waitMinutes, search: decided.search || '', looked };
     }
 
@@ -895,11 +901,15 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   async function withImages(msg) {
     const segs = imageSegmentsOf(msg.segments);
     if (!segs.length) return msg;
+    // 只看了前两张：不告诉她「还有几张」，她就会当成全看过了。看不清也要说清。
+    const more = segs.length > 2
+      ? `（他一共发了 ${segs.length} 张图，你只看了前两张，剩下 ${segs.length - 2} 张没看——别当成全看过了）`
+      : '';
     const names = segs.map((s) => String(s?.data?.summary || '')).filter(Boolean);
     const credentials = typeof ctx.get === 'function' ? ctx.get('credentials') : undefined;
     const got = credentials?.resolve ? await credentials.resolve('DEEPSEEK_API_KEY').catch(() => null) : null;
     const key = typeof got === 'string' ? got : got?.value;
-    if (!key) return { ...msg, text: withImageText(msg.text, [], names) };
+    if (!key) return { ...msg, text: withImageText(msg.text, [], names) + more };
 
     const seen = [];
     // 这一轮真发给她看的原图。她当场看见的是画面本身，之后回想起的仍是那段文字描述。
@@ -952,7 +962,12 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         })),
       }, null, 2));
     } catch { /* 调试文件写不了也不能影响回话 */ }
-    return { ...msg, text: withImageText(msg.text, seen, names), images: shown, looked: seen };
+    return {
+      ...msg,
+      text: withImageText(msg.text, seen, names) + more,
+      images: shown,
+      looked: seen,
+    };
   }
 
   /**
@@ -1064,6 +1079,10 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     if (!msg || msg.kind !== 'private') return { ignored: 'not-private' };
     // 空消息（某些客户端会发空段）不值得叫一次模型，也不该写进记忆。
     if (!msg.text.trim()) return { ignored: 'empty' };
+    // 身份挡在**最前面**（在碰网络之前）：陌生人的私聊不该让视觉模型先看一眼再被拒，
+    // 也不该重置她的期待点、往她的上下文里塞「翻到的原话」。
+    if (!config.ownerQQ) return { ignored: 'no-owner' };
+    if (String(msg.userId) !== String(config.ownerQQ)) return { ignored: 'not-owner' };
     // 贴一整篇文章进来不该让这一轮直接失败：截断继续，别把她弄哑。
     if (msg.text.length > MAX_INBOUND_CHARS) {
       msg.text = `${msg.text.slice(0, MAX_INBOUND_CHARS)}…（后面太长，没看完）`;
@@ -1094,6 +1113,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const plan = replyPlan(companion.snapshot(), { baseDelayMs: config.session?.replyDelayMs ?? 800, room: long ? 2 : 0 });
     // 她可能留了 [表情:xx]：标记不能发给他，拆句之前就得剔掉。
     const act = parseActions(r.reply);
+    // 归档放在这里，不放 session 里：`[查:…]` 触发重答时，第一版草稿从没发出去过。
+    if (config.transcript?.enabled !== false) appendTranscript(dataDir, { at: now(), role: 'assistant', text: act.text });
     const parts = splitReply(act.text).slice(0, plan.maxParts);
     if (!parts.length && !act.stickers.length) log.warn?.('模型返回了空内容，这一轮她没有说话');
     for (const part of parts) {
@@ -1321,6 +1342,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     // 她自己的时间：到点就重新决定在干什么，跟她要不要主动搭话无关。
     enqueue(refreshLife).catch((e) => log.warn?.(`她的当下出错：${e.message}`));
     enqueue(refreshDiary).catch((e) => log.warn?.(`日记没写成：${e.message}`));
+    // 每周自述：漏了这一行，那句「我最近」写到过期就再也不出现（14 天 TTL）。
+    enqueue(refreshInsights).catch((e) => log.warn?.(`周自述出错：${e.message}`));
     enqueue(refreshBalance).catch((e) => log.warn?.(`查余额出错：${e.message}`));
     enqueue(evaluatePost).catch((e) => log.warn?.(`空间判定出错：${e.message}`));
     enqueue(refreshQzoneComments).catch((e) => log.warn?.(`查评论出错：${e.message}`));

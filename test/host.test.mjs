@@ -1085,6 +1085,106 @@ test('一轮说完就往账本里记一行，且不记他说的内容', async ()
   assert.equal(JSON.stringify(e).includes('在吗'), false, '他说的一个字都不进账本');
 });
 
+test('情绪落到记忆上：那一刻的心情和重量都存下来', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-feel-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  const sent = [];
+  const fetchImpl = async (url, init) => gwOk(sent, init?.body);
+  const ctx = fakeCtx({ reply: '嗯嗯' });
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent(say('我真的好喜欢你'));
+
+  const rec = host.memory.card().records.at(-1);
+  assert.ok(rec.feel && rec.feel.v > 0.55, '记下它时的心情');
+  assert.ok(rec.heat > 0, '那一刻的重量（为 0 就等于三档记忆没上线）');
+});
+
+test('心跳会写周自述：不然那句「我最近」过期就永远消失', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-insights-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  const ctx = fakeCtx();
+  ctx.llm.stream = async function* () {
+    yield { type: 'text-delta', text: 'work|最近过得还行\ngrowth|我学会了不催他' };
+    yield { type: 'finish', reason: { kind: 'done' } };
+  };
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {} });
+
+  await host.memory.block({ text: '他喜欢猫', userId: '42' });
+  await host.tick();
+  // 心跳里的刷新是排进队列的，不 await：再排一个同队列的空操作，等它就是在等前一个。
+  await host.insights.refresh();
+
+  const ins = host.insights.state();
+  assert.ok(ins.at > 0, '心跳要真的写下这一周的自我叙述');
+  assert.ok(ins.lines.length >= 2);
+});
+
+test('陌生人私聊：叫不动她，也不会把原话塞进你的下一轮', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-stranger-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  const sent = [];
+  const fetchImpl = async (url, init) => gwOk(sent, init?.body);
+  const ctx = fakeCtx({ reply: '嗯，我在' });
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  appendTranscript(dataDir, { at: NOON - 60e3, role: 'user', text: '明天要去面试' });
+  const r = await host.handleEvent({
+    post_type: 'message', message_type: 'private', user_id: 99,
+    raw_message: '你还记得上次那个面试吗', time: Math.floor(NOON / 1000),
+  });
+  assert.deepEqual(r, { ignored: 'not-owner' });
+  assert.equal(ctx.calls.length, 0, '陌生人叫不动她');
+
+  await host.handleEvent(say('在吗'));
+  assert.doesNotMatch(systemOf(ctx.calls[0]), /翻到的原话/, '陌生人的话不能漏进你的上下文');
+});
+
+test('一条回复里三张图：看不了也要说清只看了两张', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-manyimg-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  const sent = [];
+  const fetchImpl = async (url, init) => gwOk(sent, init?.body);
+  const ctx = fakeCtx({ reply: '好看' });
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  const img = (n) => ({ type: 'image', data: { url: `https://p.qpic.cn/x/${n}` } });
+  await host.handleEvent({
+    post_type: 'message', message_type: 'private', user_id: 42,
+    message: [{ type: 'text', data: { text: '看这几张' } }, img(1), img(2), img(3)],
+    time: Math.floor(NOON / 1000),
+  });
+
+  const rec = host.memory.card().records.at(-1);
+  assert.match(rec.text, /还有|没看/, '要让她知道自己漏看了，不然她会当成全看过');
+});
+
+test('重答时归档只有发出去的那版：草稿不算她说过的话', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-draft-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+    ownerQQ: '42', search: { enabled: true, key: 'k', maxPerDay: 5 },
+  }));
+  const sent = [];
+  const fetchImpl = async (url, init) => {
+    if (String(url).includes('tavily.com')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ answer: '杭州明天小雨', results: [{ title: 't', url: 'https://w.example.com/a', content: '杭州明天小雨转阴' }] }),
+      };
+    }
+    return gwOk(sent, init?.body);
+  };
+  const ctx = fakeCtx({ replies: ['我查一下[查:杭州天气]', '明天下雨，带伞'] });
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent(say('明天什么天气'));
+
+  const rows = readFileSync(join(dataDir, 'transcript-2026-01.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const hers = rows.filter((r) => r.role === 'assistant').map((r) => r.text);
+  assert.deepEqual(hers, ['明天下雨，带伞'], '第一版草稿从没发出去过，不能进归档');
+});
+
 test('想起一件事：把那天的前后两句一起带出来', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'qqc-scene-'));
   writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));

@@ -144,3 +144,12 @@ test('读懂她的决定：JSON、裹在代码块里的 JSON、坏格式兜底',
   // 格式坏了：整段当一句话，别因为少个括号整晚不说话
   assert.deepEqual(parsePokeReply('在干嘛呢'), { send: true, message: '在干嘛呢', search: '' });
 });
+
+test('等待时间按配置的安静时段算，不用默认那份', () => {
+  // 他把安静时段设成 1 点到 9 点。07:50 说「晚点再说 45 分钟」= 08:35，那还在睡。
+  const cfg = { quietFrom: 1, quietTo: 9 };
+  const day = new Date(2026, 0, 1, 7, 50, 0).getTime();
+  const s = noteWait({ state: {}, now: day, minutes: 45, cfg });
+  const hour = new Date(s.expect.at).getHours();
+  assert.equal(hour, 9, '该挪到 9 点起床，而不是默认的 8 点');
+});

@@ -122,14 +122,15 @@ export function notePoked({ state = {}, now } = {}) {
  * 想过了但没发（或者想的时候出错）：期待点往后推，连发不变——她没说话，不算连发。
  * 同时记一次「想」，避免每十分钟重问一遍模型。
  */
-export function noteWait({ state = {}, now, minutes } = {}) {
+export function noteWait({ state = {}, now, minutes, cfg = DEFAULTS } = {}) {
   const day = dayKeyOf(now);
   const mins = clamp(num(minutes, DEFAULTS.defaultWaitMinutes), 10, 240);
   const thinks = state.thinks?.day === day ? num(state.thinks.n, 0) : 0;
   return {
     ...state,
     thinks: { day, n: thinks + 1 },
-    expect: { at: outOfQuiet(now + mins * MIN), why: `上次想过了，说晚点再想（${mins} 分钟）` },
+    // 安静时段要用他配置的那份，不是默认那份——否则期待时间会落在安静时段里。
+    expect: { at: outOfQuiet(now + mins * MIN, cfg), why: `上次想过了，说晚点再想（${mins} 分钟）` },
   };
 }
 
