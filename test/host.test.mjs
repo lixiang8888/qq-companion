@@ -1301,3 +1301,69 @@ test('图写不下来：这一轮照常回话，不抛错', async () => {
   const idx = JSON.parse(readFileSync(join(dataDir, 'perception.json'), 'utf8'));
   assert.equal(idx.records.length, 0, '存不下就一条都不留，不能写半条');
 });
+
+const seedPerception = (dataDir, records) => {
+  const dir = join(dataDir, 'perception', '2026-01');
+  mkdirSync(dir, { recursive: true });
+  for (const r of records) {
+    writeFileSync(join(dataDir, r.file), TINY_JPEG);
+    if (r.thumb) writeFileSync(join(dataDir, r.thumb), TINY_JPEG);
+  }
+  writeFileSync(join(dataDir, 'perception.json'), JSON.stringify({ version: 1, records, stats: {} }));
+};
+
+const percRec = (over = {}) => ({
+  id: 'p_aaaa', sha: 'aaaa', at: NOON - 3600e3, source: 'his', scene: 'chat',
+  file: 'perception/2026-01/p_aaaa.jpg', thumb: 'perception/2026-01/p_aaaa.thumb.jpg',
+  pixels: true, bytes: TINY_JPEG.length, title: '粉发女孩', desc: '粉色头发的女孩举着牌子',
+  slots: { who: ['女孩'], look: ['粉发'] }, hits: 0, lastHitAt: 0, heat: 0.5, ...over,
+});
+
+test('他说「那张图」：注入一条「你看到过的」，并且真的看过缩略图', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-perc-recall-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  seedPerception(dataDir, [percRec()]);
+  const sent = [];
+  const ctx = visionCtx();
+  const fetchImpl = perceptionFetch(sent, '{"pick":1}');
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent(say('你记得粉头发的那张图吗'));
+
+  const sys = systemOf(ctx.calls[0]);
+  assert.match(sys, /你看到过的/);
+  assert.match(sys, /粉发女孩/);
+  const idx = JSON.parse(readFileSync(join(dataDir, 'perception.json'), 'utf8'));
+  assert.equal(idx.records[0].hits, 1, '被找回过要记一笔');
+});
+
+test('指代命中但库里没有：不注入、不报错', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-perc-none-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  const sent = [];
+  const ctx = visionCtx();
+  const fetchImpl = perceptionFetch(sent, '{"pick":1}');
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  const r = await host.handleEvent(say('那张图还在吗'));
+
+  assert.ok(r.sent >= 1);
+  assert.doesNotMatch(systemOf(ctx.calls[0]), /你看到过的/);
+});
+
+test('这一块不进记忆卡预算：两块互不吞并', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-perc-budget-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  seedPerception(dataDir, [percRec()]);
+  const sent = [];
+  const ctx = visionCtx();
+  const fetchImpl = perceptionFetch(sent, '{"pick":1}');
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  for (let i = 0; i < 12; i++) await host.memory.block({ text: `第${i}件小事，他随口提的`, parts: [`第${i}件小事，他随口提的`], userId: '42' });
+  await host.handleEvent(say('你记得粉头发的那张图吗'));
+
+  const sys = systemOf(ctx.calls[0]);
+  const memBlock = sys.split('【你记得的事】')[1]?.split('（这些是以前的事')[0] || '';
+  assert.doesNotMatch(memBlock, /粉发女孩/, '图片记忆不能混进记忆卡里');
+});

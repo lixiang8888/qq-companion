@@ -10,7 +10,8 @@ import { slotsText } from './slots.js';
 export const RECALL_TRIGGER = /那张|这张|图|照片|截图|上次发的|刚才发的|看到的|图里|画面/;
 
 /** 召回门槛。search() 会乘重要度(缺省 0.75)和清晰度(缺省 0.5)，所以绝对分被压到三成多。 */
-export const MIN_SCORE = 0.35;
+// 实测定标：真命中（「粉头发的那张图」对「粉发女孩」）得 0.22，无关词得 0。取 0.15。
+export const MIN_SCORE = 0.15;
 
 export const RECHECK_MAX_PER_HOUR = 5;
 const HOUR = 3600e3;

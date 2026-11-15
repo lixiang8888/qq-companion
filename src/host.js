@@ -23,6 +23,7 @@ import { sanitizeSecrets } from './memory/sanitize.js';
 import { search as memorySearch } from './memory/search.js';
 import { parsePerception } from './perception/slots.js';
 import { addRecord, createIndex, sha12 } from './perception/store.js';
+import { RECHECK_PROMPT, canRecheck, candidates, noteRecheck, parsePick, perceptionLine, shouldRecall } from './perception/recall.js';
 import { advance, applyPlan, clockOf, createLife, LIFE_PROMPT, lifeLine, offLine, parsePlan } from './life.js';
 import { baselineOf, composePrompt, diff as diaryDiff, dueDay, hasDiary, readDiaries, snapshot as diarySnapshot, writeDiary } from './diary.js';
 import { addUsage, createBudget, fetchBalance, moneyBlock, usageOf } from './budget.js';
@@ -33,7 +34,7 @@ import { comment as qzoneComment, detail as qzoneDetail, freshComments, publish 
 import { appendTranscript, looksLikeRecall, readTranscript, recallLine, searchTranscript } from './transcript.js';
 import { appendBehavior, entryOf, readBehavior, statsText, weekStats, WEEK_MS } from './behavior-log.js';
 import { STUCK_LINE, looksStuck, situationText, situationsFor, systemPersona } from './persona.js';
-import { HOUR, assemble, blk } from './fresh.js';
+import { HOUR, MINUTE, assemble, blk } from './fresh.js';
 import { renderPanel } from './panel.js';
 import { rollbackTraits } from './affect/personality.js';
 import { replyPlan } from './affect/behavior.js';
@@ -342,6 +343,50 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     return saved;
   }
 
+  // 复核的限流状态。只有 5 次/小时，重启归零。
+  const recheckState = { at: [] };
+
+  /**
+   * 想起一张图：先文字召回，再让模型看缩略图确认。
+   * 任何一步失败都返回空串——找不到就别说，硬凑比想不起来糟。
+   */
+  async function recallPerception(text, t) {
+    const blank = { line: '', at: t };
+    if (!shouldRecall(text)) return blank;
+    try {
+      const idx = perceptionStore.load();
+      const usable = (idx.records || []).filter((r) => r.thumb || r.file);
+      const picks = candidates(usable, text, { now: t });
+      if (!picks.length) return blank;
+      let hit = picks[0];
+      const top = picks.slice(0, 4);
+      if (top.length > 1 && canRecheck(recheckState, t)) {
+        const urls = [];
+        for (const r of top) {
+          try { urls.push(dataUrlOf(readFileSync(join(dataDir, r.thumb || r.file)))); } catch { /* 文件没了就不给它看 */ }
+        }
+        if (urls.length > 1) {
+          recheckState.at = noteRecheck(recheckState, t).at;
+          const credentials = typeof ctx.get === 'function' ? ctx.get('credentials') : undefined;
+          const got = credentials?.resolve ? await credentials.resolve('DEEPSEEK_API_KEY').catch(() => null) : null;
+          const key = typeof got === 'string' ? got : got?.value;
+          const seen = key ? await describeImage({ dataUrls: urls, prompt: RECHECK_PROMPT, key, fetchImpl, timeoutMs: 20000 }) : { ok: false };
+          const k = seen.ok ? parsePick(seen.text, top.length) : 0;
+          if (k > 0) hit = top[k - 1];
+        }
+      }
+      const next = {
+        ...idx,
+        records: (idx.records || []).map((r) => (r.id === hit.id ? { ...r, hits: (Number(r.hits) || 0) + 1, lastHitAt: t } : r)),
+      };
+      perceptionStore.save(next);
+      return { line: perceptionLine(hit, t), at: Number(hit.at) || t };
+    } catch (e) {
+      log.warn?.(`翻图片记忆失败：${e.message}`);
+      return blank;
+    }
+  }
+
   let selection = null;
   async function ensureModel() {
     if (!ctx.llm?.stream) throw new Error('DSH 没有提供 llm 服务：需要 0.2.1 及以上，且插件 inject 了 llm');
@@ -632,6 +677,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const prevScreen = screenStore.load();
     if (screenOn() && !(Number(prevScreen?.at) > t - sTtl)) await refreshScreen();
     const screenNow = screenStore.load();
+    // 他在说「那张图」：翻出她真看到过的那一张（先文字召回，再让模型看缩略图）。
+    const shot = await recallPerception(msg?.text, t);
     // 每一块都交代「生于何时、能活多久」。以前这里是一个裸数组，谁新加一块就默认永久有效——
     // 周自述和人格叙事都能一年后还在说「最近」。规矩现在由 fresh.js 强制。
     return assemble([
@@ -642,6 +689,9 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       blk('weather', weatherTextLine, Number(w?.at) || t, 12 * HOUR),
       blk('facts', factLine(latestFact(factsStore.load(), t)), t),
       blk('recall', recallLines, t),
+      // 她看到过的图：单独一块，不占记忆卡的 2200 字。at 用此刻——这一块是"刚想起来"，
+      // 不是"生于那张图的拍摄时间"（那会让它一出生就过期）。
+      blk('perception', shot.line ? `【你看到过的】（图片，不是他这一轮发的；你当时真的看过）\n${shot.line}` : '', t, 5 * MINUTE),
       blk('screen', screenLine(screenNow, t, { ttl: sTtl }), Number(screenNow?.at) || t, sTtl),
       blk('awake', awakeLine(), t),
       blk('insights', renderInsights(ins, t), insightsLastAt(ins) || t, INSIGHT_TTL),
