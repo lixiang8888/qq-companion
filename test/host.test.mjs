@@ -1212,3 +1212,92 @@ test('没命中任何记忆：不去翻归档，也不占上下文', async () =>
   const block = await host.memory.block({ text: '今天天气咋样', parts: ['今天天气咋样'], userId: '42' });
   assert.doesNotMatch(block, /那天的前后/);
 });
+// ---- 感知记忆（图片记忆）----
+// 一张最小的合法 JPEG：sniffMime 要认得出，sharp 也要能缩。
+const TINY_JPEG = Buffer.from('/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==', 'base64');
+
+/** 一个同时应答「下载图 / 视觉接口 / OneBot」的 fetch。visionReply 决定模型怎么回。 */
+function perceptionFetch(sent, visionReply) {
+  return async (url, init) => {
+    const u = String(url);
+    if (u.includes('api.deepseek.com/chat/completions')) {
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: visionReply } }] }) };
+    }
+    if (u.includes('p.qpic.cn')) {
+      return { ok: true, status: 200, arrayBuffer: async () => TINY_JPEG };
+    }
+    return gwOk(sent, init?.body);
+  };
+}
+
+const visionCtx = () => {
+  const ctx = fakeCtx({ reply: '好看' });
+  ctx.get = (n) => (n === 'credentials' ? { resolve: async () => 'sk-test' } : (n === 'webServer' ? ctx.webServer : undefined));
+  return ctx;
+};
+
+const imageEvent = (text, n = 1) => ({
+  post_type: 'message', message_type: 'private', user_id: 42,
+  message: [{ type: 'text', data: { text } }, { type: 'image', data: { url: `https://p.qpic.cn/x/${n}` } }],
+  time: Math.floor(NOON / 1000),
+});
+
+test('发图之后：图落盘、索引里有记录、正文仍是「他发了一张图」', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-perc-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  const sent = [];
+  const ctx = visionCtx();
+  const fetchImpl = perceptionFetch(sent, '{"title":"粉发女孩","desc":"粉色头发的女孩举着牌子","slots":{"look":["粉发"]}}');
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent(imageEvent('你看我新换的头像好看吗'));
+  const raw = readFileSync(join(dataDir, 'perception.json'), 'utf8');
+  const idx = JSON.parse(raw);
+  assert.equal(idx.records.length, 1);
+  assert.equal(idx.records[0].title, '粉发女孩');
+  assert.equal(idx.records[0].pixels, true);
+  assert.ok(existsSync(join(dataDir, idx.records[0].file)), '原图要真写下来');
+  assert.ok(existsSync(join(dataDir, idx.records[0].thumb)), '缩略图也要');
+  assert.doesNotMatch(raw, /base64/, '索引里只存路径');
+  assert.ok(idx.records[0].heat > 0, '那一刻的重量要填上（靠队列交接）');
+
+  const rec = host.memory.card().records.at(-1);
+  assert.match(rec.text, /他发了一张图/);
+  assert.doesNotMatch(rec.text, /粉色头发的女孩/, '画面不进记忆卡正文');
+  assert.equal(idx.records[0].memoryId, rec.id, '能连上就连上');
+});
+
+test('视觉模型没按格式回：图照样存，正文不是一段 JSON', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-perc-prose-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  const sent = [];
+  const ctx = visionCtx();
+  const fetchImpl = perceptionFetch(sent, '就是一张图而已');
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent(imageEvent('看这个'));
+
+  const idx = JSON.parse(readFileSync(join(dataDir, 'perception.json'), 'utf8'));
+  assert.equal(idx.records.length, 1, '解析失败也要存图');
+  assert.equal(idx.records[0].title, '就是一张图而已');
+  const rec = host.memory.card().records.at(-1);
+  assert.doesNotMatch(rec.text, /\{/, '正文不能变成 JSON');
+  assert.doesNotMatch(rec.text, /slots/);
+});
+
+test('图写不下来：这一轮照常回话，不抛错', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-perc-ro-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  // 用一个同名文件占住目录位置，mkdirSync 必然失败
+  writeFileSync(join(dataDir, 'perception'), 'not a dir');
+  const sent = [];
+  const ctx = visionCtx();
+  const fetchImpl = perceptionFetch(sent, '{"title":"t","desc":"d"}');
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  const r = await host.handleEvent(imageEvent('看这个'));
+
+  assert.ok(r.sent >= 1, '这一轮还是回了话');
+  const idx = JSON.parse(readFileSync(join(dataDir, 'perception.json'), 'utf8'));
+  assert.equal(idx.records.length, 0, '存不下就一条都不留，不能写半条');
+});

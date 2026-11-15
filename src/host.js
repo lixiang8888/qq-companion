@@ -5,7 +5,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 
 import { createJsonStore } from './store.js';
 import { createOneBot, sendImage, sendText } from './onebot.js';
@@ -21,6 +21,8 @@ import { stateLine } from './affect/inject.js';
 import { createCard, forget, maintain, rankForPrompt, remember, render, restore, stats as memoryStats } from './memory/card.js';
 import { sanitizeSecrets } from './memory/sanitize.js';
 import { search as memorySearch } from './memory/search.js';
+import { parsePerception } from './perception/slots.js';
+import { addRecord, createIndex, sha12 } from './perception/store.js';
 import { advance, applyPlan, clockOf, createLife, LIFE_PROMPT, lifeLine, offLine, parsePlan } from './life.js';
 import { baselineOf, composePrompt, diff as diaryDiff, dueDay, hasDiary, readDiaries, snapshot as diarySnapshot, writeDiary } from './diary.js';
 import { addUsage, createBudget, fetchBalance, moneyBlock, usageOf } from './budget.js';
@@ -189,6 +191,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   const screenStore = createJsonStore(join(dataDir, 'screen.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
   // 她的表情包：账号的收藏表情 + 我们给每张起的名字（desc 是空的，她自己挑不了）。
   const stickerStore = createJsonStore(join(dataDir, 'stickers.json'), { defaults: () => ({ at: 0, items: [] }), log: (m) => log.warn?.(m) });
+  // 感知记忆：她看到过的图（原图在 perception/ 下，这里只存索引和路径）。
+  const perceptionStore = createJsonStore(join(dataDir, 'perception.json'), { defaults: () => createIndex(), log: (m) => log.warn?.(m) });
   const bootAt = now();
   const aliveBefore = Number(aliveStore.load()?.at) || 0;
   aliveStore.save({ at: bootAt });
@@ -203,6 +207,12 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   const recallLog = [];
   // 图注是这个形状，发给他之前贴在他那句话前面（见 vision.js 的 withImageText）。
   const IMAGE_NOTE = /^（你看了一眼他刚发来的图：([\s\S]*?)知道就行，别复述）/;
+  // 一次调用拿三样：标题、完整描述、结构化语义槽。描述不能少——这一轮的正文靠它。
+  const PERCEPTION_PROMPT = '用中文只回一个 JSON，不要解释、不要代码围栏：'
+    + '{"title":"不超过 30 字的一句话标题","desc":"一两句话描述画面里有什么、有没有文字","slots":{"who":[],"what":[],"where":[],"action":[],"look":[]}}。'
+    + 'slots 每类最多 4 个短词：who 是谁、what 是什么东西、where 在哪、action 在做什么、look 长相风格颜色。看不出来就留空数组。';
+  // 图在 withImages 里拿到，但心情/权重要到 appraise 之后才有——中间用这个队列交接。
+  const pendingPerceptions = [];
   // 「你刚说」只能指刚才：隔了一夜的上一句，说「刚」就是骗人。
   const ASK_WINDOW_MS = 10 * 60e3;
 
@@ -280,7 +290,56 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       card = remember(card, text, { now: t, owner, direct: true, mood, heat: h, askedBy, detail: pic ? pic[1] : '' });
     }
     memoryStore.save(card);
+    // 图是这一轮拿到的字节、心情和权重也是这一轮算出来的，在这里合流最省事。
+    await drainPerceptions({ mood, heat: h, memoryId: card.records.at(-1)?.id ?? null });
     return [block, scene].filter(Boolean).join('\n');
+  }
+
+  const pad2 = (n) => String(n).padStart(2, '0');
+
+  /**
+   * 把这一轮看到的图存下来。一张失败只跳过那一张——存图失败不能让她这一轮哑掉。
+   */
+  async function drainPerceptions({ mood = null, heat = null, memoryId = null } = {}) {
+    if (!pendingPerceptions.length) return 0;
+    const items = pendingPerceptions.splice(0);
+    const t = now();
+    let idx = perceptionStore.load();
+    let saved = 0;
+    for (const it of items) {
+      // 队列里超过两分钟的是异常路径留下的，别把上一轮的图记成这一轮。
+      if (!it || t - (Number(it.at) || 0) > 120e3) continue;
+      try {
+        const sha = sha12(it.bytes);
+        const id = `p_${sha}`;
+        const d = new Date(it.at);
+        const dir = join('perception', `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`);
+        mkdirSync(join(dataDir, dir), { recursive: true });
+        const file = join(dir, `${id}.jpg`);
+        writeFileSync(join(dataDir, file), it.bytes);
+        let thumb = '';
+        const small = await shrinkImage(it.bytes, { max: 320, quality: 60 }).catch(() => null);
+        if (small?.length) {
+          thumb = join(dir, `${id}.thumb.jpg`);
+          writeFileSync(join(dataDir, thumb), small);
+        }
+        const round2 = (v) => Math.round(Number(v) * 100) / 100;
+        idx = addRecord(idx, {
+          id, sha, at: it.at, source: 'his', scene: 'chat',
+          file, thumb, pixels: true, w: null, h: null, bytes: it.bytes.length,
+          mime: it.mime || 'image/jpeg', frames: Number(it.frames) || 1,
+          title: it.title, desc: it.desc, slots: it.slots,
+          feel: mood && Number.isFinite(mood.v) ? { v: round2(mood.v), a: round2(mood.a) } : null,
+          heat: Number.isFinite(heat) ? round2(heat) : null,
+          memoryId, hits: 0, lastHitAt: 0, vec: null,
+        });
+        saved += 1;
+      } catch (e) {
+        log.warn?.(`图片记忆没存成：${e.message}`);
+      }
+    }
+    try { perceptionStore.save(idx); } catch (e) { log.warn?.(`图片索引没写成：${e.message}`); }
+    return saved;
   }
 
   let selection = null;
@@ -934,8 +993,10 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       // 十几兆的大动图只抽两帧：再多也只是多花内存，认得出是什么就够了。
       const anim = await extractGifFrames(bytes, { max: bytes.length > MAX_IMAGE_BYTES ? 2 : 4 }).catch(() => null);
       if (anim?.frames?.length > 1) {
-        const r = await describeImage({ dataUrls: anim.frames, prompt: ANIMATION_PROMPT, key, fetchImpl, timeoutMs: 45000 });
-        seen.push({ ...r, frames: anim.frames.length, pages: anim.pages, bytes: bytes.length, mime });
+        const r = await describeImage({ dataUrls: anim.frames, prompt: `${ANIMATION_PROMPT}\n${PERCEPTION_PROMPT}`, key, fetchImpl, timeoutMs: 45000 });
+        const pic = parsePerception(r.ok ? r.text : '');
+        seen.push({ ...r, text: r.ok ? pic.desc : '', frames: anim.frames.length, pages: anim.pages, bytes: bytes.length, mime });
+        if (r.ok) pendingPerceptions.push({ ...pic, bytes, mime, frames: anim.frames.length, at: now() });
         shown.push(...anim.frames.slice(0, MAX_TURN_IMAGES));
       } else {
         // 静态大图：先缩小再发。以前这里直接判「太大」跳过，于是十几兆的原图永远看不到。
@@ -947,7 +1008,11 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         }
         const url = dataUrlOf(out, sniffMime(out) || mime);
         shown.push(url);
-        seen.push({ ...(await describeImage({ dataUrl: url, key, fetchImpl })), bytes: out.length, mime: sniffMime(out) || mime });
+        const r = await describeImage({ dataUrl: url, prompt: PERCEPTION_PROMPT, key, fetchImpl });
+        const pic = parsePerception(r.ok ? r.text : '');
+        seen.push({ ...r, text: r.ok ? pic.desc : '', bytes: out.length, mime: sniffMime(out) || mime });
+        // 存的是原图字节，不是缩小后那份——要留高清就留原的。
+        if (r.ok) pendingPerceptions.push({ ...pic, bytes, mime, frames: 1, at: now() });
       }
     }
     if (!seen.some((d) => d.ok)) log.warn?.(`看图没看成：${seen.map((d) => d.reason).join('；')}`);
