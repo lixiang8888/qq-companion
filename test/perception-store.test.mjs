@@ -59,5 +59,39 @@ test('冷清理：只删「没被找回 + 够老 + 当时不重」的', () => {
 test('statsOf 数得对', () => {
   let idx = addRecord(createIndex(), rec({ id: 'p_1', sha: 'a', bytes: 100 }));
   idx = addRecord(idx, rec({ id: 'p_2', sha: 'b', bytes: 100, pixels: false }));
-  assert.deepEqual(statsOf(idx), { total: 2, pixels: 1, bytes: 200 });
+  assert.deepEqual(statsOf(idx), { total: 2, pixels: 1, bytes: 100 }, '只算还在盘上的原图');
+});
+
+test('冷清理不碰「没有文件可回收」的记录：迁移来的只靠 desc 活着', () => {
+  let idx = createIndex();
+  idx = addRecord(idx, rec({ id: 'p_mig', sha: 'a', at: 0, heat: null, file: '', thumb: '', pixels: false }));
+  idx = addRecord(idx, rec({ id: 'p_cold', sha: 'b', at: 0, heat: 0.1, file: 'cold.jpg', thumb: 'cold.thumb.jpg' }));
+  const out = pruneCold(idx, { now: 200 * DAY });
+  assert.deepEqual(out.index.records.map((r) => r.id), ['p_mig'], '它已经没有文件可删，删它就是删掉唯一的那份描述');
+  assert.deepEqual(out.removed, ['cold.jpg', 'cold.thumb.jpg']);
+});
+
+test('原图被清理后又重发同一张：索引要把 pixels 改回 true', () => {
+  let idx = createIndex();
+  idx = addRecord(idx, rec({ id: 'p_1', sha: 'a', bytes: 100 }));
+  idx = prunePixels(idx, { maxBytes: 0 }).index;              // 原图被删掉，记录还在
+  assert.equal(idx.records[0].pixels, false);
+  idx = addRecord(idx, rec({ id: 'p_1', sha: 'a', bytes: 120 })); // 他又发了一次（文件已重写）
+  assert.equal(idx.records[0].pixels, true, '盘上有文件，索引不能再说没有');
+  assert.equal(idx.records[0].bytes, 120);
+});
+
+test('去重时不改入参里的那条记录', () => {
+  const first = createIndex();
+  const idx = addRecord(first, rec({ id: 'p_1', sha: 'a' }));
+  const second = addRecord(idx, rec({ id: 'p_1', sha: 'a', at: 5000 }));
+  assert.equal(second.records[0].hits, 1);
+  assert.equal(idx.records[0].hits, 0, '旧索引不能被改：它可能还被调用方拿着');
+  assert.equal(first.stats.deduped, 0, '入参的 stats 也不能被改');
+});
+
+test('占用只算还在盘上的原图', () => {
+  let idx = addRecord(createIndex(), rec({ id: 'p_1', sha: 'a', bytes: 100 }));
+  idx = addRecord(idx, rec({ id: 'p_2', sha: 'b', bytes: 100, pixels: false }));
+  assert.equal(statsOf(idx).bytes, 100, '删掉的原图不能再算进「占 X MB」');
 });

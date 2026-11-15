@@ -48,6 +48,8 @@ export function parsePerception(text) {
   const j = jsonish(raw);
   if (j && typeof j === 'object') {
     const desc = cut(j.desc, MAX_DESC) || cut(j.title, MAX_DESC);
+    // 是合法 JSON 但两样都没给：不能把整句话吞掉，退回散文。
+    if (!desc) return { title: cut(raw, MAX_TITLE), desc: cut(raw, MAX_DESC), slots: cleanSlots(j.slots) };
     const title = cut(j.title, MAX_TITLE) || desc.slice(0, MAX_TITLE);
     return { title, desc, slots: cleanSlots(j.slots) };
   }

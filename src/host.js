@@ -22,7 +22,7 @@ import { createCard, forget, maintain, rankForPrompt, remember, render, restore,
 import { sanitizeSecrets } from './memory/sanitize.js';
 import { search as memorySearch } from './memory/search.js';
 import { parsePerception } from './perception/slots.js';
-import { addRecord, createIndex, pruneCold, prunePixels, sha12, statsOf } from './perception/store.js';
+import { MAX_RECORDS, addRecord, createIndex, pruneCold, prunePixels, sha12, statsOf } from './perception/store.js';
 import { RECHECK_PROMPT, canRecheck, candidates, noteRecheck, parsePick, perceptionLine, shouldRecall } from './perception/recall.js';
 import { advance, applyPlan, clockOf, createLife, LIFE_PROMPT, lifeLine, offLine, parsePlan } from './life.js';
 import { baselineOf, composePrompt, diff as diaryDiff, dueDay, hasDiary, readDiaries, snapshot as diarySnapshot, writeDiary } from './diary.js';
@@ -159,7 +159,7 @@ export function apply(ctx, config = {}) {
   }
 }
 
-export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, log = console, autoStart = true, fetchImpl = globalThis.fetch, mergeWindowMs = DEFAULT_WINDOW_MS, later = (fn, ms) => setTimeout(fn, ms), clear = (h) => clearTimeout(h), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), screenReader = readScreen } = {}) {
+export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, log = console, autoStart = true, fetchImpl = globalThis.fetch, mergeWindowMs = DEFAULT_WINDOW_MS, later = (fn, ms) => setTimeout(fn, ms), clear = (h) => clearTimeout(h), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), screenReader = readScreen, maxPerceptionRecords = MAX_RECORDS } = {}) {
   if (!ctx || typeof ctx !== 'object') throw new Error('缺少 DSH 上下文（apply(ctx) 没拿到 ctx）');
   mkdirSync(dataDir, { recursive: true });
   const configFile = join(dataDir, 'config.json');
@@ -325,6 +325,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
           writeFileSync(join(dataDir, thumb), small);
         }
         const round2 = (v) => Math.round(Number(v) * 100) / 100;
+        const prevRecords = idx.records || [];
         idx = addRecord(idx, {
           id, sha, at: it.at, source: 'his', scene: 'chat',
           file, thumb, pixels: true, w: null, h: null, bytes: it.bytes.length,
@@ -333,7 +334,18 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
           feel: mood && Number.isFinite(mood.v) ? { v: round2(mood.v), a: round2(mood.a) } : null,
           heat: Number.isFinite(heat) ? round2(heat) : null,
           memoryId, hits: 0, lastHitAt: 0, vec: null,
-        });
+          // 感知记录不是记忆卡：不加这两个，search() 会按记忆卡的缺省值打折，
+          // 几张像的图一起就把分数压到门槛下，功能在最该起作用的时刻静默失效。
+          importance: 100, clarity: 'vivid',
+        }, { maxRecords: maxPerceptionRecords });
+        // 被条数上限挤掉的记录，文件不能留在盘上（没人再引用得到它们）。
+        const kept = new Set((idx.records || []).map((r) => r.id));
+        for (const old of prevRecords) {
+          if (kept.has(old.id)) continue;
+          for (const rel of [old.file, old.thumb]) {
+            if (rel) { try { unlinkSync(join(dataDir, rel)); } catch { /* 已经不在了 */ } }
+          }
+        }
         saved += 1;
       } catch (e) {
         log.warn?.(`图片记忆没存成：${e.message}`);
@@ -361,18 +373,25 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       let hit = picks[0];
       const top = picks.slice(0, 4);
       if (top.length > 1 && canRecheck(recheckState, t)) {
-        const urls = [];
+        // 只把真的读得到的那几张发给模型——序号要按「它看到的顺序」算，不然会错位。
+        const looked = [];
         for (const r of top) {
-          try { urls.push(dataUrlOf(readFileSync(join(dataDir, r.thumb || r.file)))); } catch { /* 文件没了就不给它看 */ }
+          try { looked.push({ rec: r, url: dataUrlOf(readFileSync(join(dataDir, r.thumb || r.file))) }); } catch { /* 文件没了就不给它看 */ }
         }
-        if (urls.length > 1) {
+        if (looked.length > 1) {
           recheckState.at = noteRecheck(recheckState, t).at;
           const credentials = typeof ctx.get === 'function' ? ctx.get('credentials') : undefined;
           const got = credentials?.resolve ? await credentials.resolve('DEEPSEEK_API_KEY').catch(() => null) : null;
           const key = typeof got === 'string' ? got : got?.value;
-          const seen = key ? await describeImage({ dataUrls: urls, prompt: RECHECK_PROMPT, key, fetchImpl, timeoutMs: 20000 }) : { ok: false };
-          const k = seen.ok ? parsePick(seen.text, top.length) : 0;
-          if (k > 0) hit = top[k - 1];
+          const seen = key ? await describeImage({ dataUrls: looked.map((x) => x.url), prompt: RECHECK_PROMPT, key, fetchImpl, timeoutMs: 20000 }) : { ok: false };
+          if (seen.ok) {
+            const u = usageOf(seen.usage);
+            if (u) { try { budgetStore.save(addUsage(budgetStore.load(), u, t)); } catch { /* 记账失败不影响回话 */ } }
+            const k = parsePick(seen.text, looked.length);
+            // 模型说「都不是」就不提——硬塞一张错图，比说想不起来糟。
+            if (k === 0) return blank;
+            hit = looked[k - 1].rec;
+          }
         }
       }
       const next = {
@@ -691,7 +710,10 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     if (screenOn() && !(Number(prevScreen?.at) > t - sTtl)) await refreshScreen();
     const screenNow = screenStore.load();
     // 他在说「那张图」：翻出她真看到过的那一张（先文字召回，再让模型看缩略图）。
-    const shot = await recallPerception(msg?.text, t);
+    // 带图的那一轮不去翻：他的图就在眼前，而且刚入库的那条会被自己召回成「以前看到过的」。
+    const shot = msg?.images?.length
+      ? { line: '', at: t }
+      : await recallPerception(String(msg?.text || '').replace(IMAGE_NOTE, ''), t);
     // 每一块都交代「生于何时、能活多久」。以前这里是一个裸数组，谁新加一块就默认永久有效——
     // 周自述和人格叙事都能一年后还在说「最近」。规矩现在由 fresh.js 强制。
     return assemble([
@@ -1059,7 +1081,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         const r = await describeImage({ dataUrls: anim.frames, prompt: `${ANIMATION_PROMPT}\n${PERCEPTION_PROMPT}`, key, fetchImpl, timeoutMs: 45000 });
         const pic = parsePerception(r.ok ? r.text : '');
         seen.push({ ...r, text: r.ok ? pic.desc : '', frames: anim.frames.length, pages: anim.pages, bytes: bytes.length, mime });
-        if (r.ok) pendingPerceptions.push({ ...pic, bytes, mime, frames: anim.frames.length, at: now() });
+        if (r.ok) pendingPerceptions.push({ ...pic, bytes, mime, frames: Number(anim.pages) || anim.frames.length, at: now() });
         shown.push(...anim.frames.slice(0, MAX_TURN_IMAGES));
       } else {
         // 静态大图：先缩小再发。以前这里直接判「太大」跳过，于是十几兆的原图永远看不到。

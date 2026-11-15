@@ -90,15 +90,20 @@ function main() {
 
   const index = existsSync(percFile) ? JSON.parse(readFileSync(percFile, 'utf8')) : createIndex();
   const seen = new Set((index.records || []).map((r) => r.sha));
+  let changed = 0;
+  let added = 0;
   for (const p of planned) {
+    // 正文一律换掉：它与「要不要新建感知记录」无关（两条老记忆可能是同一张图）。
+    p.rec.text = p.newText;
+    changed += 1;
     if (seen.has(p.perception.sha)) continue;
     seen.add(p.perception.sha);
     index.records = [...(index.records || []), p.perception];
-    p.rec.text = p.newText;
+    added += 1;
   }
   writeFileSync(percFile, JSON.stringify(index, null, 2));
   writeFileSync(memFile, JSON.stringify(card, null, 2));
-  console.log(`\n已写入：感知记忆 ${index.records.length} 条，记忆卡正文 ${planned.length} 条已换成 gist。`);
+  console.log(`\n已写入：感知记忆新增 ${added} 条（共 ${index.records.length} 条），记忆卡正文换了 ${changed} 条。`);
   console.log('备份：memory.json.bak-migrate / perception.json.bak-migrate');
 }
 

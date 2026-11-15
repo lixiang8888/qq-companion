@@ -1,7 +1,7 @@
 // 插件入口：注入面、路由、以及不碰网络的那几条路径。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHost } from '../src/host.js';
@@ -1265,6 +1265,9 @@ test('发图之后：图落盘、索引里有记录、正文仍是「他发了�
   assert.match(rec.text, /他发了一张图/);
   assert.doesNotMatch(rec.text, /粉色头发的女孩/, '画面不进记忆卡正文');
   assert.equal(idx.records[0].memoryId, rec.id, '能连上就连上');
+  // 感知记录不是记忆卡：不套记忆卡的缺省折扣，否则几张像的图一起就把召回压到门槛下。
+  assert.equal(idx.records[0].importance, 100);
+  assert.equal(idx.records[0].clarity, 'vivid');
 });
 
 test('视觉模型没按格式回：图照样存，正文不是一段 JSON', async () => {
@@ -1397,4 +1400,103 @@ test('心跳会清理：冷记录被删、文件也删了', async () => {
   assert.equal(idx.records.length, 0, '冷记录要整条删掉');
   assert.equal(existsSync(join(dataDir, old.file)), false, '原图也要删');
   assert.equal(existsSync(join(dataDir, old.thumb)), false, '缩略图也要删');
+});
+
+// ---- review 后的修复：复核要能被测试、不能认错图、不能自己召回自己 ----
+
+const percMulti = () => [
+  percRec({ id: 'p_aaaa', sha: 'aaaa', title: '粉发女孩举牌子', desc: '粉色头发的女孩举着牌子', slots: { look: ['粉发'], action: ['举着'] } }),
+  percRec({ id: 'p_bbbb', sha: 'bbbb', title: '粉发女孩摇头', desc: '粉色头发的女孩在摇头', slots: { look: ['粉发'], action: ['摇头'] }, file: 'perception/2026-01/p_bbbb.jpg', thumb: 'perception/2026-01/p_bbbb.thumb.jpg' }),
+  percRec({ id: 'p_cccc', sha: 'cccc', title: '粉发女孩点头', desc: '粉色头发的女孩在点头', slots: { look: ['粉发'], action: ['点头'] }, file: 'perception/2026-01/p_cccc.jpg', thumb: 'perception/2026-01/p_cccc.thumb.jpg' }),
+];
+
+test('复核说「都不是」就不注入，别硬塞第一名', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-pick0-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  seedPerception(dataDir, percMulti());
+  const sent = [];
+  const ctx = visionCtx();
+  const fetchImpl = perceptionFetch(sent, '{"pick":0}');
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent(say('粉头发的女孩举着牌子那张图'));
+
+  assert.doesNotMatch(systemOf(ctx.calls[0]), /你看到过的/, '模型说都不是，就不能报一张出来');
+  const idx = JSON.parse(readFileSync(join(dataDir, 'perception.json'), 'utf8'));
+  assert.equal(idx.records.every((r) => r.hits === 0), true, '没选中的不算被找回');
+});
+
+test('复核说第 2 张：注入的就是第 2 张', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-pick2-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  seedPerception(dataDir, percMulti());
+  const sent = [];
+  const ctx = visionCtx();
+  const fetchImpl = perceptionFetch(sent, '{"pick":2}');
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent(say('粉头发的女孩举着牌子那张图'));
+
+  const sys = systemOf(ctx.calls[0]);
+  assert.match(sys, /你看到过的/);
+  assert.doesNotMatch(sys, /粉发女孩举牌子/, '第 1 张没被选中');
+  assert.match(sys, /粉发女孩摇头|粉发女孩点头/, '注入的该是模型看到的那一张');
+});
+
+test('有条候选的图没了：序号按「实际看过的」算，不能错位', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-pick-shift-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  const recs = percMulti();
+  seedPerception(dataDir, recs);
+  unlinkSync(join(dataDir, recs[0].file));   // 第 1 条没像素了：模型只看到后两张
+  unlinkSync(join(dataDir, recs[0].thumb));
+  const sent = [];
+  const ctx = visionCtx();
+  const fetchImpl = perceptionFetch(sent, '{"pick":1}');
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent(say('粉头发的女孩举着牌子那张图'));
+
+  const sys = systemOf(ctx.calls[0]);
+  assert.match(sys, /粉发女孩摇头/, '模型看的第一张是它，注入就该是它');
+  assert.doesNotMatch(sys, /粉发女孩举牌子|粉发女孩点头/);
+});
+
+test('带图那一轮不召回自己：他的图就在眼前', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-selfrecall-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  const sent = [];
+  const ctx = visionCtx();
+  const fetchImpl = perceptionFetch(sent, '{"title":"粉发女孩","desc":"粉色头发的女孩举着牌子","slots":{"look":["粉发"]}}');
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent(imageEvent('你看我新换的头像好看吗'));
+
+  assert.doesNotMatch(systemOf(ctx.calls[0]), /你看到过的/, '这一轮他刚发的图不该被当成「以前看到过的」');
+  const idx = JSON.parse(readFileSync(join(dataDir, 'perception.json'), 'utf8'));
+  assert.equal(idx.records[0].hits, 0, '自己不该算一次「被找回」');
+});
+
+test('条数上限淘汰记录时，图文件也要删掉', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-evict-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  const sent = [];
+  const ctx = visionCtx();
+  let n = 0;
+  const fetchImpl = async (url, init) => {
+    const u = String(url);
+    if (u.includes('chat/completions')) {
+      n += 1;
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: `{"title":"第${n}张","desc":"第${n}张图"}` } }] }) };
+    }
+    if (u.includes('p.qpic.cn')) return { ok: true, status: 200, arrayBuffer: async () => Buffer.concat([TINY_JPEG, Buffer.from(String(n))]) };
+    return gwOk(sent, init?.body);
+  };
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl, maxPerceptionRecords: 1 });
+
+  await host.handleEvent(imageEvent('第一张', 1));
+  const first = JSON.parse(readFileSync(join(dataDir, 'perception.json'), 'utf8')).records[0];
+  await host.handleEvent(imageEvent('第二张', 2));
+
+  assert.equal(existsSync(join(dataDir, first.file)), false, '被淘汰的记录，原图不能留在盘上');
 });

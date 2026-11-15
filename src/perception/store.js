@@ -30,10 +30,18 @@ const ageOf = (r) => Number(r.lastHitAt) || Number(r.at) || 0;
  */
 export function addRecord(index, rec, { maxRecords = MAX_RECORDS } = {}) {
   const next = { ...index, records: [...(index?.records || [])], stats: { ...(index?.stats || {}) } };
-  const same = next.records.find((r) => r.sha && r.sha === rec.sha);
-  if (same) {
-    same.hits = (Number(same.hits) || 0) + 1;
-    same.lastHitAt = Number(rec.at) || same.lastHitAt || 0;
+  const same = next.records.findIndex((r) => r.sha && r.sha === rec.sha);
+  if (same >= 0) {
+    const old = next.records[same];
+    // 换一条新对象，别原地改——入参可能是调用方还在用的索引。
+    next.records[same] = {
+      ...old,
+      hits: (Number(old.hits) || 0) + 1,
+      lastHitAt: Number(rec.at) || old.lastHitAt || 0,
+      // 他没删图、又发了一遍：文件刚被重写过，索引得承认它在。
+      pixels: rec.pixels === undefined ? old.pixels : Boolean(rec.pixels),
+      bytes: Number(rec.bytes) || old.bytes,
+    };
     next.stats.deduped = (next.stats.deduped || 0) + 1;
     return next;
   }
@@ -71,7 +79,9 @@ export function pruneCold(index, { now = 0, days = COLD_DAYS, heat = COLD_HEAT }
   const removed = [];
   const kept = [];
   for (const r of index?.records || []) {
-    const cold = !(Number(r.hits) > 0)
+    // 没有文件可回收的记录不归这条管：删掉它就等于删掉唯一的那份描述（迁移来的记录就是这样）。
+    const cold = Boolean(r.file || r.thumb)
+      && !(Number(r.hits) > 0)
       && (Number(r.at) || 0) < cut
       && !(Number(r.heat) >= heat);
     if (!cold) { kept.push(r); continue; }
@@ -88,6 +98,6 @@ export function statsOf(index) {
   return {
     total: records.length,
     pixels: records.filter((r) => r.pixels).length,
-    bytes: records.reduce((s, r) => s + (Number(r.bytes) || 0), 0),
+    bytes: records.reduce((s, r) => s + (r.pixels ? Number(r.bytes) || 0 : 0), 0),
   };
 }

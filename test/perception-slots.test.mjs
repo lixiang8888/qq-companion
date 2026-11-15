@@ -43,3 +43,11 @@ test('slotsText 把标题、描述和所有槽拼成可检索文本', () => {
 test('SLOT_KINDS 是那五类', () => {
   assert.deepEqual(SLOT_KINDS, ['who', 'what', 'where', 'action', 'look']);
 });
+
+test('JSON 里没有 title/desc：整段当描述，别把话吞掉', () => {
+  const raw = '{"slots":{"who":["女孩"]}}';
+  const r = parsePerception(raw);
+  assert.equal(r.desc, raw, '解析成功但没有描述，就退回散文，不能返回空');
+  assert.equal(r.title, raw.slice(0, 30));
+  assert.deepEqual(r.slots.who, ['女孩']);
+});
