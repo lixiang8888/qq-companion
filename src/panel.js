@@ -39,7 +39,7 @@ function section(title, body) {
 /**
  * @param {{state: object, memory: object, gateway: string, session: object, persona: string, config: object, now: number}} o
  */
-export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', session = {}, history = [], checks = [], persona = '', config = {}, life = null, diaries = [], budget = null, alive = null, insights = null, qzone = null, proactive = null, weather = null, facts = null, screen = null, stickers = null, behavior = null, now = Date.now() } = {}) {
+export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', session = {}, history = [], checks = [], persona = '', config = {}, life = null, diaries = [], budget = null, alive = null, insights = null, qzone = null, proactive = null, weather = null, facts = null, screen = null, stickers = null, behavior = null, perception = null, now = Date.now() } = {}) {
   const cfg = config || {};
   const conn = cfg.onebot || {};
   const screenText = !cfg.screen?.enabled
@@ -51,6 +51,10 @@ export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', 
     : `${stickers.total} 张，${stickers.named} 张有名字${stickers.named < stickers.total ? '（没名字的挑不到，发不出去）' : ''}`;
   // 图库：她挑图靠名字，名字错了她就会说「无语」发一张笑脸。所以图和名字要能一眼对上。
   const stickerItems = stickers?.items || [];
+  // 图片记忆：她看到过的图。原图会被清理，记录不会——所以两个数分开说。
+  const shotText = !perception?.total
+    ? ''
+    : ` · 图 ${perception.total} 张（原图 ${perception.pixels} 张，占 ${(Number(perception.bytes) / 1024 / 1024).toFixed(1)} MB）`;
   const stickerGrid = stickerItems.length
     ? `<div class="stickers">${stickerItems.map((s) => `<div class="sticker">
       <img src="${escapeHtml(s.url)}" alt="" loading="lazy">
@@ -212,7 +216,7 @@ ${section('记忆', `<p>共 ${mem.total} 条（清晰 ${mem.vivid || 0} / 清楚
 ${section('最近想起', recalls.length    ? `<ul>${recalls.map((r) => `<li><span class="tag">${escapeHtml(new Date(r.at).toLocaleTimeString())}</span>「${escapeHtml(r.query)}」→ ${r.picks.length ? r.picks.map((t) => escapeHtml(t)).join('、') : '<span class="dim">没想起什么</span>'}</li>`).join('')}</ul>`
     : '<p class="dim">还没有聊过</p>')}
 ${section('最近对话', chatText)}
-${section('运行', `<p>网关：${escapeHtml(gateway)} · 会话 ${session.size ?? 0} 条（最近 ${session.keepHours ?? 0} 小时内的原话一句不压）· 已压缩 ${session.compactions ?? 0} 次 · 人格 ${escapeHtml(persona || '未设置')}</p><p class="dim">他那边：${escapeHtml(screenText)} · 表情：${escapeHtml(stickerText)}</p>${session.lastError ? `<p class="dim">上次压缩失败：${escapeHtml(session.lastError.message)}</p>` : ''}`)}
+${section('运行', `<p>网关：${escapeHtml(gateway)} · 会话 ${session.size ?? 0} 条（最近 ${session.keepHours ?? 0} 小时内的原话一句不压）· 已压缩 ${session.compactions ?? 0} 次 · 人格 ${escapeHtml(persona || '未设置')}</p><p class="dim">他那边：${escapeHtml(screenText)} · 表情：${escapeHtml(stickerText)}${escapeHtml(shotText)}</p>${session.lastError ? `<p class="dim">上次压缩失败：${escapeHtml(session.lastError.message)}</p>` : ''}`)}
 ${section('表情', `${stickerGrid}${stickers?.note ? `<p class="dim">${escapeHtml(stickers.note)}</p>` : ''}<p class="dim">名字是随便起的，不对就直接改——她只会照着名字挑。</p>`)}
 ${section('钱包', moneyText)}
 ${section('设置', `<form method="post" action="config">

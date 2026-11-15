@@ -3,7 +3,7 @@
 // 刻意不用 DSH 会话（session/prompt + remote.mux）：陪伴体要自己掌握「记多少、什么时候压」，
 // 而且插件进程内调用 ctx.llm 已经足够。少一层协议，就少一处会随 DSH 升级而坏的地方。
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 
@@ -22,7 +22,7 @@ import { createCard, forget, maintain, rankForPrompt, remember, render, restore,
 import { sanitizeSecrets } from './memory/sanitize.js';
 import { search as memorySearch } from './memory/search.js';
 import { parsePerception } from './perception/slots.js';
-import { addRecord, createIndex, sha12 } from './perception/store.js';
+import { addRecord, createIndex, pruneCold, prunePixels, sha12, statsOf } from './perception/store.js';
 import { RECHECK_PROMPT, canRecheck, candidates, noteRecheck, parsePick, perceptionLine, shouldRecall } from './perception/recall.js';
 import { advance, applyPlan, clockOf, createLife, LIFE_PROMPT, lifeLine, offLine, parsePlan } from './life.js';
 import { baselineOf, composePrompt, diff as diaryDiff, dueDay, hasDiary, readDiaries, snapshot as diarySnapshot, writeDiary } from './diary.js';
@@ -385,6 +385,19 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       log.warn?.(`翻图片记忆失败：${e.message}`);
       return blank;
     }
+  }
+
+  async function refreshPerception() {
+    const t = now();
+    const cold = pruneCold(perceptionStore.load(), { now: t });
+    const cap = prunePixels(cold.index);
+    const removed = [...cold.removed, ...cap.removed];
+    for (const rel of removed) {
+      try { unlinkSync(join(dataDir, rel)); } catch { /* 文件已经不在了，不算错 */ }
+    }
+    // 没删东西就不写盘：心跳十分钟一次，别每次都动文件。
+    if (removed.length) perceptionStore.save(cap.index);
+    return { removed: removed.length, ...statsOf(cap.index) };
   }
 
   let selection = null;
@@ -1460,6 +1473,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     // 每周自述：漏了这一行，那句「我最近」写到过期就再也不出现（14 天 TTL）。
     enqueue(refreshInsights).catch((e) => log.warn?.(`周自述出错：${e.message}`));
     enqueue(refreshBalance).catch((e) => log.warn?.(`查余额出错：${e.message}`));
+    enqueue(refreshPerception).catch((e) => log.warn?.(`图片清理出错：${e.message}`));
     enqueue(evaluatePost).catch((e) => log.warn?.(`空间判定出错：${e.message}`));
     enqueue(refreshQzoneComments).catch((e) => log.warn?.(`查评论出错：${e.message}`));
     if (weatherOn()) enqueue(refreshWeather).catch((e) => log.warn?.(`查天气出错：${e.message}`));
@@ -1543,6 +1557,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         proactive: { ...pokeStore.load(), gate: pokeNow() },
         weather: weatherStore.load(),
         facts: factsStore.load(),
+        perception: statsOf(perceptionStore.load()),
         behavior: weekStats(readBehavior(dataDir, { from: now() - WEEK_MS, to: now() })),
         session: {
           size: session.size,
@@ -1648,6 +1663,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         proactive: snap.proactive,
         weather: snap.weather,
         facts: snap.facts,
+        perception: snap.perception,
         behavior: snap.behavior,
         screen: screenStore.load(),
         stickers: (() => {
@@ -1728,7 +1744,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     log.info?.(`qq-companion：面板 ${panelUrl}`);
   } catch { /* 诊断日志失败不影响启动 */ }
 
-  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, get config() { return config; }, dataDir };
+  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, perception: { cleanup: () => enqueue(refreshPerception), stats: () => statsOf(perceptionStore.load()) }, get config() { return config; }, dataDir };
 }
 
 function loadConfig(file, log) {

@@ -1367,3 +1367,34 @@ test('这一块不进记忆卡预算：两块互不吞并', async () => {
   const memBlock = sys.split('【你记得的事】')[1]?.split('（这些是以前的事')[0] || '';
   assert.doesNotMatch(memBlock, /粉发女孩/, '图片记忆不能混进记忆卡里');
 });
+
+test('面板显示图片记忆的数量和占用', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-perc-panel-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  seedPerception(dataDir, [percRec(), percRec({ id: 'p_bbbb', sha: 'bbbb', pixels: false, file: 'perception/2026-01/p_bbbb.jpg', thumb: 'perception/2026-01/p_bbbb.thumb.jpg' })]);
+  const ctx = visionCtx();
+  createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {} });
+  const panel = ctx.routes.find((r) => r.path.endsWith('/panel'));
+  let out = '';
+  await panel.handler({ url: '/qq-companion/api/panel' }, { setHeader() {}, end: (s) => { out = s; } });
+
+  assert.match(out, /图 2 张/);
+  assert.match(out, /原图 1 张/);
+});
+
+test('心跳会清理：冷记录被删、文件也删了', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-perc-cold-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  const old = percRec({ id: 'p_cold', sha: 'cold', at: NOON - 100 * 86400e3, heat: 0.1, file: 'perception/2026-01/p_cold.jpg', thumb: 'perception/2026-01/p_cold.thumb.jpg' });
+  seedPerception(dataDir, [old]);
+  const ctx = visionCtx();
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {} });
+
+  await host.tick();
+  await host.perception.cleanup();
+
+  const idx = JSON.parse(readFileSync(join(dataDir, 'perception.json'), 'utf8'));
+  assert.equal(idx.records.length, 0, '冷记录要整条删掉');
+  assert.equal(existsSync(join(dataDir, old.file)), false, '原图也要删');
+  assert.equal(existsSync(join(dataDir, old.thumb)), false, '缩略图也要删');
+});
