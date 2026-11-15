@@ -26,7 +26,7 @@ const PATTERN_DELTAS = {
  * @param {(reply: string) => Promise<string>} [o.refine] 她说出 `[查:…]` 时，去查、把材料拿回来；
  *   返回非空就带着材料再问她一遍，用第二版回复
  */
-export function createCompanion({ load, save, session, ownerQQ = '', now = Date.now, memoryBlock = async () => '', extraContext = async () => '', refine = null }) {
+export function createCompanion({ load, save, session, ownerQQ = '', now = Date.now, memoryBlock = async () => '', extraContext = async () => '', refine = null, extraImages = () => [] }) {
   return {
     async handleMessage(msg) {
       if (msg.kind !== 'private') return { ignored: 'not-private' };
@@ -51,9 +51,11 @@ export function createCompanion({ load, save, session, ownerQQ = '', now = Date.
       const memory = await memoryBlock(msg, { mood: st.emotion, heat: a.emotion?.intensity }).catch(() => '');
       // 「她此刻在干什么」由 host 拼（要读 life.json、要看这一轮是什么场合），这里只负责接上去。
       const life = await extraContext(msg).catch(() => '');
+      // 他自己发的图 + 这一轮她想重看的那张（最多一张，host 按分数决定要不要贴）。
+      const reopen = (extraImages?.() || []).slice(0, 1);
       const reply = await session.prompt(msg.chatId, msg.text, {
         context: [context, life, memory].filter(Boolean).join('\n'),
-        images: msg.images,
+        images: [...(msg.images || []), ...reopen],
       });
 
       // 她自己说要查东西：查完带材料再问一遍。只重来一次——查完还要查，那是另一个量级的事。

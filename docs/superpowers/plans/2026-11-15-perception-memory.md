@@ -540,3 +540,52 @@ git commit -m "chore(perception): 老记忆迁移脚本，默认 dry-run"
 1 → 2 → 3（纯函数，互不依赖，可并行）→ 4 → 5 → 6 →（等同意）7。
 
 **整体验收**：发一张图 → `perception.json` 多一条、原图在盘上 → 过一会儿说「那张图」→ 她上下文里出现 `【你看到过的】` 且能说出画面 → 面板显示张数。全过程记忆卡的 2200 字预算没被吃掉。
+
+---
+
+## 第二轮：触发方式重做（2026-11-15 晚，用户要求）
+
+**为什么改**：第一版靠「图/照片/那张」触发召回。用户指出：发完图之后聊别的，那句话里一个字都不带「图」，
+她就不会想起来——而那正是最该想起来的时候。要求：近一段时间内直接带完整描述；忘了的时候用文本搜，
+**不看有没有「图」字**；需要时能重新看一遍原图。
+
+**参数（用户定）**：近窗口 = 24 小时 ∪ 最近 30 轮对话，封顶 3 行。重看阈值 0.4，每轮最多 1 张。
+
+### Task 8: 近窗口
+
+**Files:** Modify `src/perception/recall.js`（新增 `recentShots`）、`src/host.js`（`contextBlock` 合并注入）；Test `test/perception-recall.test.mjs`、`test/host.test.mjs`
+
+- [ ] 写测试：`recentShots(records, {now, history, max})` —— 23 小时前的图在内、25 小时前的在外；
+  `history` 最后 30 条里出现过的那条，即使超过 24 小时也在内；最多返回 3 条，近的在前。
+- [ ] 跑测试，确认红（函数不存在）。
+- [ ] 实现 `recentShots`：`cut24 = now - 24h`；`cutTurns = history.at(-30)?.at`；`since = min(cut24, cutTurns)`（两条都在窗外才排除）。按 `at` 倒序，取前 `max`。
+- [ ] 跑测试，确认绿。
+- [ ] `contextBlock`：把近期行和检索行拼成同一块（近期在前），整体封顶 3 行。
+- [ ] 跑全套，提交。
+
+### Task 9: 每轮都搜 + 老记录（只有 desc）也能被搜到
+
+**Files:** Modify `src/perception/recall.js`（删 `shouldRecall`）、`src/host.js`（去掉触发词与 `usable` 过滤）；Test 两个文件
+
+- [ ] 写测试：「粉头发的那个」不含「图」字，也能注入；没有缩略图的记录（迁移来的）能命中并注入文字行；
+  候选只有老记录时不发复核调用。
+- [ ] 跑测试，确认红。
+- [ ] 实现：`recallPerception` 删掉 `shouldRecall`；候选池不再过滤 `usable`；复核只对"有像素"的前 N 条做，
+  全都没像素就跳过复核、直接用第一名。
+- [ ] 删 `shouldRecall` 及其测试（避免死代码）。
+- [ ] 跑全套，提交。
+
+### Task 10: 需要时重新看一遍原图
+
+**Files:** Modify `src/host.js`（`pendingImages` + `recallPerception` 返回 `image`）、`src/companion.js`（新增 `extraImages` 钩子）；Test `test/host.test.mjs`、`test/companion.test.mjs`
+
+- [ ] 写测试：他这轮没带图 + 命中分数 ≥0.4 → `ctx.calls[0]` 的最后一轮带 1 张图；
+  他这轮带了图 → 不带额外的；分数不到 0.4 → 不带。
+- [ ] 跑测试，确认红。
+- [ ] 实现：`recallPerception` 在命中且满足条件时，从原图缩到 512px 生成 data URL，塞进 `pendingImages`
+  （每轮清空）；`createCompanion` 增加 `extraImages: () => []`，`session.prompt` 的 `images` 合并它；
+  `processBatch` 结束时清空 `pendingImages`。
+- [ ] 跑全套，提交。
+
+**验收**：发一张图 → 十分钟后聊别的事，她若是刚好在说它，会提一句；
+说「你上次那个粉色的」→ 她想起来并把那张图重看一遍；三个月前的图（只有描述）→ 文字命中也能被提起。

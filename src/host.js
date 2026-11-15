@@ -23,7 +23,7 @@ import { sanitizeSecrets } from './memory/sanitize.js';
 import { search as memorySearch } from './memory/search.js';
 import { parsePerception } from './perception/slots.js';
 import { MAX_RECORDS, addRecord, createIndex, pruneCold, prunePixels, sha12, statsOf } from './perception/store.js';
-import { RECHECK_PROMPT, canRecheck, candidates, noteRecheck, parsePick, perceptionLine, shouldRecall } from './perception/recall.js';
+import { RECHECK_PROMPT, REOPEN_SCORE, canRecheck, candidates, noteRecheck, parsePick, perceptionLine, recentLine, recentShots } from './perception/recall.js';
 import { advance, applyPlan, clockOf, createLife, LIFE_PROMPT, lifeLine, offLine, parsePlan } from './life.js';
 import { baselineOf, composePrompt, diff as diaryDiff, dueDay, hasDiary, readDiaries, snapshot as diarySnapshot, writeDiary } from './diary.js';
 import { addUsage, createBudget, fetchBalance, moneyBlock, usageOf } from './budget.js';
@@ -358,24 +358,30 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   // 复核的限流状态。只有 5 次/小时，重启归零。
   const recheckState = { at: [] };
 
+  // 这一轮要不要把图贴回她的回复调用（让她当场看见，而不是靠文字复述）。
+  const pendingImages = [];
+
   /**
    * 想起一张图：先文字召回，再让模型看缩略图确认。
-   * 任何一步失败都返回空串——找不到就别说，硬凑比想不起来糟。
+   * 任何一步失败都返回空串——找不到就别说，硬凑比不起来糟。
    */
   async function recallPerception(text, t) {
     const blank = { line: '', at: t };
-    if (!shouldRecall(text)) return blank;
     try {
       const idx = perceptionStore.load();
-      const usable = (idx.records || []).filter((r) => r.thumb || r.file);
-      const picks = candidates(usable, text, { now: t });
-      if (!picks.length) return blank;
+      // 每轮都搜，不看有没有「图」字：该想起的时候就想起。只有描述的老图也算候选。
+      const usable = (idx.records || []).filter((r) => r.thumb || r.file || r.desc);
+      const hits = candidates(usable, text, { now: t });
+      if (!hits.length) return blank;
+      const best = hits[0];
+      const picks = hits.map((h) => h.rec);
       let hit = picks[0];
       const top = picks.slice(0, 4);
       if (top.length > 1 && canRecheck(recheckState, t)) {
         // 只把真的读得到的那几张发给模型——序号要按「它看到的顺序」算，不然会错位。
         const looked = [];
         for (const r of top) {
+          if (!(r.thumb || r.file)) continue;   // 只有描述的老图：没像素可看，跳过复核
           try { looked.push({ rec: r, url: dataUrlOf(readFileSync(join(dataDir, r.thumb || r.file))) }); } catch { /* 文件没了就不给它看 */ }
         }
         if (looked.length > 1) {
@@ -399,6 +405,13 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         records: (idx.records || []).map((r) => (r.id === hit.id ? { ...r, hits: (Number(r.hits) || 0) + 1, lastHitAt: t } : r)),
       };
       perceptionStore.save(next);
+      // 分数够高：不只是提一句，把图贴回她这一轮的回复调用，让她当场再看一眼。
+      if (best.score >= REOPEN_SCORE && hit.file) {
+        try {
+          const big = await shrinkImage(readFileSync(join(dataDir, hit.file)), { max: 512, quality: 70 });
+          if (big?.length) pendingImages.push(dataUrlOf(big, 'image/jpeg'));
+        } catch { /* 图没了就只用那一行文字 */ }
+      }
       return { line: perceptionLine(hit, t), at: Number(hit.at) || t };
     } catch (e) {
       log.warn?.(`翻图片记忆失败：${e.message}`);
@@ -548,6 +561,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     memoryBlock: (msg, opts) => memoryBlock(msg, opts),
     extraContext: (msg) => contextBlock(msg),
     refine: (reply) => searchFor(reply),
+    extraImages: () => pendingImages,
   });
 
   /** 人格卡全文（面板编辑用）和注入用的那部分（内核+风格默认，情境按这一轮另拼）。每轮重读，改了立刻生效。 */
@@ -711,9 +725,11 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const screenNow = screenStore.load();
     // 他在说「那张图」：翻出她真看到过的那一张（先文字召回，再让模型看缩略图）。
     // 带图的那一轮不去翻：他的图就在眼前，而且刚入库的那条会被自己召回成「以前看到过的」。
-    const shot = msg?.images?.length
-      ? { line: '', at: t }
-      : await recallPerception(String(msg?.text || '').replace(IMAGE_NOTE, ''), t);
+    const withPicture = Boolean(msg?.images?.length);
+    const shot = withPicture ? { line: '', at: t } : await recallPerception(msg?.text, t);
+    // 近窗口的图不靠检索：还在聊的事，不该等他说出「图」字才想起来。
+    const near = withPicture ? [] : recentShots(perceptionStore.load().records, { now: t, history: session.snapshot().history });
+    const shotLines = [...near.map((r) => recentLine(r, t)), shot.line].filter(Boolean).slice(0, 3);
     // 每一块都交代「生于何时、能活多久」。以前这里是一个裸数组，谁新加一块就默认永久有效——
     // 周自述和人格叙事都能一年后还在说「最近」。规矩现在由 fresh.js 强制。
     return assemble([
@@ -726,7 +742,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       blk('recall', recallLines, t),
       // 她看到过的图：单独一块，不占记忆卡的 2200 字。at 用此刻——这一块是"刚想起来"，
       // 不是"生于那张图的拍摄时间"（那会让它一出生就过期）。
-      blk('perception', shot.line ? `【你看到过的】（图片，不是他这一轮发的；你当时真的看过）\n${shot.line}` : '', t, 5 * MINUTE),
+      blk('perception', shotLines.length ? `【你看到过的】（图片，不是他这一轮发的；你当时真的看过）\n${shotLines.join('\n')}` : '', t, 5 * MINUTE),
       blk('screen', screenLine(screenNow, t, { ttl: sTtl }), Number(screenNow?.at) || t, sTtl),
       blk('awake', awakeLine(), t),
       blk('insights', renderInsights(ins, t), insightsLastAt(ins) || t, INSIGHT_TTL),
@@ -1284,6 +1300,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       cfg: { ...PROACTIVE_DEFAULTS, ...(config.proactive || {}) },
     }));
     recallLines = ''; // 原话只活这一轮：下一轮要么重新翻，要么没有
+    pendingImages.length = 0; // 贴回去的图也只活这一轮
     // 行为账本：只记她这一轮怎么说的。一个字的他的原话都不进账——这是给她照镜子的，不是监控。
     try {
       const saidNow = (session.snapshot().history || []).filter((m) => m.role === 'assistant').map((m) => m.text);

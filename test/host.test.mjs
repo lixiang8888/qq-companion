@@ -1316,7 +1316,8 @@ const seedPerception = (dataDir, records) => {
 };
 
 const percRec = (over = {}) => ({
-  id: 'p_aaaa', sha: 'aaaa', at: NOON - 3600e3, source: 'his', scene: 'chat',
+  // 默认放在近窗口之外（3 天前）：这些用例测的是「检索」，而 1 小时前的图本来就该直接带进来。
+  id: 'p_aaaa', sha: 'aaaa', at: NOON - 3 * 86400e3, source: 'his', scene: 'chat',
   file: 'perception/2026-01/p_aaaa.jpg', thumb: 'perception/2026-01/p_aaaa.thumb.jpg',
   pixels: true, bytes: TINY_JPEG.length, title: '粉发女孩', desc: '粉色头发的女孩举着牌子',
   slots: { who: ['女孩'], look: ['粉发'] }, hits: 0, lastHitAt: 0, heat: 0.5, ...over,
@@ -1499,4 +1500,55 @@ test('条数上限淘汰记录时，图文件也要删掉', async () => {
   await host.handleEvent(imageEvent('第二张', 2));
 
   assert.equal(existsSync(join(dataDir, first.file)), false, '被淘汰的记录，原图不能留在盘上');
+});
+
+test('近窗口：两小时前发的图，聊别的事时也带着（那句话里没有「图」字）', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-recent-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  seedPerception(dataDir, [
+    percRec({ id: 'p_near', sha: 'near', at: NOON - 2 * 3600e3, title: '报错截图', desc: '一张截图，上面是报错信息', slots: {}, file: 'perception/2026-01/p_near.jpg', thumb: 'perception/2026-01/p_near.thumb.jpg' }),
+    percRec({ id: 'p_far', sha: 'far', at: NOON - 30 * 3600e3, title: '旧图', desc: '很久以前的一张猫照片', slots: {}, file: 'perception/2026-01/p_far.jpg', thumb: 'perception/2026-01/p_far.thumb.jpg' }),
+  ]);
+  const sent = [];
+  const ctx = visionCtx();
+  const fetchImpl = perceptionFetch(sent, '{"pick":1}');
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent(say('今天过得挺累的'));
+
+  const sys = systemOf(ctx.calls[0]);
+  assert.match(sys, /你看到过的/, '近窗口里的图不用检索就该在');
+  assert.match(sys, /报错信息/, '用的是完整描述');
+  assert.doesNotMatch(sys, /很久以前的一张猫照片/, '30 小时前的不在窗口里');
+});
+
+test('需要的时候重新看一遍：他这轮没带图、命中了，就把那张图贴回去', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-reopen-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  seedPerception(dataDir, [percRec()]);
+  const sent = [];
+  const ctx = visionCtx();
+  const fetchImpl = perceptionFetch(sent, '{"pick":1}');
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent(say('粉头发的女孩举着牌子那张，你还记得吗'));
+
+  const pics = (ctx.calls[0].messages.at(-1).content || []).filter((c) => c.type === 'image_url');
+  assert.equal(pics.length, 1, '她该当场看见那张图');
+  assert.match(systemOf(ctx.calls[0]), /你看到过的/);
+});
+
+test('分数不够高就只提一句，不贴图（省 token）', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-noreopen-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  seedPerception(dataDir, [percRec()]);
+  const sent = [];
+  const ctx = visionCtx();
+  const fetchImpl = perceptionFetch(sent, '{"pick":1}');
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent(say('粉头发那个'));
+
+  const last = ctx.calls[0].messages.at(-1);
+  assert.equal(Array.isArray(last.images) ? last.images.length : 0, 0, '分数不够就别贴');
 });
