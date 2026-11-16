@@ -23,7 +23,7 @@ export const DRIFT_SPAN_DAYS = 3;              // 且跨 ≥3 天
 export const DRIFT_STEP_MAX = 0.02;
 export const DRIFT_DAY_MAX = 0.05;
 export const PULLBACK_PER_DAY = 0.015;
-export const BASELINE = { v: 0.5, a: 0.3 };
+export const BASELINE = { v: 0.5, a: 0.3, d: 0.5 };
 export const TRAIT_BASE = { sensitivity: 0.5, aggression: 0.3, resilience: 0.5, openness: 0.6, attachment: 0.5 };
 export const TRAITS = Object.keys(TRAIT_BASE);
 export const DAY_MS = 86400e3;
@@ -46,7 +46,7 @@ const decay = (dtMs, halfMs) => Math.pow(0.5, Math.max(0, dtMs) / halfMs);
 export function initState(now = 0) {
   return {
     version: 1,
-    emotion: { v: BASELINE.v, a: BASELINE.a, intensity: 0, at: now, label: '' },
+    emotion: { v: BASELINE.v, a: BASELINE.a, d: BASELINE.d, intensity: 0, at: now, label: '' },
     mood: { v: BASELINE.v, a: BASELINE.a, at: now },
     relation: {
       trust: 0.5, intimacy: 0.4, guard: 0.2, debt: 0,
@@ -77,16 +77,21 @@ export function settle(st, now) {
 
 function settleEmotion(st, now) {
   const e = st.emotion;
+  // 老状态文件里没有 d（支配度是后来加的）。这里就地补基线，不用单独写迁移：
+  // 缺键会让下面的衰减算出 NaN，把整份情绪状态污染掉。
+  if (!Number.isFinite(e.d)) e.d = BASELINE.d;
   const dt = now - e.at;
   if (dt <= 0) return;
   const f = decay(dt, EMOTION_HALF_MS);
   e.intensity = e.intensity * f;
   e.v = BASELINE.v + (e.v - BASELINE.v) * f;
   e.a = BASELINE.a + (e.a - BASELINE.a) * f;
+  e.d = BASELINE.d + (e.d - BASELINE.d) * f;
   if (e.intensity < 0.01) {
     e.intensity = 0;
     e.v = BASELINE.v;
     e.a = BASELINE.a;
+    e.d = BASELINE.d;
     // 情绪散尽了，标签也跟着走。留着的话"刚被戳到"会永远挂在她身上。
     e.label = '';
   }
@@ -147,12 +152,15 @@ function settleSelf(st, now) {
  * 一个情绪事件。intensity 是本轮刺激的强度（0~1），累计不超过 2 档。
  * 用语用层（句长、语气词、接梗）表达，不说出口——注入文本里会再强调一次。
  */
-export function pushEmotion(st, { v, a, intensity = 0.5, label = '' }, now) {
+export function pushEmotion(st, { v, a, d, intensity = 0.5, label = '' }, now) {
   const next = settle(st, now);
   const e = next.emotion;
   const k = clamp(0.25 + 0.25 * intensity, 0.25, 0.6);
   e.v = clamp(e.v + (clamp(v) - e.v) * k);
   e.a = clamp(e.a + (clamp(a) - e.a) * k);
+  // 支配度：羞和恼在 (愉悦, 唤醒) 里几乎重合，只有这一维能把它们分开。
+  // 它同时也是"度"——被骂两次比被骂一次更低，标签不会变，这个数会变。
+  if (Number.isFinite(Number(d))) e.d = clamp(e.d + (clamp(d) - e.d) * k);
   e.intensity = clamp(e.intensity + clamp(intensity), 0, 2);
   // 标签必须存下来：不存的话它只活在这一轮的函数返回值里，
   // 注入和节奏都读不到它，等于六个情绪标签全是摆设。

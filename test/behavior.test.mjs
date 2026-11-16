@@ -77,3 +77,30 @@ test('没有装饰品：每个情绪标签都必须让注入或节奏变一点',
   // 这条守的是以后：新加一个情绪标签，忘了让它影响行为，这里就会红。
   assert.equal(labels.length, 7);
 });
+
+// ---- 底气（支配度）----
+
+test('底气低：说得更少、更慢；底气足：敢多补一句、更快', () => {
+  const low = { ...base, emotion: { ...base.emotion, d: 0.2, intensity: 0.6 } };
+  const high = { ...base, emotion: { ...base.emotion, d: 0.9, intensity: 0.6 } };
+  assert.ok(replyPlan(low).maxParts < replyPlan(base).maxParts, '抬不起头就少说');
+  assert.ok(replyPlan(low).delayMs > replyPlan(base).delayMs, '而且慢');
+  assert.ok(replyPlan(high).maxParts > replyPlan(base).maxParts, '底气足了敢多补一句');
+  assert.ok(replyPlan(high).delayMs < replyPlan(base).delayMs, '也不拖');
+  // 也别把话说死：再高的底气也不能连发六条。
+  assert.ok(replyPlan(high).maxParts <= 3);
+});
+
+test('没有 d 的老状态：行为一点都不能变（不能算出 NaN）', () => {
+  const noD = { ...base, emotion: { v: 0.5, a: 0.3, intensity: 0.2, label: '' } };
+  assert.deepEqual(replyPlan(noD), replyPlan(base));
+});
+
+test('底气进注入，但和标签不重复说', () => {
+  const low = { ...base, emotion: { ...base.emotion, d: 0.2, label: '', intensity: 0.15 } };
+  assert.match(buildContext(low, T0), /没底气/, '标签散了之后轮到它说话');
+  const shy = { ...base, emotion: { ...base.emotion, d: 0.2, label: '羞', intensity: 0.5 } };
+  const text = buildContext(shy, T0);
+  assert.match(text, /不好意思/);
+  assert.ok(!text.includes('没底气'), '有标签就别叠第二句，省 token 也别让她自我解释');
+});

@@ -201,3 +201,40 @@ test('注入里带出情绪名字，面板也能看见', () => {
   // 没有标签的时候一个字都不多花。
   assert.ok(!buildContext(initState(T0), T0).includes('不好意思'));
 });
+
+// ---- 支配度 d：羞和恼在 (愉悦, 唤醒) 里几乎重合，只有这一维能分开 ----
+
+test('老的 affect.json 没有 d：就地补基线，不能算出 NaN', () => {
+  // 真实风险：settle 里是 BASELINE.d + (e.d - BASELINE.d) * f，缺键就是 NaN，
+  // 一个 NaN 会把整份情绪状态污染掉（心情、注入、节奏全废）。
+  const old = initState(T0);
+  delete old.emotion.d;
+  const s = settle(old, T0 + 60e3);
+  assert.ok(Number.isFinite(s.emotion.d), `d 变成了 ${s.emotion.d}`);
+  assert.equal(s.emotion.d, BASELINE.d);
+});
+
+test('d 会衰减，情绪散尽时回到基线', () => {
+  const st = pushEmotion(initState(T0), { v: 0.45, a: 0.8, d: 0.2, intensity: 0.55, label: '羞' }, T0);
+  assert.ok(st.emotion.d < BASELINE.d, `推完应该低于基线：${st.emotion.d}`);
+  // 半小时后回来一截，但不是立刻回到 0.5。
+  const mid = settle(st, T0 + EMOTION_HALF_MS).emotion.d;
+  assert.ok(mid > st.emotion.d && mid < BASELINE.d, `半衰后应在中间：${mid}`);
+  // 很久以后强度归零，d 也归基线。
+  assert.equal(settle(st, T0 + 20 * EMOTION_HALF_MS).emotion.d, BASELINE.d);
+});
+
+test('底气是累积的：同一件事来两次才真的抬不起头', () => {
+  // 一次就到底会让她一句话就被打垮；有意的平滑：第一次只是"低了一点"。
+  let st = pushEmotion(initState(T0), { v: 0.45, a: 0.8, d: 0.2, intensity: 0.55, label: '羞' }, T0);
+  assert.ok(st.emotion.d > 0.35, `一次还没到「没底气」那一档：${st.emotion.d}`);
+  st = pushEmotion(st, { v: 0.45, a: 0.8, d: 0.2, intensity: 0.55 }, T0 + 60e3);
+  assert.ok(st.emotion.d <= 0.35, `两次就该进那一档了：${st.emotion.d}`);
+});
+
+test('同一个标签，被骂两次比一次更没底气（标签不变，数字变）', () => {
+  const once = pushEmotion(initState(T0), { v: 0.15, a: 0.75, d: 0.25, intensity: 0.5, label: '被凶' }, T0);
+  const twice = pushEmotion(once, { v: 0.15, a: 0.75, d: 0.25, intensity: 0.5 }, T0 + 1000);
+  assert.equal(twice.emotion.label, '被凶', '标签还是那个');
+  assert.ok(twice.emotion.d < once.emotion.d, '但底气更低——这就是 d 和标签的分工');
+});

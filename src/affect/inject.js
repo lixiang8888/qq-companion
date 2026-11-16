@@ -26,6 +26,9 @@ const MOOD_HINT = {
 
 const TRUST_HINT = (t) => (t >= 0.7 ? '你很信任他' : t >= 0.5 ? '你信得过他' : t >= 0.3 ? '你还在观察他' : '你对他有戒心');
 const GUARD_HINT = (g) => (g >= 0.5 ? '你有点防备，别太热络' : g >= 0.3 ? '你留着一点距离' : '');
+// 底气：低的时候抬不起头，高的时候说话敢冲一点。
+// 这一条和标签分开写，因为标签会先散（强度归零就清），底气散得慢——那是"底色"。
+const D_HINT = (d) => (d <= 0.35 ? '你有点没底气，别硬撑' : d >= 0.7 ? '你现在底气足，说话可以冲一点' : '');
 
 // 每个情绪标签都要能让这句话变一点。做不到的话它就是个装饰品，不该存在
 // （affect.test 里有一条遍历所有标签的测试守着这条）。
@@ -45,6 +48,8 @@ export function stateLine(st) {
   const bits = [`心情${m}`];
   if (st.emotion.intensity >= 1) bits.push('刚被戳到');
   if (st.emotion.label) bits.push(st.emotion.label);
+  const d = Number(st?.emotion?.d);
+  if (Number.isFinite(d) && (d <= 0.35 || d >= 0.7)) bits.push(`底气 ${d.toFixed(2)}`);
   bits.push(`信任 ${st.relation.trust.toFixed(2)}`, `亲密 ${st.relation.intimacy.toFixed(2)}`);
   if (st.relation.guard >= 0.3) bits.push(`戒备 ${st.relation.guard.toFixed(2)}`);
   return bits.join(' · ');
@@ -63,6 +68,10 @@ export function buildContext(st, now = 0) {
   if (hint) parts.push(`心情${m}：${hint}`);
   const labelHint = LABEL_HINT[st?.emotion?.label] || '';
   if (labelHint) parts.push(labelHint);
+  // 有标签的时候标签已经把话说完了，不再叠一条底气的；标签散掉之后才轮到它——
+  // 那正是"刚才那件事过去了，可她还是抬不起头"的那一段。
+  const dHint = labelHint ? '' : D_HINT(Number(st?.emotion?.d ?? 0.5));
+  if (dHint) parts.push(dHint);
   const g = GUARD_HINT(st.relation.guard);
   parts.push(`${TRUST_HINT(st.relation.trust)}${g ? '，' + g : ''}`);
   // 人格只在偏离基线明显时提一句，否则每天重复同一个形容词会把性格念死。

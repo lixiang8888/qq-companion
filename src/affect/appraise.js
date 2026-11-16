@@ -89,7 +89,9 @@ export function appraise(text, { direct = true } = {}) {
   const intensity = intensityOf(t) * scale;
 
   if (mixedHit) {
-    return { emotion: { v: 0.5, a: 0.7, intensity, label: mixedHit.label }, damage: 0, heat: intensity, mixed: true };
+    // 「气笑了」是还占着上风的无奈，「哭笑不得」是真的没辙——差别就在支配度。
+    const d = mixedHit.label === '无奈' ? 0.38 : 0.58;
+    return { emotion: { v: 0.5, a: 0.7, d, intensity, label: mixedHit.label }, damage: 0, heat: intensity, mixed: true };
   }
   // 正向：夸，或者「否定式的骂」（你不讨厌）
   const positive = praise.pos + insult.neg;
@@ -98,30 +100,31 @@ export function appraise(text, { direct = true } = {}) {
 
   if (insult.pos > 0 && insult.pos >= praise.pos) {
     return {
-      emotion: { v: 0.15, a: 0.75, intensity: Math.max(0.4, intensity), label: '被凶' },
+      emotion: { v: 0.15, a: 0.75, d: 0.25, intensity: Math.max(0.4, intensity), label: '被凶' },
       // 伤害只认「直接冲她来」的明确骂。
       damage: direct ? Math.min(0.1, 0.04 * insult.pos) : 0,
       heat: Math.max(0.4, intensity),
     };
   }
   // 羞：低愉悦、高唤醒、低支配。放在「低落」前面，因为他撩她的时候她不是难过。
+  // 支配度是它和「恼」的唯一分界：同样心跳快，一个说不出话，一个想顶回去。
   const bold = INTIMATE_BOLD.some((w) => t.includes(w));
   const mild = INTIMATE_MILD.some((w) => t.includes(w)) && !bold;
   if (bold || mild) {
     const strong = bold ? Math.max(0.55, intensity) : Math.max(0.35, intensity * 0.7);
-    return { emotion: { v: 0.45, a: 0.8, intensity: strong, label: '羞' }, damage: 0, heat: strong };
+    return { emotion: { v: 0.45, a: 0.8, d: 0.2, intensity: strong, label: '羞' }, damage: 0, heat: strong };
   }
   if (sad.pos > 0) {
-    return { emotion: { v: 0.25, a: 0.3, intensity, label: '低落' }, damage: 0, heat: intensity };
+    return { emotion: { v: 0.25, a: 0.3, d: 0.3, intensity, label: '低落' }, damage: 0, heat: intensity };
   }
   if (negative > positive) {
-    return { emotion: { v: 0.3, a: 0.4, intensity, label: '低落' }, damage: 0, heat: intensity };
+    return { emotion: { v: 0.3, a: 0.4, d: 0.32, intensity, label: '低落' }, damage: 0, heat: intensity };
   }
   if (positive > negative) {
-    return { emotion: { v: 0.8, a: 0.45, intensity, label: '被夸' }, damage: 0, heat: intensity };
+    return { emotion: { v: 0.8, a: 0.45, d: 0.6, intensity, label: '被夸' }, damage: 0, heat: intensity };
   }
   if (/[？?]\s*$/.test(t)) {
-    return { emotion: { v: 0.5, a: 0.55, intensity: 0.2 * scale, label: '被追问' }, damage: 0, heat: 0.2 * scale };
+    return { emotion: { v: 0.5, a: 0.55, d: 0.4, intensity: 0.2 * scale, label: '被追问' }, damage: 0, heat: 0.2 * scale };
   }
   return { emotion: null, damage: 0, heat: fallbackHeat(t) };
 }
