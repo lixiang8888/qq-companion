@@ -12,6 +12,11 @@
 export const PRAISE = ['喜欢你', '爱你', '想你', '可爱', '好看', '漂亮', '聪明', '厉害', '真棒', '牛', '谢谢', '辛苦', '晚安', '早安', '抱抱', '摸摸', '贴贴', '乖', '宝贝', '爱了', '好吃', '开心', '高兴'];
 export const INSULT = ['讨厌', '滚', '烦死', '闭嘴', '笨', '蠢', '傻', '丑', '垃圾', '废物', '恶心', '滚开', '别理我', '不理你'];
 export const SAD = ['难过', '难受', '伤心', '委屈', '想哭', '好累', '撑不住'];
+// 亲密：她不是什么都接，是会不好意思的。分两档是因为「刚洗完澡」和露骨的话不是同一件事。
+// 词表是设计选择，不是实证——和 PRAISE 那条一样，改它等于改性格。
+// 注意别往 MILD 里放 PRAISE 里已有的词（抱抱/摸摸/贴贴）：那会把「被夸」整个吃成「羞」。
+export const INTIMATE_MILD = ['洗澡', '洗完澡', '洗了个澡', '没穿', '只穿', '床上', '一起睡', '睡衣'];
+export const INTIMATE_BOLD = ['🦌', '想要你', '想上你', '亲你', '摸你', '脱掉', '做那种', '弄了', '硬了', '湿了'];
 const NEGATIONS = ['不太', '不怎么', '没那么', '不够', '不', '没', '没有', '别', '不是', '并不', '才不'];
 const MIXED = [
   { re: /气笑|气笑了/, label: '生气+好笑' },
@@ -53,13 +58,28 @@ export function intensityOf(text) {
 }
 
 /**
+ * 没命中任何词表的那句话也可能很有分量：吼出来的、连发感叹号的、一口气说很长的。
+ * 给它一个温热的底，别让那些瞬间按闲话老化——她记得什么，全靠这个数。
+ * 上限压在 HEAT_KEEP(0.6) 下面：兜底归兜底，不能冒充"那一刻我很重"。
+ */
+export function fallbackHeat(text) {
+  const s = String(text || '');
+  let v = 0;
+  v += Math.min(2, (s.match(/[！!]/g) || []).length) * 0.12;
+  if (/(.)\1{2,}/u.test(s)) v += 0.1;
+  if (s.length >= 30) v += 0.12;
+  if (/[😭😢🥺💔]/u.test(s)) v += 0.1;
+  return Math.min(0.45, Math.round(v * 100) / 100);
+}
+
+/**
  * @param {string} text 对方这一轮说的话
  * @param {{direct?: boolean}} [o] direct=false 表示这句不是对她说的（路过），强度打折
- * @returns {{emotion: {v:number,a:number,intensity:number,label?:string}|null, damage: number, mixed?: boolean}}
+ * @returns {{emotion: {v:number,a:number,intensity:number,label?:string}|null, damage: number, heat: number, mixed?: boolean}}
  */
 export function appraise(text, { direct = true } = {}) {
   const t = String(text || '');
-  if (!t.trim()) return { emotion: null, damage: 0 };
+  if (!t.trim()) return { emotion: null, damage: 0, heat: 0 };
 
   const scale = direct ? 1 : 0.3;
   const praise = scan(t, PRAISE);
@@ -69,7 +89,7 @@ export function appraise(text, { direct = true } = {}) {
   const intensity = intensityOf(t) * scale;
 
   if (mixedHit) {
-    return { emotion: { v: 0.5, a: 0.7, intensity, label: mixedHit.label }, damage: 0, mixed: true };
+    return { emotion: { v: 0.5, a: 0.7, intensity, label: mixedHit.label }, damage: 0, heat: intensity, mixed: true };
   }
   // 正向：夸，或者「否定式的骂」（你不讨厌）
   const positive = praise.pos + insult.neg;
@@ -81,19 +101,27 @@ export function appraise(text, { direct = true } = {}) {
       emotion: { v: 0.15, a: 0.75, intensity: Math.max(0.4, intensity), label: '被凶' },
       // 伤害只认「直接冲她来」的明确骂。
       damage: direct ? Math.min(0.1, 0.04 * insult.pos) : 0,
+      heat: Math.max(0.4, intensity),
     };
   }
+  // 羞：低愉悦、高唤醒、低支配。放在「低落」前面，因为他撩她的时候她不是难过。
+  const bold = INTIMATE_BOLD.some((w) => t.includes(w));
+  const mild = INTIMATE_MILD.some((w) => t.includes(w)) && !bold;
+  if (bold || mild) {
+    const strong = bold ? Math.max(0.55, intensity) : Math.max(0.35, intensity * 0.7);
+    return { emotion: { v: 0.45, a: 0.8, intensity: strong, label: '羞' }, damage: 0, heat: strong };
+  }
   if (sad.pos > 0) {
-    return { emotion: { v: 0.25, a: 0.3, intensity, label: '低落' }, damage: 0 };
+    return { emotion: { v: 0.25, a: 0.3, intensity, label: '低落' }, damage: 0, heat: intensity };
   }
   if (negative > positive) {
-    return { emotion: { v: 0.3, a: 0.4, intensity, label: '低落' }, damage: 0 };
+    return { emotion: { v: 0.3, a: 0.4, intensity, label: '低落' }, damage: 0, heat: intensity };
   }
   if (positive > negative) {
-    return { emotion: { v: 0.8, a: 0.45, intensity, label: '被夸' }, damage: 0 };
+    return { emotion: { v: 0.8, a: 0.45, intensity, label: '被夸' }, damage: 0, heat: intensity };
   }
   if (/[？?]\s*$/.test(t)) {
-    return { emotion: { v: 0.5, a: 0.55, intensity: 0.2 * scale, label: '被追问' }, damage: 0 };
+    return { emotion: { v: 0.5, a: 0.55, intensity: 0.2 * scale, label: '被追问' }, damage: 0, heat: 0.2 * scale };
   }
-  return { emotion: null, damage: 0 };
+  return { emotion: null, damage: 0, heat: fallbackHeat(t) };
 }

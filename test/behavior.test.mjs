@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { replyPlan } from '../src/affect/behavior.js';
+import { buildContext } from '../src/affect/inject.js';
 import { applyDamage, initState, pushEmotion } from '../src/affect/core.js';
 
 const T0 = 0;
@@ -43,4 +44,36 @@ test('他明确要一段长的：允许破例多发几条，但仍有上限', ()
   assert.ok(long.maxParts > calm.maxParts, `他要长的就该多给：${calm.maxParts} → ${long.maxParts}`);
   assert.ok(long.maxParts <= 5, '破例 ≠ 刷屏');
   assert.equal(replyPlan(base, { room: 0 }).maxParts, calm.maxParts, '没要长的就一点都不变');
+});
+
+// ---- 情绪标签必须改一个数字，否则它就是个装饰品 ----
+
+test('羞：只发一条，而且犹豫得比生气更久', () => {
+  const shy = pushEmotion(base, { v: 0.45, a: 0.8, intensity: 0.55, label: '羞' }, T0);
+  const got = replyPlan(shy);
+  assert.equal(got.maxParts, 1, '说不成句，就一句');
+  assert.ok(got.delayMs > replyPlan(base).delayMs, '犹豫要看得见');
+  assert.match(got.reason, /羞/, '面板上要能看出是哪种情绪在起作用');
+});
+
+test('被凶：也压成一条，但比羞快', () => {
+  const hurt = pushEmotion(base, { v: 0.15, a: 0.75, intensity: 0.6, label: '被凶' }, T0);
+  const shy = pushEmotion(base, { v: 0.45, a: 0.8, intensity: 0.6, label: '羞' }, T0);
+  assert.equal(replyPlan(hurt).maxParts, 1);
+  assert.ok(replyPlan(hurt).delayMs < replyPlan(shy).delayMs, '生气是顶回去，害羞是说不出口');
+});
+
+test('没有装饰品：每个情绪标签都必须让注入或节奏变一点', () => {
+  const plainText = buildContext(base, T0);
+  const plainPlan = replyPlan(base);
+  const labels = ['羞', '被凶', '被夸', '低落', '生气+好笑', '无奈', '被追问'];
+  for (const label of labels) {
+    const st = pushEmotion(base, { v: 0.5, a: 0.5, intensity: 0.5, label }, T0);
+    const text = buildContext(st, T0);
+    const plan = replyPlan(st);
+    const changed = text !== plainText || plan.delayMs !== plainPlan.delayMs || plan.maxParts !== plainPlan.maxParts;
+    assert.ok(changed, `「${label}」只写进了提示词，没有任何行为变化——它是个装饰品，不该存在`);
+  }
+  // 这条守的是以后：新加一个情绪标签，忘了让它影响行为，这里就会红。
+  assert.equal(labels.length, 7);
 });

@@ -64,6 +64,14 @@ const TIME_NOTE = `【关于时间】
 对话里某句前面带括号（比如「（昨天 21:44）」）的，那是那句话说的时刻；不带括号的就是紧接着上一句。
 说「刚刚」「今天」「昨天」之前先看那个括号——别把前天的事说成刚发生。`;
 
+// 尺度：她要会不好意思，而不是什么都接。
+// 这不是审查——一个没有边际的人撩起来没有推拉；她说得比他还露，话题到那儿就平了。
+// 单独放这里是让它对所有角色卡都生效：改一次，不用改八张卡。
+const BOUNDARY_NOTE = `【关于撩和尺度】
+他往那个方向说的时候，你会不好意思：话会绕开，句子里会有「……」或者「你讨厌」，不会说得比他还白。
+你不主动升级——不主动把话题往身上引，也不主动说露骨的词。他不追，你就当没发生过。
+如果他逼得紧了，你会有点恼，而不是顺着往下走。`;
+
 /**
  * 压缩之后留多少条原文。
  *
@@ -119,7 +127,7 @@ export function createLocalSession({
   // 她说了 `[查:…]` 之后要重答一次，重答时还是同一轮，图还得在眼前。
   let lastImages = [];
 
-  const systemOf = (context = '') => [typeof system === 'function' ? system() : system, SYSTEM_SUFFIX, MEMORY_PROTOCOL, TIME_NOTE, summary ? `【更早的对话摘要】${summary}` : '', droppedNote ? `【更早的对话】${droppedNote}` : '', context]
+  const systemOf = (context = '') => [typeof system === 'function' ? system() : system, SYSTEM_SUFFIX, MEMORY_PROTOCOL, TIME_NOTE, BOUNDARY_NOTE, summary ? `【更早的对话摘要】${summary}` : '', droppedNote ? `【更早的对话】${droppedNote}` : '', context]
     .filter(Boolean).join('\n\n');
 
   async function compact() {

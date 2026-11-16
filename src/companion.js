@@ -48,7 +48,11 @@ export function createCompanion({ load, save, session, ownerQQ = '', now = Date.
       save(st);
 
       const context = buildContext(st, t);
-      const memory = await memoryBlock(msg, { mood: st.emotion, heat: a.emotion?.intensity }).catch(() => '');
+      // heat 决定这条记忆热不热（直接影响她多久忘掉它）。认不出情绪的句子原本只能靠
+      // 上一次情绪的残留强度，等于「你吼了一句」和「今天吃了黄焖鸡」一样轻。
+      // appraise 现在给一个兜底热度；真的一点分量都没有的闲话仍然传 null，走老路。
+      const heat = Number(a.heat) > 0 ? a.heat : null;
+      const memory = await memoryBlock(msg, { mood: st.emotion, heat }).catch(() => '');
       // 「她此刻在干什么」由 host 拼（要读 life.json、要看这一轮是什么场合），这里只负责接上去。
       const life = await extraContext(msg).catch(() => '');
       // 他自己发的图 + 这一轮她想重看的那张（最多一张，host 按分数决定要不要贴）。

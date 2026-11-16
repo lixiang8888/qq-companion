@@ -373,3 +373,14 @@ test('条数硬上限：一天之内也不会无限涨', async () => {
   assert.ok(s.snapshot().compactions > 0, '到了硬上限还是要压');
   assert.ok(s.size <= 7, `一天之内的条数也得有闸，实际 ${s.size}`);
 });
+
+test('尺度那句话进系统提示：她会不好意思，而且不主动升级', async () => {
+  const f = fake();
+  const s = createLocalSession({ complete: f.complete, system: '你是小鲸鱼' });
+  await s.prompt('p', '在吗');
+  const sys = f.calls[0].system;
+  assert.match(sys, /关于撩和尺度/);
+  assert.match(sys, /你讨厌/);
+  // 人格永远是第一段，规矩跟在后面：不能让人格被规矩顶到末尾去。
+  assert.ok(sys.indexOf('你是小鲸鱼') === 0);
+});

@@ -174,3 +174,30 @@ test('每日伤害上限在本地午夜重置，而不是早上八点', () => {
   const next = applyDamage(st, 0.02, afterMidnight).state;
   near(next.relation.dayDamage, 0.02); // 过了本地午夜重新计
 });
+
+// 标签以前只活在一轮的函数返回值里：pushEmotion 把它丢了，于是注入和节奏都读不到，
+// 六个情绪标签全是摆设。这条守的是「标签真的进了状态，而且散尽了会走」。
+test('情绪标签存进状态，散尽了才走', () => {
+  const st = pushEmotion(initState(T0), { v: 0.45, a: 0.8, intensity: 0.55, label: '羞' }, T0);
+  assert.equal(st.emotion.label, '羞');
+  // 半衰期内还在：害羞不会一秒就没，也不会永远挂着。
+  assert.equal(settle(st, T0 + 5 * 60e3).emotion.label, '羞');
+  // 很久以后强度归零，标签跟着走——否则「刚被戳到」会永远写在她身上。
+  const later = settle(st, T0 + 20 * EMOTION_HALF_MS);
+  assert.equal(later.emotion.intensity, 0);
+  assert.equal(later.emotion.label, '');
+});
+
+test('不传标签不会把上一次的清掉：没人说话时她还在那个情绪里', () => {
+  const shy = pushEmotion(initState(T0), { v: 0.45, a: 0.8, intensity: 0.55, label: '羞' }, T0);
+  const again = pushEmotion(shy, { v: 0.6, a: 0.4, intensity: 0.2 }, T0 + 60e3);
+  assert.equal(again.emotion.label, '羞');
+});
+
+test('注入里带出情绪名字，面板也能看见', () => {
+  const st = pushEmotion(initState(T0), { v: 0.45, a: 0.8, intensity: 0.55, label: '羞' }, T0);
+  assert.match(buildContext(st, T0), /不好意思/);
+  assert.match(stateLine(st), /羞/);
+  // 没有标签的时候一个字都不多花。
+  assert.ok(!buildContext(initState(T0), T0).includes('不好意思'));
+});

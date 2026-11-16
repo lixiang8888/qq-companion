@@ -46,7 +46,7 @@ const decay = (dtMs, halfMs) => Math.pow(0.5, Math.max(0, dtMs) / halfMs);
 export function initState(now = 0) {
   return {
     version: 1,
-    emotion: { v: BASELINE.v, a: BASELINE.a, intensity: 0, at: now },
+    emotion: { v: BASELINE.v, a: BASELINE.a, intensity: 0, at: now, label: '' },
     mood: { v: BASELINE.v, a: BASELINE.a, at: now },
     relation: {
       trust: 0.5, intimacy: 0.4, guard: 0.2, debt: 0,
@@ -87,6 +87,8 @@ function settleEmotion(st, now) {
     e.intensity = 0;
     e.v = BASELINE.v;
     e.a = BASELINE.a;
+    // 情绪散尽了，标签也跟着走。留着的话"刚被戳到"会永远挂在她身上。
+    e.label = '';
   }
   e.at = now;
 }
@@ -145,13 +147,16 @@ function settleSelf(st, now) {
  * 一个情绪事件。intensity 是本轮刺激的强度（0~1），累计不超过 2 档。
  * 用语用层（句长、语气词、接梗）表达，不说出口——注入文本里会再强调一次。
  */
-export function pushEmotion(st, { v, a, intensity = 0.5 }, now) {
+export function pushEmotion(st, { v, a, intensity = 0.5, label = '' }, now) {
   const next = settle(st, now);
   const e = next.emotion;
   const k = clamp(0.25 + 0.25 * intensity, 0.25, 0.6);
   e.v = clamp(e.v + (clamp(v) - e.v) * k);
   e.a = clamp(e.a + (clamp(a) - e.a) * k);
   e.intensity = clamp(e.intensity + clamp(intensity), 0, 2);
+  // 标签必须存下来：不存的话它只活在这一轮的函数返回值里，
+  // 注入和节奏都读不到它，等于六个情绪标签全是摆设。
+  if (label) e.label = String(label);
   e.at = now;
   return next;
 }

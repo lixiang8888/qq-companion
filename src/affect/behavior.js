@@ -15,15 +15,25 @@ export function replyPlan(st, { baseDelayMs = 800, room = 0 } = {}) {
   const mood = Number(st?.mood?.v ?? 0.5);
   const guard = Number(st?.relation?.guard ?? 0.2);
   const intensity = Number(st?.emotion?.intensity ?? 0);
+  const label = String(st?.emotion?.label || '');
 
   // 心情越低越慢（最多 2.6 倍），戒备越高再慢一点（最多 +60%）。
-  const delayMs = Math.round(clamp(baseDelayMs * (1.6 - mood) * (1 + guard * 0.6), 250, 15000));
+  let delayMs = Math.round(clamp(baseDelayMs * (1.6 - mood) * (1 + guard * 0.6), 250, 15000));
   // 条数：心情好可以补一句；被戳到（强度高）时更短、只发一条。
   let maxParts = mood >= 0.7 ? 3 : mood >= 0.4 ? 2 : 1;
   if (intensity >= 1) maxParts = Math.min(maxParts, 1);
+  // 情绪标签必须至少改一个数字。不改的话它就只是一句话，等于没有这个情绪——
+  // 「羞」就是按这条长出来的：说不成句，所以只发一条，而且犹豫得比生气更久。
+  if (label === '羞') {
+    delayMs = Math.min(15000, Math.round(delayMs * 2));
+    maxParts = Math.min(maxParts, 1);
+  } else if (label === '被凶') {
+    delayMs = Math.min(15000, Math.round(delayMs * 1.4));
+    maxParts = Math.min(maxParts, 1);
+  }
   // 「他明确要一段长的」是他说的话，比心情更硬：允许破例，但仍然一句一条，不是一篇作文。
   if (room > 0) maxParts = Math.min(5, maxParts + room);
 
-  const reason = `心情${mood >= 0.7 ? '好' : mood >= 0.4 ? '平常' : '低'}${intensity >= 1 ? '·被戳到' : ''}${guard >= 0.4 ? '·戒备' : ''}`;
+  const reason = `心情${mood >= 0.7 ? '好' : mood >= 0.4 ? '平常' : '低'}${intensity >= 1 ? '·被戳到' : ''}${guard >= 0.4 ? '·戒备' : ''}${label ? `·${label}` : ''}`;
   return { delayMs, maxParts, reason };
 }

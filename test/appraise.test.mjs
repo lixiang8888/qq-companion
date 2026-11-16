@@ -98,3 +98,39 @@ test('接上关系层：一次骂只扣 0.04 信任', () => {
   assert.ok(s.relation.guard > 0.2);
   assert.ok(DAY_MS > 0);
 });
+
+// ---- 羞：她不是什么都接 ----
+// 以前这里没有这一类，所以他往那个方向说的时候她的状态一点都没变，
+// 于是只能顺着他的话往下滑——那不是性格，是没人拦。
+
+test('羞：低愉悦 + 高唤醒，而且比他说的更露时反应更强', () => {
+  const bold = appraise('🦌');
+  assert.equal(bold.emotion.label, '羞');
+  assert.ok(bold.emotion.v < 0.5, '不是高兴');
+  assert.ok(bold.emotion.a > 0.7, '心跳快，但不等于开心');
+  const mild = appraise('我刚洗完澡了');
+  assert.equal(mild.emotion.label, '羞', '「刚洗完澡」是引子，也算');
+  assert.ok(mild.emotion.intensity < bold.emotion.intensity, '引子比露骨轻一档');
+});
+
+test('羞不能把「被夸」吃掉：抱抱、摸摸这种还是当夸', () => {
+  // 亲密词表里要是混进 PRAISE 已有的词，被夸就整个变成羞了。
+  assert.equal(appraise('抱抱').emotion.label, '被夸');
+  assert.equal(appraise('宝贝摸摸').emotion.label, '被夸');
+});
+
+test('骂还是骂：带撩的词也不能把「被凶」盖掉', () => {
+  assert.equal(appraise('闭嘴，别在床上说这个').emotion.label, '被凶');
+});
+
+test('兜底热度：认不出情绪的一句话，也可能很有分量', () => {
+  // 她多久忘掉一件事，全靠这个数。没有它，"吼了一句"和"今天吃了黄焖鸡"一样轻。
+  assert.equal(appraise('今天下雨了').heat, 0);
+  assert.ok(appraise('你怎么这样！！！！').heat > 0.2, '连发感叹号的话是有分量的');
+  assert.ok(appraise('我没事，就是有点想跟你说说话，今天从早上一直忙到现在，饭都没吃').heat >= 0.12, '一口气说很长');
+  // 有情绪的句子不叠两层：热度就是那一刻的强度。
+  const hurt = appraise('闭嘴');
+  assert.equal(hurt.heat, hurt.emotion.intensity);
+  // 空输入什么都没发生。
+  assert.equal(appraise('').heat, 0);
+});

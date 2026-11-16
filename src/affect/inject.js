@@ -27,11 +27,24 @@ const MOOD_HINT = {
 const TRUST_HINT = (t) => (t >= 0.7 ? '你很信任他' : t >= 0.5 ? '你信得过他' : t >= 0.3 ? '你还在观察他' : '你对他有戒心');
 const GUARD_HINT = (g) => (g >= 0.5 ? '你有点防备，别太热络' : g >= 0.3 ? '你留着一点距离' : '');
 
+// 每个情绪标签都要能让这句话变一点。做不到的话它就是个装饰品，不该存在
+// （affect.test 里有一条遍历所有标签的测试守着这条）。
+const LABEL_HINT = {
+  羞: '你有点不好意思：话说得绕，别说得太直白',
+  被凶: '你被扎了一下：短一点，别哄他',
+  被夸: '你心里美了一下：语气可以软一点',
+  低落: '你有点闷：话少，别硬撑热闹',
+  '生气+好笑': '你又好气又好笑：可以怼一句，但别真翻脸',
+  无奈: '你有点没辙：叹口气，别争',
+  被追问: '他在追着问：答一句就够，别展开',
+};
+
 /** 当前状态的一句话摘要（给面板看，也给注入用）。 */
 export function stateLine(st) {
   const m = moodLabel(st.mood.v);
   const bits = [`心情${m}`];
   if (st.emotion.intensity >= 1) bits.push('刚被戳到');
+  if (st.emotion.label) bits.push(st.emotion.label);
   bits.push(`信任 ${st.relation.trust.toFixed(2)}`, `亲密 ${st.relation.intimacy.toFixed(2)}`);
   if (st.relation.guard >= 0.3) bits.push(`戒备 ${st.relation.guard.toFixed(2)}`);
   return bits.join(' · ');
@@ -48,6 +61,8 @@ export function buildContext(st, now = 0) {
   const t = Number(now) || Number(st?.self?.at) || 0;
   const parts = [];
   if (hint) parts.push(`心情${m}：${hint}`);
+  const labelHint = LABEL_HINT[st?.emotion?.label] || '';
+  if (labelHint) parts.push(labelHint);
   const g = GUARD_HINT(st.relation.guard);
   parts.push(`${TRUST_HINT(st.relation.trust)}${g ? '，' + g : ''}`);
   // 人格只在偏离基线明显时提一句，否则每天重复同一个形容词会把性格念死。
