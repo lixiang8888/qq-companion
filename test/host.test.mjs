@@ -96,6 +96,45 @@ test('主动搭话：期待到了就自己想一次，发出去的那句她才�
   assert.equal(again.poked, false);
 });
 
+test('她的世界：外面真变了，她就带着那件事想；顺手定下待会儿干什么', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-perceive-'));
+  const fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) });
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+    enabled: true,
+    ownerQQ: '42',
+    onebot: { httpUrl: 'http://127.0.0.1:9' },
+    proactive: { enabled: true, minIdleMinutes: 180, quietFrom: 0, quietTo: 0 },
+    screen: { enabled: true },
+  }));
+  let clock = new Date(2026, 0, 1, 9, 0, 0).getTime();
+  const ctx = fakeCtx({ replies: ['嗯', '{"send":true,"message":"在干嘛","doing":"在收拾桌上的东西","think":"想问他要不要吃饭"}'] });
+  const host = createHost(ctx, {
+    dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl,
+    screenReader: async () => ({ app: 'DeepSeek Harness', title: '报错信息' }),
+  });
+
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(clock / 1000) });
+  clock += 4 * 3600e3; // 他四个小时没吭声，屏幕还停在那个报错上
+
+  const r = await host.proactive.tick();
+  assert.equal(r.poked, true);
+
+  // 这一轮真的把「外面发生了什么」写进了提示。以前这些只在他说完话那一轮才读得到。
+  const prompt = JSON.stringify(ctx.calls[1]);
+  assert.match(prompt, /外面真的发生了什么/);
+  assert.match(prompt, /报错信息/);
+
+  // 她自己说的「接下来想干什么」落到 life.json：下一次「你此刻」就有内容了。
+  assert.equal(JSON.parse(readFileSync(join(dataDir, 'life.json'), 'utf8')).doing, '在收拾桌上的东西');
+  // 想的那句话存进 lastThought（下一次自己想起时读回来），不存整段原始 JSON。
+  const st = host.proactive.state();
+  assert.equal(st.lastThought.text, '想问他要不要吃饭');
+  assert.equal(st.ticks.n, 1, '真的调了模型才算想过一次');
+  assert.ok(st.lastEvents >= 1, '至少屏幕那一条算数（聊过天之后记忆也会算一条）');
+  // 报过的事不再报：同一个屏幕下一次不该再算「新变化」。
+  assert.equal(st.seen.screenTitle, '报错信息');
+});
+
 test('面板操作：忘记一条、置顶一条、再找回', async () => {
   const { ctx, host } = setup();
   await host.memory.block({ text: '他喜欢猫', userId: '42' });

@@ -26,7 +26,7 @@ import { MAX_RECORDS, addRecord, createIndex, pruneCold, prunePixels, sha12, sta
 import { RECHECK_PROMPT, REOPEN_SCORE, canRecheck, candidates, noteRecheck, parsePick, perceptionLine, recentLine, recentShots } from './perception/recall.js';
 import { advance, applyPlan, clockOf, createLife, LIFE_PROMPT, lifeLine, offLine, parsePlan } from './life.js';
 import { baselineOf, composePrompt, diff as diaryDiff, dueDay, hasDiary, readDiaries, snapshot as diarySnapshot, writeDiary } from './diary.js';
-import { addUsage, createBudget, fetchBalance, moneyBlock, usageOf } from './budget.js';
+import { addUsage, createBudget, fetchBalance, LOW_BALANCE_CNY, moneyBlock, usageOf } from './budget.js';
 import { createMailbox, DEFAULT_WINDOW_MS, mergeTexts } from './mailbox.js';
 import { applyInsights, composePrompt as insightsPrompt, createInsights, dueInsights, insightsLastAt, parseInsights, renderInsights, INSIGHT_TTL } from './insights.js';
 import { composeCommentPrompt, composePostPrompt, decidePost, notePosted, parseCommentReply, parsePostReply } from './qzone-post.js';
@@ -38,7 +38,8 @@ import { HOUR, MINUTE, assemble, blk } from './fresh.js';
 import { renderPanel } from './panel.js';
 import { rollbackTraits } from './affect/personality.js';
 import { replyPlan } from './affect/behavior.js';
-import { DEFAULTS as PROACTIVE_DEFAULTS, composePokePrompt, notePoked, noteSaidByUser, noteTurn, noteWait, parsePokeReply, pokeGate } from './proactive.js';
+import { DEFAULTS as PROACTIVE_DEFAULTS, composePokePrompt, notePoked, noteSaidByUser, noteTick, noteTurn, noteWait, parsePokeReply, pokeGate } from './proactive.js';
+import { perceive } from './perceive.js';
 import { fetchWeather, isStale, placeOf, weatherLine } from './weather.js';
 import { SCREEN_TTL, readScreen, sanitize, screenLine } from './screen.js';
 import { canSearch, factLine, latestFact, materialLines, noteSearch, search } from './search.js';
@@ -910,6 +911,25 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const fresh = t - 24 * 3600e3;
     const hint = rankForPrompt(memoryStore.load(), { now: t })
       .find((r) => !r.pinned && !r.first && (Number(r.createdAt) || 0) >= fresh)?.text || '';
+    // 外面真的变了什么。以前这些只在「他说话那一刻」才读（contextBlock 挂在回复路径上），
+    // 所以他不吭声的时候她的世界是冻住的——她能说的只有他刚说的那句。
+    const balance = budgetStore.load()?.balance;
+    const shots = perceptionStore.load().records || [];
+    const perceived = perceive({
+      now: t,
+      screenOn: screenOn(),
+      screen: screenStore.load(),
+      weatherOn: weatherOn(),
+      weather: weatherStore.load(),
+      lastUserAt,
+      pending: pendingQuestions,
+      memory: memoryStore.load(),
+      balance: Number.isFinite(Number(balance?.total)) ? Number(balance.total) : null,
+      lowBalance: Number(config.budget?.lowBalance ?? LOW_BALANCE_CNY),
+      life: advance(lifeStore.load(), t),
+      lastPictureAt: shots.reduce((m, r) => Math.max(m, Number(r.at) || 0), 0),
+      seen: state.seen,
+    });
     const prompt = composePokePrompt({
       clock: clockText(t),
       idle: `他已经 ${g.idleHours} 小时没跟你说话了`,
@@ -917,6 +937,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       hint,
       inner: state.lastThought?.text || '',
       doing: await lifeBlock(),
+      events: perceived.events,
     });
 
     // 这是一次独立调用，不碰主历史：写进去，她就真会以为自己听过那句系统提醒。
@@ -934,7 +955,21 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     }
 
     const decided = parsePokeReply(thought);
-    const withThought = { ...state, lastThought: { at: t, text: thought.trim().slice(0, 200) } };
+    // 她自己说的「接下来想干什么」：写进 life。顺带省掉 refreshLife 那一次调用——
+    // 它看到 until 还在未来就直接早退，不会重复问一遍。
+    if (decided.doing) {
+      try { lifeStore.save(applyPlan(advance(lifeStore.load(), t), { doing: decided.doing, minutes: 60 }, t)); }
+      catch (e) { log.warn?.(`记不下她接下来要干什么：${e.message}`); }
+    }
+    // 她想的那句话进 lastThought（下一次 tick 的 inner 读它）。存解析出来的那句，
+    // 不存整段原始 JSON——那一版回灌给她的是 `{"send":true,...}`，她自己看不懂。
+    // 没说出 think 就保留上一次的，不拿噪音盖掉。
+    const withThought = noteTick({
+      ...state,
+      lastThought: decided.think ? { at: t, text: decided.think } : state.lastThought,
+      // 报过的事件不再报第二遍（屏幕标题、余额、同一张图）。
+      seen: perceived.seen,
+    }, { now: t, events: perceived.events.length });
 
     // 她顺手想查点什么。查不到就算了，绝不能让她以为查过。
     let looked = '';

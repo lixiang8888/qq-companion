@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  DEFAULTS, composePokePrompt, expectAt, inQuietHours, notePoked, noteSaidByUser, noteTurn, noteWait,
+  DEFAULTS, composePokePrompt, expectAt, inQuietHours, notePoked, noteSaidByUser, noteTick, noteTurn, noteWait,
   parsePokeReply, pokeGate, typicalGap,
 } from '../src/proactive.js';
 import { dayKeyOf } from '../src/affect/core.js';
@@ -130,7 +130,7 @@ test('提示文本：说清是他没说话、带由头、脱敏、不许复述',
 });
 
 test('读懂她的决定：JSON、裹在代码块里的 JSON、坏格式兜底', () => {
-  assert.deepEqual(parsePokeReply('{"send":true,"message":"在干嘛"}'), { send: true, message: '在干嘛', search: '' });
+  assert.deepEqual(parsePokeReply('{"send":true,"message":"在干嘛"}'), { send: true, message: '在干嘛', search: '', doing: '', think: '' });
   const no = parsePokeReply('```json\n{"send":false,"waitMinutes":30,"reason":"睡了"}\n```');
   assert.equal(no.send, false);
   assert.equal(no.waitMinutes, 30);
@@ -142,7 +142,50 @@ test('读懂她的决定：JSON、裹在代码块里的 JSON、坏格式兜底',
   assert.equal(parsePokeReply('[沉默]').send, false);
   assert.equal(parsePokeReply('').send, false);
   // 格式坏了：整段当一句话，别因为少个括号整晚不说话
-  assert.deepEqual(parsePokeReply('在干嘛呢'), { send: true, message: '在干嘛呢', search: '' });
+  assert.deepEqual(parsePokeReply('在干嘛呢'), { send: true, message: '在干嘛呢', search: '', doing: '', think: '' });
+});
+
+test('她想的那句话和接下来要干什么：解析出来、长度封死', () => {
+  const r = parsePokeReply('{"send":false,"doing":"在收拾桌上的东西","think":"想问他要不要吃饭"}');
+  assert.equal(r.doing, '在收拾桌上的东西');
+  assert.equal(r.think, '想问他要不要吃饭');
+  // 这两个字段会直接进下一次的系统提示，长度必须封死（信任边界）。
+  const long = parsePokeReply(`{"send":false,"doing":"${'长'.repeat(80)}","think":"${'想'.repeat(200)}"}`);
+  assert.equal(long.doing.length, 30);
+  assert.equal(long.think.length, 60);
+  // 发出去的那条也带着这两个键：一次调用既决定说话，也决定她待会儿干什么。
+  const sent = parsePokeReply('{"send":true,"message":"在干嘛","doing":"在等热水","think":"他还没回"}');
+  assert.equal(sent.send, true);
+  assert.equal(sent.doing, '在等热水');
+  assert.equal(sent.think, '他还没回');
+});
+
+test('提示文本：外面真发生了什么，写在明处，且脱敏', () => {
+  const t = composePokePrompt({
+    clock: '1月1日 周四 13:00',
+    idle: '他已经 4 小时没跟你说话了',
+    events: [{ kind: 'screen', text: '他那边屏幕上现在是「报错信息」' }, { kind: 'silence', text: '他已经 6 小时没跟你说话了' }],
+  });
+  assert.match(t, /外面真的发生了什么/);
+  assert.match(t, /报错信息/);
+  assert.match(t, /"doing"/);
+  assert.match(t, /"think"/);
+  // 没有事件就不该出现那一节：空标题比空内容更让人乱编。
+  assert.ok(!composePokePrompt({ clock: '13:00' }).includes('外面真的发生了什么'));
+});
+
+test('记账：真的调了模型才算「想过」，跨日归零', () => {
+  const day = new Date(2026, 0, 1, 13, 0, 0).getTime();
+  const a = noteTick({}, { now: day, events: 2 });
+  assert.equal(a.ticks.n, 1);
+  assert.equal(a.lastEvents, 2);
+  const b = noteTick(a, { now: day + 60e3, events: 0 });
+  assert.equal(b.ticks.n, 2);
+  assert.equal(b.lastEvents, 0);
+  // 第二天从 1 重新数
+  assert.equal(noteTick(b, { now: day + 86400e3, events: 0 }).ticks.n, 1);
+  // 别的状态不能被她顺手吃掉
+  assert.equal(noteTick({ count: 2, consecutive: 1 }, { now: day }).count, 2);
 });
 
 test('等待时间按配置的安静时段算，不用默认那份', () => {

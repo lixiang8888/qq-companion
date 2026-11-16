@@ -166,18 +166,25 @@ export function pokeGate({ now, cfg = DEFAULTS, lastUserAt = 0, state = {}, mood
 }
 
 /** 给她的「自己想想」提示。不是用户消息，她看完不该当成他说过这句。 */
-export function composePokePrompt({ clock = '', idle = '', lastLine = '', hint = '', inner = '', doing = '' } = {}) {
+export function composePokePrompt({ clock = '', idle = '', lastLine = '', hint = '', inner = '', doing = '', events = [] } = {}) {
   const lines = [`【这是你自己在想，不是他说的】现在 ${clock}，${idle}。`];
   if (doing) lines.push(`你此刻：${sanitizeSecrets(doing).slice(0, 60)}。`);
   if (lastLine) lines.push(`你们最后说的一句是：「${sanitizeSecrets(lastLine).slice(0, 120)}」。`);
+  // 这些是外面真的变了的几件事（屏幕、天气、时间、记忆、钱），不是抽出来的剧情。
+  // 有就写在明处：她的念头得有个来处，否则就只会说「我想你了」。
+  if (events?.length) {
+    lines.push('【外面真的发生了什么】');
+    for (const e of events.slice(0, 6)) lines.push(`- ${sanitizeSecrets(String(e?.text ?? '')).slice(0, 80)}`);
+  }
   if (hint) lines.push(`你心里还挂着件事：${sanitizeSecrets(hint).slice(0, 60)}。`);
   if (inner) lines.push(`上次这个点你也想过这事，当时想的是：「${sanitizeSecrets(inner).slice(0, 60)}」。`);
   lines.push('要不要找他？他可能在忙、在睡，也可能这会儿就是不想说话——不说也完全没问题。');
   lines.push('要是你心里有个具体的疑问（外面的新闻、某个东西是什么），可以顺手查一下，加一个键："search":"你想查的那句话"。');
+  lines.push('顺便说一句你接下来想干什么（不用装成上班通勤），和你心里那句话。');
   lines.push('只回一个 JSON，别的什么都不要：');
-  lines.push('{"send":false,"waitMinutes":45,"reason":"一句话，为什么先不说"}');
-  lines.push('或者 {"send":true,"message":"你要发过去的那句话"}');
-  lines.push('想查就再加一句：{"send":false,"waitMinutes":60,"reason":"…","search":"湖州明天会下雨吗"}');
+  lines.push('{"send":false,"waitMinutes":45,"reason":"一句话，为什么先不说","doing":"接下来想干什么，不想就留空","think":"心里那句话，二十字以内，可以留空"}');
+  lines.push('或者 {"send":true,"message":"你要发过去的那句话","doing":"","think":""}');
+  lines.push('想查就再加一句：{"send":false,"waitMinutes":60,"reason":"…","doing":"","think":"","search":"湖州明天会下雨吗"}');
   return lines.join('\n');
 }
 
@@ -197,21 +204,42 @@ const pickJson = (text) => {
 /**
  * 解读她的决定。JSON 是正路；格式坏了就整段当一句话——
  * 宁可多发一句，也不要因为少个括号整晚不说话。
+ *
+ * `doing`：她接下来想干什么，喂给「她此刻」那块（长度封死，进系统提示）。
+ * `think`：她心里那句话，只在她下一次自己想起来时被读回，不进对话、不进记忆。
  */
 export function parsePokeReply(text) {
   const raw = String(text || '').trim();
   const j = pickJson(raw);
+  const doing = (v) => String(v || '').replace(/\s+/g, ' ').trim().slice(0, 30);
+  const think = (v) => String(v || '').replace(/\s+/g, ' ').trim().slice(0, 60);
   if (j && typeof j === 'object') {
     const waitMinutes = num(j.waitMinutes, DEFAULTS.defaultWaitMinutes);
     // 查什么跟发不发是两件事：可以只想查、不说话。
     const search = String(j.search || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    const extra = { doing: doing(j.doing), think: think(j.think) };
     if (j.send === true) {
       const message = String(j.message || '').trim();
-      if (message && !isSilent(message)) return { send: true, message, search };
-      return { send: false, waitMinutes, search, reason: String(j.reason || '想说，但没话') };
+      if (message && !isSilent(message)) return { send: true, message, search, ...extra };
+      return { send: false, waitMinutes, search, reason: String(j.reason || '想说，但没话'), ...extra };
     }
-    return { send: false, waitMinutes, search, reason: String(j.reason || '') };
+    return { send: false, waitMinutes, search, reason: String(j.reason || ''), ...extra };
   }
-  if (!raw || isSilent(raw)) return { send: false, waitMinutes: DEFAULTS.defaultWaitMinutes, search: '', reason: '没想好说什么' };
-  return { send: true, message: raw, search: '' };
+  if (!raw || isSilent(raw)) return { send: false, waitMinutes: DEFAULTS.defaultWaitMinutes, search: '', reason: '没想好说什么', doing: '', think: '' };
+  // 整段当一句话的兜底路径里没有结构化字段：她在想什么就是这句，但 doing 不猜。
+  return { send: true, message: raw, search: '', doing: '', think: '' };
+}
+
+/**
+ * 记一次「她想过了」。跟 noteWait 分开：这一笔记的是**真的调了模型**，
+ * 面板上「今天想了 N 次、其中 M 次是因为外面真有事」就是它。
+ */
+export function noteTick(state = {}, { now, events = 0 } = {}) {
+  const day = dayKeyOf(now);
+  const same = state.ticks?.day === day;
+  return {
+    ...state,
+    ticks: { day, n: (same ? num(state.ticks.n, 0) : 0) + 1 },
+    lastEvents: Math.max(0, Math.round(num(events))),
+  };
 }
