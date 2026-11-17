@@ -30,17 +30,42 @@ export function cleanText(raw) {
 }
 
 /**
- * 这次读第几章：接着上次往后一章；读完了就从头再来（她可以重读，也算真事）。
- * @returns {{index:number, wrapped:boolean}}
+ * 这次读哪一章。
+ *
+ * 为什么要按「章号」而不是按数组下标往后走：他遇到的真事——有的书源目录里章节会重复
+ * （同一章出现两次）、有的会缺（第 300 章后面直接是 302）。按下标走，撞上重复就重读一遍，
+ * 撞上缺失就少读一章还不知道。按章号走两个问题一起解决：
+ *   - 只在章号比上次大时才读 → 重复的那条永远不会被选中
+ *   - 跳号就说明缺章，返回 gap 让调用方知道（不是她的错，也不用假装读过）
+ * 没有章号（番外、卷名）的书退回按下标走，并跳过标题读过的那些。
+ *
+ * @returns {{index:number, title:string, num:number|null, gap:number, wrapped:boolean}}
  */
-export function nextChapter({ lastIndex = -1, total = 0 } = {}) {
-  const t = Math.max(0, Math.round(Number(total) || 0));
-  if (t === 0) return { index: 0, wrapped: false };
-  const last = Math.round(Number(lastIndex));
-  const next = (Number.isFinite(last) ? last : -1) + 1;
-  if (next <= 0) return { index: 0, wrapped: false };
-  if (next >= t) return { index: 0, wrapped: true };
-  return { index: next, wrapped: false };
+export function planRead(chapters = [], state = {}) {
+  const list = [...(chapters || [])].filter((c) => Number.isFinite(Number(c?.index))).sort((a, b) => a.index - b.index);
+  if (!list.length) return { index: 0, title: '', num: null, gap: 0, wrapped: false };
+
+  const titleOf = (c) => String(c?.title || '').trim();
+  const numOf = (c) => { const m = /第\s*(\d+)\s*[章节]/.exec(titleOf(c)); return m ? Number(m[1]) : null; };
+  const read = new Set((state.readTitles || []).map((t) => String(t).trim()));
+  const lastNum = Number.isFinite(Number(state.lastNum)) && state.lastNum !== null ? Number(state.lastNum) : null;
+  const pick = (c, gap = 0, wrapped = false) => ({ index: Number(c.index), title: titleOf(c), num: numOf(c), gap, wrapped });
+
+  // 一、按章号往后：跳过重复，缺章如实报出来
+  if (lastNum !== null) {
+    for (const c of list) {
+      const n = numOf(c);
+      if (n === null || n <= lastNum) continue;
+      if (read.has(titleOf(c))) continue;
+      return pick(c, Math.max(0, n - lastNum - 1));
+    }
+  }
+  // 二、从上次的下标往后，跳过读过的标题
+  const from = Number.isFinite(Number(state.index)) ? Number(state.index) + 1 : 0;
+  for (let i = from; i < list.length; i++) if (!read.has(titleOf(list[i]))) return pick(list[i]);
+  // 三、全读过了：从头再来（重读也是真事，不是错误）
+  for (const c of list) if (!read.has(titleOf(c))) return pick(c, 0, true);
+  return pick(list[0], 0, true);
 }
 
 function makeClient({ base = DEFAULT_BASE, fetchImpl = globalThis.fetch, timeoutMs = TIMEOUT_MS } = {}) {
@@ -93,9 +118,10 @@ export function createNovel(opts) {
 // ---- 什么时候该看书，看完怎么记 ----
 
 export const BORED_QUIET_MS = 2 * 3600e3;   // 他安静这么久，她才开始无聊
-export const READ_GAP_MS = 6 * 3600e3;      // 两次读之间至少隔这么久
-export const READS_PER_DAY = 2;             // 一天最多读两章：一章两千多字，读多了烧钱也读不出味道
+export const READ_GAP_MS = 10 * 60e3;       // 两章之间至少隔一次心跳，别在一个 tick 里连读
+export const READS_PER_DAY = 80;            // 一天最多读这么多章（他定的）
 export const READ_MAX_CHARS = 3000;         // 喂给模型的正文上限
+export const READ_TITLES_KEEP = 60;         // 记住最近读过的标题：靠它躲开目录里的重复章
 
 /**
  * 她现在该不该去看书。
@@ -113,14 +139,19 @@ export function isBored({ now = 0, lastUserAt = 0, lastReadAt = 0, readsToday = 
   return now - Number(lastUserAt) >= BORED_QUIET_MS;
 }
 
-/** 看完之后的进度。章数、书名都记下来，下次接着读。 */
-export function noteRead(state = {}, { now = 0, book = {}, index = 0, title = '', thought = '' } = {}) {
+/** 看完之后的进度。章号用来躲重复，标题用来躲缺章之后的重读。换书就重新开始算。 */
+export function noteRead(state = {}, { now = 0, book = {}, index = 0, title = '', num = null, thought = '' } = {}) {
+  const bookUrl = String(book.bookUrl || state.bookUrl || '');
+  const sameBook = bookUrl === String(state.bookUrl || '');
+  const keep = sameBook ? [String(title || '').trim(), ...(state.readTitles || [])] : [String(title || '').trim()];
   return {
-    bookUrl: String(book.bookUrl || state.bookUrl || ''),
+    bookUrl,
     bookName: String(book.name || state.bookName || ''),
     index: Math.max(0, Math.round(Number(index) || 0)),
     title: String(title || ''),
-    thought: String(thought || '').replace(/\s+/g, ' ').trim().slice(0, 60),
+    lastNum: Number.isFinite(Number(num)) ? Number(num) : (sameBook ? (state.lastNum ?? null) : null),
+    readTitles: keep.filter(Boolean).slice(0, READ_TITLES_KEEP),
+    thought: String(thought || '').replace(/\s+/g, ' ').trim().slice(0, 120),
     at: now,
   };
 }

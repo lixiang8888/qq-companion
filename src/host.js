@@ -40,7 +40,7 @@ import { rollbackTraits } from './affect/personality.js';
 import { replyPlan } from './affect/behavior.js';
 import { DEFAULTS as PROACTIVE_DEFAULTS, composePokePrompt, notePoked, noteSaidByUser, noteTick, noteTurn, noteWait, parsePokeReply, pokeGate } from './proactive.js';
 import { perceive } from './perceive.js';
-import { createNovel, isBored, nextChapter, noteRead, novelLine, READ_MAX_CHARS } from './novel.js';
+import { createNovel, isBored, noteRead, novelLine, planRead, READ_MAX_CHARS } from './novel.js';
 import { dayKeyOf } from './affect/core.js';
 import { fetchWeather, isStale, placeOf, weatherLine } from './weather.js';
 import { SCREEN_TTL, readScreen, sanitize, screenLine } from './screen.js';
@@ -824,28 +824,30 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       // 接着上次那本；那本从书架里没了就换第一本从头读。
       const same = shelf.find((b) => b.bookUrl === st.bookUrl);
       const book = same || shelf[0];
-      const { index } = nextChapter({ lastIndex: same ? st.index : -1, total: book.total });
+      // 目录要拿一份：靠章号和标题躲开「重复章」和「缺章」，只按下标走会重读或漏读。
+      const list = await client.chapters(book.bookUrl);
+      const plan = planRead(list, same ? st : {});
+      if (!list.length) return st;
+      if (plan.gap > 0) log.warn?.(`《${book.name}》目录缺了 ${plan.gap} 章（第 ${plan.num} 章之前），跳过`);
 
-      const ch = await client.chapter(book.bookUrl, index);
+      const ch = await client.chapter(book.bookUrl, plan.index);
       // 太短说明这条书源坏了（空白页/防盗版占位），换一章只会更糟，这次就算了。
-      if (ch.chars < 200) { log.warn?.(`《${book.name}》第 ${index + 1} 章只有 ${ch.chars} 字，先不读`); return st; }
+      if (ch.chars < 200) { log.warn?.(`《${book.name}》第 ${plan.index + 1} 章只有 ${ch.chars} 字，先不读`); return st; }
 
-      let title = '';
-      try { title = (await client.chapters(book.bookUrl)).find((c) => c.index === index)?.title || ''; } catch { /* 没标题也能读 */ }
-
+      const title = plan.title;
       let thought = '';
       try {
         thought = String(await complete({
-          system: `${personaCore()}\n\n你正在自己看小说。只回一句话，不超过 30 字：读完这一章，你心里现在是什么感觉。不要复述剧情、不要评价文笔、不要写旁白。`,
+          system: `${personaCore()}\n\n你刚自己看完一章小说。写两三句你自己的反应，总共不超过 80 字：先说此刻心里是什么滋味，再说一句你对书里那个人或那件事的看法，可以带一个你记住的细节。不要复述整段剧情，不要评价文笔、不要写旁白。`,
           messages: [{ role: 'user', text: `《${book.name}》${title ? ` ${title}` : ''}\n\n${ch.text.slice(0, READ_MAX_CHARS)}` }],
-          maxTokens: 120,
+          maxTokens: 200,
         }) || '').trim();
       } catch (e) {
         log.warn?.(`读后感没写出来：${e.message}`);
         return st;
       }
 
-      const next = { ...noteRead(st, { now: t, book, index, title, thought }), readsDay: day, readsToday: readsToday + 1 };
+      const next = { ...noteRead(st, { now: t, book, index: plan.index, title, num: plan.num, thought }), readsDay: day, readsToday: readsToday + 1 };
       novelStore.save(next);
       return next;
     } catch (e) {
