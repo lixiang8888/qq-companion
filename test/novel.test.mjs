@@ -1,7 +1,7 @@
 // 读书后端：三个接口的契约、正文清洗、下一章怎么挑。不联网。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_BASE, cleanText, createNovel, nextChapter } from '../src/novel.js';
+import { DEFAULT_BASE, cleanText, createNovel, isBored, nextChapter, noteRead, novelLine } from '../src/novel.js';
 
 const jsonResponse = (body) => ({ ok: true, status: 200, json: async () => body });
 
@@ -87,4 +87,49 @@ test('后端没开：给一句人话，不是 TypeError', async () => {
 
 test('默认地址就在本机转发的那个口上', () => {
   assert.equal(DEFAULT_BASE, 'http://127.0.0.1:1123');
+});
+
+// ---- 什么时候该看、看完怎么记 ----
+
+const H = 3600e3;
+const NOON = new Date(2026, 0, 1, 12, 0, 0).getTime();
+
+test('无聊的判据：他安静够久、今天读得不多、心情还行', () => {
+  const base = { now: NOON, lastUserAt: NOON - 3 * H, lastReadAt: NOON - 8 * H, readsToday: 0, mood: 0.6 };
+  assert.equal(isBored(base), true);
+  // 他两小时前刚说过话：还不算无聊
+  assert.equal(isBored({ ...base, lastUserAt: NOON - 1 * H }), false);
+  // 六小时内读过：不连着读
+  assert.equal(isBored({ ...base, lastReadAt: NOON - 2 * H }), false);
+  // 今天读够两章了
+  assert.equal(isBored({ ...base, readsToday: 2 }), false);
+  // 心情太低：那会儿看书是躲，不是消遣
+  assert.equal(isBored({ ...base, mood: 0.2 }), false);
+  // 从没说过话 / 没书：都不读
+  assert.equal(isBored({ ...base, lastUserAt: 0 }), false);
+  assert.equal(isBored({ ...base, hasBook: false }), false);
+});
+
+test('读书进度：记下书、章节、感想，感想长度封死', () => {
+  const s = noteRead({}, { now: NOON, book: { bookUrl: 'http://x/1', name: '斗破苍穹' }, index: 3, title: '第四章', thought: `  ${'想'.repeat(200)}  ` });
+  assert.equal(s.bookName, '斗破苍穹');
+  assert.equal(s.index, 3);
+  assert.equal(s.at, NOON);
+  assert.equal(s.thought.length, 60);
+  // 没给书名就别把上一次的清掉
+  const again = noteRead(s, { now: NOON + 1, index: 4 });
+  assert.equal(again.bookName, '斗破苍穹');
+  assert.equal(again.index, 4);
+});
+
+test('注入那一行：说清在看什么、看到哪、当时想什么', () => {
+  const s = noteRead({}, { now: NOON, book: { bookUrl: 'http://x/1', name: '斗破苍穹' }, index: 2, title: '第三章', thought: '有点替他不值' });
+  const line = novelLine(s, NOON + 2 * H);
+  assert.match(line, /《斗破苍穹》/);
+  assert.match(line, /第 3 章/);
+  assert.match(line, /有点替他不值/);
+  assert.match(line, /2 小时前/);
+  // 没读过就一个字都不写
+  assert.equal(novelLine({}, NOON), '');
+  assert.equal(novelLine({ bookName: '' }, NOON), '');
 });

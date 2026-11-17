@@ -89,3 +89,50 @@ function makeClient({ base = DEFAULT_BASE, fetchImpl = globalThis.fetch, timeout
 export function createNovel(opts) {
   return makeClient(opts);
 }
+
+// ---- 什么时候该看书，看完怎么记 ----
+
+export const BORED_QUIET_MS = 2 * 3600e3;   // 他安静这么久，她才开始无聊
+export const READ_GAP_MS = 6 * 3600e3;      // 两次读之间至少隔这么久
+export const READS_PER_DAY = 2;             // 一天最多读两章：一章两千多字，读多了烧钱也读不出味道
+export const READ_MAX_CHARS = 3000;         // 喂给模型的正文上限
+
+/**
+ * 她现在该不该去看书。
+ *
+ * 判据全是真事：他多久没说话、上次读是什么时候、今天读了几章、心情如何。
+ * 心情太低不读——那种时候看书不是消遣，是躲。
+ */
+export function isBored({ now = 0, lastUserAt = 0, lastReadAt = 0, readsToday = 0, mood = 0.5, hasBook = true } = {}) {
+  if (!hasBook) return false;
+  if (Number(mood) < 0.4) return false;
+  if (Number(readsToday) >= READS_PER_DAY) return false;
+  const sinceRead = lastReadAt ? now - Number(lastReadAt) : Infinity;
+  if (sinceRead < READ_GAP_MS) return false;
+  if (!lastUserAt) return false;
+  return now - Number(lastUserAt) >= BORED_QUIET_MS;
+}
+
+/** 看完之后的进度。章数、书名都记下来，下次接着读。 */
+export function noteRead(state = {}, { now = 0, book = {}, index = 0, title = '', thought = '' } = {}) {
+  return {
+    bookUrl: String(book.bookUrl || state.bookUrl || ''),
+    bookName: String(book.name || state.bookName || ''),
+    index: Math.max(0, Math.round(Number(index) || 0)),
+    title: String(title || ''),
+    thought: String(thought || '').replace(/\s+/g, ' ').trim().slice(0, 60),
+    at: now,
+  };
+}
+
+/** 注入给她的那一行。没有就不写——空块比假句子好。 */
+export function novelLine(state, now = 0) {
+  const name = String(state?.bookName || '').trim();
+  const at = Number(state?.at) || 0;
+  if (!name || !at) return '';
+  const hours = Math.round((now - at) / 3600e3);
+  const when = hours < 1 ? '刚才' : hours < 24 ? `${hours} 小时前` : `${Math.round(hours / 24)} 天前`;
+  const where = state.title ? `第 ${Number(state.index) + 1} 章「${state.title}」` : `第 ${Number(state.index) + 1} 章`;
+  const thought = String(state.thought || '').trim();
+  return `你${when}自己在看《${name}》，读到${where}${thought ? `，当时想的是：「${thought}」` : ''}。`;
+}

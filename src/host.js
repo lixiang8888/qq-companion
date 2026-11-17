@@ -40,6 +40,8 @@ import { rollbackTraits } from './affect/personality.js';
 import { replyPlan } from './affect/behavior.js';
 import { DEFAULTS as PROACTIVE_DEFAULTS, composePokePrompt, notePoked, noteSaidByUser, noteTick, noteTurn, noteWait, parsePokeReply, pokeGate } from './proactive.js';
 import { perceive } from './perceive.js';
+import { createNovel, isBored, nextChapter, noteRead, novelLine, READ_MAX_CHARS } from './novel.js';
+import { dayKeyOf } from './affect/core.js';
 import { fetchWeather, isStale, placeOf, weatherLine } from './weather.js';
 import { SCREEN_TTL, readScreen, sanitize, screenLine } from './screen.js';
 import { canSearch, factLine, latestFact, materialLines, noteSearch, search } from './search.js';
@@ -179,6 +181,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   const budgetStore = createJsonStore(join(dataDir, 'budget.json'), { defaults: () => createBudget(now()), log: (m) => log.warn?.(m) });
   // 每周一次的自述：三类认识，各自有界。
   const insightsStore = createJsonStore(join(dataDir, 'insights.json'), { defaults: () => createInsights(), log: (m) => log.warn?.(m) });
+  // 她自己在看什么书：读到第几章、上一章的感想。正文不落盘——一章两千多字，读完就够。
+  const novelStore = createJsonStore(join(dataDir, 'novel.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
   // 她「上次醒着」的时间戳：一路写下去，下次开机才知道中间空了多久。
   const aliveStore = createJsonStore(join(dataDir, 'alive.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
   // 空间：上次发了什么、为什么发、评论看到哪儿了。
@@ -751,6 +755,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       blk('stickers', namesLine(stickerStore.load().items), t),
       blk('pending', pendingLine(pendingQuestions), t),
       blk('money', moneyNow(), t),
+      // 她自己看的书：只在刚读过之后说（12 小时）。过期就别提，不然「最近在看」会成为谎话。
+      blk('novel', novelLine(novelStore.load(), t), Number(novelStore.load()?.at) || t, 12 * HOUR),
     ], { now: t });
   }
 
@@ -791,8 +797,66 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     return lifeLine(advance(lifeStore.load(), t), t);
   }
 
-  async function refreshLife() {
+  // 读书不排进队列：一章要拉正文 + 一次模型调用，十几秒；排在队列里会把他刚发的消息堵住。
+  // 用这个闸保证同一时间只有一次在读。
+  let reading = false;
+
+  /**
+   * 她自己去读书：他很久没吭声、心情还行、今天读得不多 → 接上次那本往下读一章。
+   * 读完只留一句感想（进 novel.json，注入成一「你自己在看什么」）；
+   * 正文读完就丢——两千多字常驻不值得，也不该进历史。
+   */
+  async function readNovelIfBored() {
+    if (reading) return novelStore.load();
     const t = now();
+    const st = novelStore.load();
+    const day = dayKeyOf(t);
+    const readsToday = st.readsDay === day ? Number(st.readsToday) || 0 : 0;
+    const hist = session.snapshot().history;
+    const lastUserAt = [...hist].reverse().find((m) => m.role === 'user')?.at || 0;
+    if (!isBored({ now: t, lastUserAt, lastReadAt: Number(st.at) || 0, readsToday, mood: companion.snapshot().mood.v })) return st;
+
+    reading = true;
+    try {
+      const client = createNovel({ base: config.novel?.base || undefined, fetchImpl });
+      const shelf = await client.shelf();
+      if (!shelf.length) return st;
+      // 接着上次那本；那本从书架里没了就换第一本从头读。
+      const same = shelf.find((b) => b.bookUrl === st.bookUrl);
+      const book = same || shelf[0];
+      const { index } = nextChapter({ lastIndex: same ? st.index : -1, total: book.total });
+
+      const ch = await client.chapter(book.bookUrl, index);
+      // 太短说明这条书源坏了（空白页/防盗版占位），换一章只会更糟，这次就算了。
+      if (ch.chars < 200) { log.warn?.(`《${book.name}》第 ${index + 1} 章只有 ${ch.chars} 字，先不读`); return st; }
+
+      let title = '';
+      try { title = (await client.chapters(book.bookUrl)).find((c) => c.index === index)?.title || ''; } catch { /* 没标题也能读 */ }
+
+      let thought = '';
+      try {
+        thought = String(await complete({
+          system: `${personaCore()}\n\n你正在自己看小说。只回一句话，不超过 30 字：读完这一章，你心里现在是什么感觉。不要复述剧情、不要评价文笔、不要写旁白。`,
+          messages: [{ role: 'user', text: `《${book.name}》${title ? ` ${title}` : ''}\n\n${ch.text.slice(0, READ_MAX_CHARS)}` }],
+          maxTokens: 120,
+        }) || '').trim();
+      } catch (e) {
+        log.warn?.(`读后感没写出来：${e.message}`);
+        return st;
+      }
+
+      const next = { ...noteRead(st, { now: t, book, index, title, thought }), readsDay: day, readsToday: readsToday + 1 };
+      novelStore.save(next);
+      return next;
+    } catch (e) {
+      log.warn?.(`读书出错：${e.message}`);
+      return st;
+    } finally {
+      reading = false;
+    }
+  }
+
+  async function refreshLife() {    const t = now();
     let life = advance(lifeStore.load(), t);
     // advance 之后：until 在未来 = 还在做；until 为 0 = 到点了，该问了。
     if (life.until > t) return life;
@@ -1548,6 +1612,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     enqueue(refreshInsights).catch((e) => log.warn?.(`周自述出错：${e.message}`));
     enqueue(refreshBalance).catch((e) => log.warn?.(`查余额出错：${e.message}`));
     enqueue(refreshPerception).catch((e) => log.warn?.(`图片清理出错：${e.message}`));
+    // 她无聊的时候自己看书。不排队列：一章十几秒，会把他刚发的消息堵住（函数内部自带并发闸）。
+    readNovelIfBored().catch((e) => log.warn?.(`读书出错：${e.message}`));
     enqueue(evaluatePost).catch((e) => log.warn?.(`空间判定出错：${e.message}`));
     enqueue(refreshQzoneComments).catch((e) => log.warn?.(`查评论出错：${e.message}`));
     if (weatherOn()) enqueue(refreshWeather).catch((e) => log.warn?.(`查天气出错：${e.message}`));
@@ -1632,6 +1698,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         weather: weatherStore.load(),
         facts: factsStore.load(),
         perception: statsOf(perceptionStore.load()),
+        novel: novelStore.load(),
         behavior: weekStats(readBehavior(dataDir, { from: now() - WEEK_MS, to: now() })),
         session: {
           size: session.size,
@@ -1818,7 +1885,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     log.info?.(`qq-companion：面板 ${panelUrl}`);
   } catch { /* 诊断日志失败不影响启动 */ }
 
-  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, perception: { cleanup: () => enqueue(refreshPerception), stats: () => statsOf(perceptionStore.load()) }, get config() { return config; }, dataDir };
+  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, perception: { cleanup: () => enqueue(refreshPerception), stats: () => statsOf(perceptionStore.load()) }, novel: { state: () => novelStore.load(), read: () => readNovelIfBored(), line: () => novelLine(novelStore.load(), now()) }, get config() { return config; }, dataDir };
 }
 
 function loadConfig(file, log) {

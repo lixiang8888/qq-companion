@@ -135,6 +135,50 @@ test('她的世界：外面真变了，她就带着那件事想；顺手定下�
   assert.equal(st.seen.screenTitle, '报错信息');
 });
 
+test('她无聊的时候自己去看书：读一章、写一句感想、记进度', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-novel-'));
+  const body = '　　正文第一句。\n　　正文第二句。\n'.repeat(40); // 洗过之后要超过 200 字，否则会被当成坏源丢掉
+  const fetchImpl = async (url) => {
+    const u = new URL(String(url));
+    if (u.pathname === '/getBookshelf') {
+      return { ok: true, status: 200, json: async () => ({ data: [{ name: '斗破苍穹', bookUrl: 'http://x/1', totalChapterNum: 10, durChapterIndex: 0 }] }) };
+    }
+    if (u.pathname === '/getChapterList') {
+      return { ok: true, status: 200, json: async () => ({ data: [{ index: 0, title: '第一章 陨落的天才' }] }) };
+    }
+    if (u.pathname === '/getBookContent') {
+      return { ok: true, status: 200, json: async () => ({ data: body }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
+  };
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+    enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' },
+    novel: { base: 'http://127.0.0.1:1123' },
+  }));
+  let clock = new Date(2026, 0, 1, 9, 0, 0).getTime();
+  const ctx = fakeCtx({ replies: ['嗯', '有点替他不值'] });
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(clock / 1000) });
+  clock += 3 * 3600e3; // 他三个小时没吭声
+
+  const st = await host.novel.read();
+  assert.equal(st.bookName, '斗破苍穹');
+  assert.equal(st.index, 0, '第一次读从第一章开始');
+  assert.equal(st.thought, '有点替他不值', '读后感进的是她自己的话');
+  assert.equal(st.readsToday, 1);
+  assert.equal(JSON.parse(readFileSync(join(dataDir, 'novel.json'), 'utf8')).bookName, '斗破苍穹');
+
+  // 六小时之内不会再读一次：烧钱，也没意思
+  const again = await host.novel.read();
+  assert.equal(again.readsToday, 1);
+  assert.equal(again.at, st.at);
+  // 注入那一行能用，说明下次聊天她能提这本书
+  assert.match(host.novel.line(), /《斗破苍穹》/);
+  // 正文不落地：只有一句感想和进度
+  assert.ok(!readFileSync(join(dataDir, 'novel.json'), 'utf8').includes('正文第一句'));
+});
+
 test('面板操作：忘记一条、置顶一条、再找回', async () => {
   const { ctx, host } = setup();
   await host.memory.block({ text: '他喜欢猫', userId: '42' });
