@@ -57,7 +57,7 @@ export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', 
     : ` · 图 ${perception.total} 张（原图 ${perception.pixels} 张，占 ${(Number(perception.bytes) / 1024 / 1024).toFixed(1)} MB）`;
   // 她自己在看的书：写到「第几章」和上一句感想。没读过就直说，别空着。
   const novelText = novel?.bookName
-    ? ` · 在读《${novel.bookName}》第 ${Number(novel.index) + 1} 章${novel.thought ? `（「${String(novel.thought).slice(0, 24)}」）` : ''}${novel.readsToday ? `，今天读了 ${novel.readsToday} 章` : ''}`
+    ? ` · 在读《${novel.bookName}》第 ${Number(novel.index) + 1} 章${novel.label ? ` · 上次：${novel.label}` : ''}${novel.thought ? `（「${String(novel.thought).slice(0, 24)}」）` : ''}${novel.readsToday ? `，今天读了 ${novel.readsToday} 章` : ''}`
     : '';
   const stickerGrid = stickerItems.length
     ? `<div class="stickers">${stickerItems.map((s) => `<div class="sticker">

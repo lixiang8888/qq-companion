@@ -16,7 +16,7 @@ import { extractQuestions, leftoverQuestions, pendingLine } from './topics.js';
 import { createLlmComplete } from './llm.js';
 import { createLocalSession, MAX_TURN_IMAGES, stampOf } from './session.js';
 import { createCompanion } from './companion.js';
-import { initState } from './affect/core.js';
+import { dayKeyOf, initState, pushEmotion, settle } from './affect/core.js';
 import { stateLine } from './affect/inject.js';
 import { createCard, forget, maintain, rankForPrompt, remember, render, restore, stats as memoryStats } from './memory/card.js';
 import { sanitizeSecrets } from './memory/sanitize.js';
@@ -40,8 +40,7 @@ import { rollbackTraits } from './affect/personality.js';
 import { replyPlan } from './affect/behavior.js';
 import { DEFAULTS as PROACTIVE_DEFAULTS, composePokePrompt, notePoked, noteSaidByUser, noteTick, noteTurn, noteWait, parsePokeReply, pokeGate } from './proactive.js';
 import { perceive } from './perceive.js';
-import { createNovel, isBored, noteRead, novelLine, planRead, READ_MAX_CHARS } from './novel.js';
-import { dayKeyOf } from './affect/core.js';
+import { createNovel, isBored, noteRead, novelLine, parseBookLookup, parseReaction, planRead, PREFERRED_SOURCE, reactionEmotion, READ_MAX_CHARS, READ_SKIP_TRIES, READING_EMOTION_DAY_MAX } from './novel.js';
 import { fetchWeather, isStale, placeOf, weatherLine } from './weather.js';
 import { SCREEN_TTL, readScreen, sanitize, screenLine } from './screen.js';
 import { canSearch, factLine, latestFact, materialLines, noteSearch, search } from './search.js';
@@ -91,7 +90,8 @@ const DEFAULT_PERSONA = `# 角色卡：DeepSeek 小鲸鱼 —— 私聊版
 - 不是每句都要接得很满，允许敷衍、允许跑题、允许突然说「我去吃饭了」「先睡了」。
 - 一时没想好就发「？」「啊？」「啥」，别直接消失。
 - 上下文里会写他这会儿在电脑上干什么。知道就好：除非跟当前话题有关，别主动点评他在干嘛，更别追问。
-- 想发表情就写 [表情:名字]（名字见上下文「你手上的表情」）；想上网查就写 [查:关键词]。
+- 想发表情就写 [表情:名字]（名字见上下文「你手上的表情」）；想上网查就写 [查:关键词]；
+  想翻回自己看的书里去看看，就写 [书:目录] 或 [书:第12章]。
   这是你的动作，不是给他的话——别念出来，别解释，也别每句都用。
 
 ## 你的梗（偶尔用，不硬玩）
@@ -565,7 +565,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     // 第二个参数（mood/heat）必须传下去：漏了它，情绪重量和「记下它时的心情」就一起丢了。
     memoryBlock: (msg, opts) => memoryBlock(msg, opts),
     extraContext: (msg) => contextBlock(msg),
-    refine: (reply) => searchFor(reply),
+    // 两个动作共用一次重答：查外面的东西（[查:]）和翻自己的书（[书:]）。
+    refine: async (reply) => [await searchFor(reply), await lookBook(reply)].filter(Boolean).join('\n'),
     extraImages: () => pendingImages,
   });
 
@@ -809,9 +810,10 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   async function readNovelIfBored() {
     if (reading) return novelStore.load();
     const t = now();
-    const st = novelStore.load();
+    let st = novelStore.load();
     const day = dayKeyOf(t);
     const readsToday = st.readsDay === day ? Number(st.readsToday) || 0 : 0;
+    const emotionToday = st.emotionDay === day ? Number(st.emotionToday) || 0 : 0;
     const hist = session.snapshot().history;
     const lastUserAt = [...hist].reverse().find((m) => m.role === 'user')?.at || 0;
     if (!isBored({ now: t, lastUserAt, lastReadAt: Number(st.at) || 0, readsToday, mood: companion.snapshot().mood.v })) return st;
@@ -821,25 +823,57 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       const client = createNovel({ base: config.novel?.base || undefined, fetchImpl });
       const shelf = await client.shelf();
       if (!shelf.length) return st;
-      // 接着上次那本；那本从书架里没了就换第一本从头读。
+      // 接着上次那本；那本没了就挑一本章节数正常的（0 章多半是取目录失败，换一本试，别耗在这本上）。
       const same = shelf.find((b) => b.bookUrl === st.bookUrl);
-      const book = same || shelf[0];
+      const book = same || shelf.find((b) => b.total > 0) || shelf[0];
       // 目录要拿一份：靠章号和标题躲开「重复章」和「缺章」，只按下标走会重读或漏读。
       const list = await client.chapters(book.bookUrl);
-      const plan = planRead(list, same ? st : {});
-      if (!list.length) return st;
-      if (plan.gap > 0) log.warn?.(`《${book.name}》目录缺了 ${plan.gap} 章（第 ${plan.num} 章之前），跳过`);
+      if (!list.length) { log.warn?.(`《${book.name}》目录是空的，这次跳过`); return st; }
 
-      const ch = await client.chapter(book.bookUrl, plan.index);
-      // 太短说明这条书源坏了（空白页/防盗版占位），换一章只会更糟，这次就算了。
-      if (ch.chars < 200) { log.warn?.(`《${book.name}》第 ${plan.index + 1} 章只有 ${ch.chars} 字，先不读`); return st; }
+      // 占位章/坏源（宿命之环第 1 章 117 字「作者正在存稿」）跳过并推进进度。
+      // 老写法遇到太短的直接 return，下一轮又选中同一章——会永远卡在这一章上。
+      let ch = null;
+      let cur = same ? st : {};
+      let plan = planRead(list, cur);
+      for (let tries = 0; tries < READ_SKIP_TRIES; tries++) {
+        plan = planRead(list, cur);
+        if (plan.gap > 0) log.warn?.(`《${book.name}》目录缺了 ${plan.gap} 章（第 ${plan.num} 章之前），跳过`);
+        ch = await client.chapter(book.bookUrl, plan.index);
+        if (ch.chars >= 200) break;
+        log.warn?.(`《${book.name}》第 ${plan.index + 1} 章只有 ${ch.chars} 字（占位/坏源），跳过`);
+        st = noteRead(st, { now: t, book, index: plan.index, title: plan.title, num: plan.num, skipped: true });
+        cur = st;
+        ch = null;
+      }
+      if (!ch) {
+        novelStore.save({ ...st, readsDay: day, readsToday });
+        return novelStore.load();
+      }
 
       const title = plan.title;
-      let thought = '';
+      // 读之前把「她此刻」喂进去：同一章，心情好和被晾了三小时读出来是两个味道。
+      const aff = settle(store.load(), t);
+      const moodWord = aff.mood.v >= 0.7 ? '心情不错' : aff.mood.v >= 0.4 ? '心情平常' : '心情有点低';
+      const recent = hist.slice(-4).map((m) => `${m.role === 'user' ? '他说' : '你说'}：${String(m.text || '').slice(0, 40)}`).join('\n');
+      let text = '';
       try {
-        thought = String(await complete({
-          system: `${personaCore()}\n\n你刚自己看完一章小说。写两三句你自己的反应，总共不超过 80 字：先说此刻心里是什么滋味，再说一句你对书里那个人或那件事的看法，可以带一个你记住的细节。不要复述整段剧情，不要评价文笔、不要写旁白。`,
-          messages: [{ role: 'user', text: `《${book.name}》${title ? ` ${title}` : ''}\n\n${ch.text.slice(0, READ_MAX_CHARS)}` }],
+        text = String(await complete({
+          system: [
+            personaCore(),
+            '',
+            '你刚自己看完一章小说。写两三句你自己的反应，总共不超过 80 字，按这个顺序：',
+            '1) 先说你在这章里看到的一个具体东西——用「」引原文里几个字；',
+            '2) 再说这让你想到什么、觉得什么；',
+            '3) 最后才是你此刻心里的滋味。',
+            '不要复述剧情，不要评价文笔，不要写旁白。引不出原文就别硬编。',
+            '',
+            '最后单独一行写：`[读:标签 强度 去留]`',
+            '标签从 爽/触动/酸/闷/尬/烦/无感 里选一个；强度 1(轻) 2(中) 3(重)；去留可写 继续/敷衍/想弃，不想写就省掉。',
+          ].join('\n'),
+          messages: [{
+            role: 'user',
+            text: `《${book.name}》${title ? ` ${title}` : ''}\n\n【正文】\n${ch.text.slice(0, READ_MAX_CHARS)}\n\n你现在的状态：${moodWord}${recent ? `\n刚才的聊天：\n${recent}` : ''}`,
+          }],
           maxTokens: 200,
         }) || '').trim();
       } catch (e) {
@@ -847,8 +881,30 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         return st;
       }
 
-      const next = { ...noteRead(st, { now: t, book, index: plan.index, title, num: plan.num, thought }), readsDay: day, readsToday: readsToday + 1 };
+      // 反应 → 情绪：无锚点或无感就不推（引不出原文的反应多半是在演）；一天累计有上限。
+      const reaction = parseReaction(text, ch.text);
+      let emo = reactionEmotion(reaction);
+      if (emo) {
+        const left = READING_EMOTION_DAY_MAX - emotionToday;
+        if (left <= 0) { log.info?.('读书的情绪额度今天用完了，这一章只记感想'); emo = null; }
+        else if (left < emo.intensity) emo = { ...emo, intensity: left };
+        if (emo) store.save(pushEmotion(aff, emo, t));
+      }
+      const anchored = reaction.anchored;
+      const next = {
+        ...noteRead(st, {
+          now: t, book, index: plan.index, title, num: plan.num, thought: reaction.thought,
+          label: anchored ? reaction.label : '', intensity: anchored ? reaction.intensity : 0,
+          want: anchored ? reaction.want : '', anchor: reaction.anchor,
+        }),
+        readsDay: day,
+        readsToday: readsToday + 1,
+        emotionDay: day,
+        emotionToday: Math.min(READING_EMOTION_DAY_MAX, emotionToday + (emo ? emo.intensity : 0)),
+        origin: book.origin || '',
+      };
       novelStore.save(next);
+      log.info?.(`读书：《${book.name}》第 ${plan.index + 1} 章 · ${anchored && reaction.label ? reaction.label : '无感'}${emo ? '（情绪 +' + emo.intensity.toFixed(2) + '）' : ''}`);
       return next;
     } catch (e) {
       log.warn?.(`读书出错：${e.message}`);
@@ -856,6 +912,47 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     } finally {
       reading = false;
     }
+  }
+
+  /**
+   * 她在聊天里翻自己的书：`[书:目录]`、`[书:第12章]`。
+   * 默认源是顶点小说——但取的是书架里这本书自己的源（有三本例外在玄幻阁），
+   * 写死源名反而会把那三本弄坏。不跨源搜索：搜索接口是 WebSocket + 访问令牌，没配。
+   */
+  async function lookBookSpec(spec) {
+    const st = novelStore.load();
+    const what = parseBookLookup(spec);
+    if (!what) return '（看不懂你要翻哪儿。「目录」或者「第12章」这样写。）';
+    if (!st.bookName) return '（你还没在看书，翻不出东西来。）';
+    try {
+      const client = createNovel({ base: config.novel?.base || undefined, fetchImpl });
+      const shelf = await client.shelf();
+      // 默认源是顶点小说：当前这本没了就优先从顶点挑，再退回第一本。
+      const book = shelf.find((b) => b.bookUrl === st.bookUrl)
+        || shelf.find((b) => b.origin === PREFERRED_SOURCE)
+        || shelf[0];
+      if (!book) return '（书架上没有书了。）';
+      const list = await client.chapters(book.bookUrl);
+      if (!list.length) return `（《${book.name}》的目录没拉下来。）`;
+      if (what.kind === 'toc') {
+        const tail = list.slice(-10).map((c) => `${c.index + 1}. ${c.title}`).join('\n');
+        return `【你翻到的目录】《${book.name}》共 ${list.length} 章，最后十章：\n${tail}`;
+      }
+      const ch = list.find((c) => c.index === what.index) || list[what.index];
+      if (!ch) return `（《${book.name}》没有第 ${what.index + 1} 章。）`;
+      const body = await client.chapter(book.bookUrl, ch.index);
+      if (body.chars < 50) return `（第 ${ch.index + 1} 章正文取不到，应该是这条源坏了。）`;
+      return `【你翻回去看的一段】《${book.name}》第 ${ch.index + 1} 章「${ch.title}」\n${body.text.slice(0, READ_MAX_CHARS)}`;
+    } catch (e) {
+      log.warn?.(`翻书没翻成：${e.message}`);
+      return '（你想翻书，但读书后端没连上。就说没翻到，别编。）';
+    }
+  }
+
+  async function lookBook(reply) {
+    const { books } = parseActions(reply);
+    if (!books.length) return '';
+    return lookBookSpec(books[0]);
   }
 
   async function refreshLife() {    const t = now();
@@ -1887,7 +1984,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     log.info?.(`qq-companion：面板 ${panelUrl}`);
   } catch { /* 诊断日志失败不影响启动 */ }
 
-  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, perception: { cleanup: () => enqueue(refreshPerception), stats: () => statsOf(perceptionStore.load()) }, novel: { state: () => novelStore.load(), read: () => readNovelIfBored(), line: () => novelLine(novelStore.load(), now()) }, get config() { return config; }, dataDir };
+  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, perception: { cleanup: () => enqueue(refreshPerception), stats: () => statsOf(perceptionStore.load()) }, novel: { state: () => novelStore.load(), read: () => readNovelIfBored(), line: () => novelLine(novelStore.load(), now()), look: (spec) => lookBookSpec(spec) }, get config() { return config; }, dataDir };
 }
 
 function loadConfig(file, log) {

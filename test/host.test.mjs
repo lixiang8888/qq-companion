@@ -179,6 +179,104 @@ test('她无聊的时候自己去看书：读一章、写一句感想、记进�
   assert.ok(!readFileSync(join(dataDir, 'novel.json'), 'utf8').includes('正文第一句'));
 });
 
+// ---- 2026-11-18：读完真的会有情绪；占位章会跳过；[书:] 能翻书 ----
+
+function novelSetup({ replies, chapters, content }) {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-feel-'));
+  const fetchImpl = async (url) => {
+    const u = new URL(String(url));
+    if (u.pathname === '/getBookshelf') {
+      return { ok: true, status: 200, json: async () => ({ data: [{ name: '斗破苍穹', bookUrl: 'http://x/1', totalChapterNum: chapters.length, originName: '顶点小说' }] }) };
+    }
+    if (u.pathname === '/getChapterList') {
+      return { ok: true, status: 200, json: async () => ({ data: chapters }) };
+    }
+    if (u.pathname === '/getBookContent') {
+      const i = Number(u.searchParams.get('index'));
+      return { ok: true, status: 200, json: async () => ({ data: content(i) }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
+  };
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+    enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' },
+    novel: { base: 'http://127.0.0.1:1123' },
+  }));
+  let clock = new Date(2026, 0, 1, 9, 0, 0).getTime();
+  const ctx = fakeCtx({ replies });
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+  return { dataDir, ctx, host, tick: (ms) => { clock += ms; }, now: () => clock };
+}
+
+test('读书：引到了原文、情绪就真的进状态，注入里也带着滋味', async () => {
+  const body = '　　他紧握手掌，尖锐的指甲深深的刺进了掌心之中，带来一阵阵钻心的疼痛。'.repeat(6);
+  const { host, tick } = novelSetup({
+    replies: ['嗯', '看着「刺进了掌心」那段，心里有点闷。[读:闷 2 继续]'],
+    chapters: [{ index: 0, title: '第一章 陨落的天才' }],
+    content: () => body,
+  });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(Date.now() / 1000) });
+  tick(3 * 3600e3);
+  const st = await host.novel.read();
+  assert.equal(st.label, '闷');
+  assert.equal(st.anchor, '刺进了掌心');
+  assert.ok(st.emotionToday > 0, '读书的情绪额度记上了');
+  // 情绪引擎里真的有这个标签：下一句话的语气会跟着变
+  assert.equal(host.companion.snapshot().emotion.label, '闷');
+  assert.ok(host.companion.snapshot().emotion.intensity > 0);
+  assert.match(host.novel.line(), /闷/);
+});
+
+test('读书：引不出原文的反应不推情绪（感想照存）', async () => {
+  const body = '　　正文很长很长。'.repeat(40);
+  const { host, tick } = novelSetup({
+    replies: ['嗯', '这章真好看，主角太惨了。[读:爽 3 继续]'],
+    chapters: [{ index: 0, title: '第一章 陨落的天才' }],
+    content: () => body,
+  });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(Date.now() / 1000) });
+  tick(3 * 3600e3);
+  const st = await host.novel.read();
+  assert.match(st.thought, /主角太惨了/);
+  assert.ok(!st.label, '没锚点就不记标签');
+  assert.equal(host.companion.snapshot().emotion.label, '', '情绪一个字都不动');
+  assert.equal(st.emotionToday, 0);
+});
+
+test('读书：占位短章跳过，接着读下一章（不会永远卡在同一章）', async () => {
+  const long = '　　这一次是真的正文，写了很多很多字。'.repeat(12);
+  const { host, tick } = novelSetup({
+    replies: ['嗯', '这一章有点意思。[读:触动 2 继续]'],
+    chapters: [{ index: 0, title: '第一章 欢迎收藏' }, { index: 1, title: '第二章 真东西' }],
+    content: (i) => (i === 0 ? '　　作者大大正努力存稿中，先收藏回家呀～' : long),
+  });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(Date.now() / 1000) });
+  tick(3 * 3600e3);
+  const st = await host.novel.read();
+  assert.equal(st.index, 1, '跳过第 1 章，读到第 2 章');
+  assert.equal(st.title, '第二章 真东西');
+  assert.equal(st.readsToday, 1, '跳过的章不算「读了一章」');
+});
+
+test('[书:] 翻书：目录和某一章都能取，正文过清洗', async () => {
+  const long = Array.from({ length: 8 }, () => '　　顶点小说 请记住我们的网址：www .x23us.us\n　　这一章的正文在这里，写得挺长。').join('\n');
+  const { host, tick } = novelSetup({
+    replies: ['嗯', '还行。[读:无感]'],
+    chapters: [{ index: 0, title: '第一章 陨落的天才' }, { index: 1, title: '第二章 斗气大陆' }],
+    content: () => long,
+  });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(Date.now() / 1000) });
+  tick(3 * 3600e3);
+  await host.novel.read();
+
+  const toc = await host.novel.look('目录');
+  assert.match(toc, /《斗破苍穹》/);
+  assert.match(toc, /共 2 章/);
+  const ch = await host.novel.look('第2章');
+  assert.match(ch, /第二章 斗气大陆/);
+  assert.ok(!ch.includes('x23us'), '翻出来的正文也不能带广告');
+  assert.match(await host.novel.look('看不懂'), /看不懂/);
+});
+
 test('面板操作：忘记一条、置顶一条、再找回', async () => {
   const { ctx, host } = setup();
   await host.memory.block({ text: '他喜欢猫', userId: '42' });

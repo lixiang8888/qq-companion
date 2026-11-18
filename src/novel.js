@@ -14,7 +14,31 @@ export const DEFAULT_BASE = 'http://127.0.0.1:1123';
 const TIMEOUT_MS = 25000;
 
 /** 站点塞在正文里的广告句。整行命中就丢掉——宁可少一句，也别让她念广告。 */
-const AD = /(小说尽在|请认准|最新章节|全文阅读|无弹窗|手机阅读|本章未完|一秒记住|百度搜索|www\.|https?:\/\/)/i;
+const AD = /(小说尽在|请认准|最新章节|全文阅读|无弹窗|手机阅读|本章未完|一秒记住|百度搜索|www\s*[.．]|https?:\/\/)/i;
+
+/** 站名单独成短行时也是广告（「顶点小说」「笔趣阁」…）。 */
+const SITE = /(顶点小说|玄幻阁|笔趣阁|唐三中文网|如书包|香书小说|无双小说网|醉读小说|吃鸡小说网|二三中文)/;
+/**
+ * 夹在正文里的混淆贴片，例如 `\wＷｗ。 q Β5 .COM \．`（遮天玄幻阁版第 1 章）。
+ * 只删这一段，同一行里的正文留着——整行丢掉会连「生命是世间最伟大的奇迹」一起丢。
+ */
+const AD_CHUNK = /[\\/][^\u4e00-\u9fa5]{0,24}?[.．]\s*(?:com|net|org|info|cn|us|la|me|cc)\b[^\u4e00-\u9fa5]{0,12}/gi;
+
+/** 广告词（「网址」「请记住」这类）出现在行里就是广告行，多长都丢。 */
+const AD_HARD = /(网址|请记住|牢记|记住我们|txt下载|手机阅读|本章未完|\bwww\b|https?:\/\/)/i;
+
+/**
+ * 硬广告词整行丢；短行里带「请认准/小说尽在」或站名也整行丢；
+ * 剩下的先删贴片再看：删完几乎什么都不剩，那整行本来就是广告。
+ */
+function cleanLine(line) {
+  if (AD_HARD.test(line)) return '';
+  if (line.length < 60 && (AD.test(line) || SITE.test(line))) return '';
+  const out = line.replace(AD_CHUNK, ' ').replace(/\s{2,}/g, ' ').trim();
+  // 没删到东西就原样留着（「我认输。」这种短对白不是广告）；
+  // 删完几乎什么都不剩，那整行本来就是贴片。
+  return out === line || out.length >= 8 ? out : '';
+}
 
 /**
  * 洗正文：去站点广告、去行首全角缩进、合并多余空行。
@@ -25,7 +49,8 @@ export function cleanText(raw) {
     .replace(/\r\n?/g, '\n')
     .split('\n')
     .map((l) => l.replace(/[\u3000\s]+/g, ' ').trim())
-    .filter((l) => l && !AD.test(l));
+    .map(cleanLine)
+    .filter(Boolean);
   return lines.join('\n');
 }
 
@@ -68,6 +93,74 @@ export function planRead(chapters = [], state = {}) {
   return pick(list[0], 0, true);
 }
 
+// ---- 读完一章之后：她自己的反应 ----
+//
+// 这一段的规矩：数字全由宿主给。模型只报「标签 + 1~3 的强度」，
+// 让它自己报 v/a/d 的话每次都能报得不一样，情绪模型就散了。
+
+/**
+ * 七个标签——设计选择，不是实证。改它等于改性格，连测试一起改。
+ * 爽 = 高愉悦高唤醒；触动 = 唤醒不高但浓度高；烦 = 有劲想吐槽，不是想哭。
+ */
+export const REACTIONS = {
+  爽: { v: 0.85, a: 0.7, d: 0.65 },
+  触动: { v: 0.62, a: 0.45, d: 0.42 },
+  酸: { v: 0.36, a: 0.5, d: 0.3 },
+  闷: { v: 0.28, a: 0.25, d: 0.35 },
+  尬: { v: 0.25, a: 0.55, d: 0.35 },
+  烦: { v: 0.16, a: 0.65, d: 0.48 },
+  无感: null,
+};
+const INTENSITY = { 1: 0.3, 2: 0.5, 3: 0.75 };
+const RE_MARK = /\[读\s*[:：]\s*(爽|触动|酸|闷|尬|烦|无感)\s*([1-3])?\s*(继续|敷衍|想弃)?\s*\]/;
+const RE_ANY = /\[读[^\]]*\]/g;
+
+/** 去掉空白和标点再比：模型引原文时常顺手改标点。 */
+const norm = (s) => String(s ?? '').replace(/[\s\u3000「」『』“”"'.,，。!！?？:：;；…—\-]/g, '');
+
+/**
+ * 感想里有没有真的引到原文：能对上「」里的引文就算；引不出来再看有没有连续 5 字重合
+ * （4 字太容易撞「说道」「看着」这种）。两样都没有 = 无锚点。
+ */
+export function anchorOf(thought, chapterText = '') {
+  const quoted = (String(thought ?? '').match(/「([^」]{3,})」/) || [])[1] || '';
+  const text = norm(chapterText);
+  if (quoted && text.includes(norm(quoted))) return quoted;
+  const t = norm(thought);
+  if (t.length < 5 || text.length < 5) return '';
+  const grams = new Set();
+  for (let i = 0; i + 5 <= text.length; i++) grams.add(text.slice(i, i + 5));
+  for (let i = 0; i + 5 <= t.length; i++) if (grams.has(t.slice(i, i + 5))) return t.slice(i, i + 5);
+  return '';
+}
+
+/**
+ * 把模型写的那段话拆成：感想 + 标签 + 强度 + 去留 + 锚点。
+ * 没写 `[读:…]` 或标签是「无感」= 没有情绪：感想照存（那是她的话），但不推情绪。
+ */
+export function parseReaction(reply, chapterText = '') {
+  const raw = String(reply ?? '');
+  const hit = RE_MARK.exec(raw);
+  const stripped = raw.replace(RE_ANY, '').replace(/\s+/g, ' ').trim();
+  const anchor = anchorOf(stripped, chapterText);
+  return {
+    thought: stripped.slice(0, 120),
+    label: hit ? hit[1] : '无感',
+    intensity: hit && hit[2] ? Number(hit[2]) : 0,
+    want: hit && hit[3] ? hit[3] : '',
+    anchor,
+    anchored: Boolean(anchor),
+  };
+}
+
+/** 标签 + 强度 → 给情绪引擎的那个事件。无锚点不算——引不出原文的反应多半是在演。 */
+export function reactionEmotion(reaction) {
+  if (!reaction || !reaction.anchored) return null;
+  const base = REACTIONS[reaction.label];
+  if (!base) return null;
+  return { ...base, intensity: INTENSITY[reaction.intensity] ?? INTENSITY[2], label: reaction.label };
+}
+
 function makeClient({ base = DEFAULT_BASE, fetchImpl = globalThis.fetch, timeoutMs = TIMEOUT_MS } = {}) {
   const url = (path, params = {}) => {
     const u = new URL(path, base.endsWith('/') ? base : `${base}/`);
@@ -94,6 +187,8 @@ function makeClient({ base = DEFAULT_BASE, fetchImpl = globalThis.fetch, timeout
         bookUrl: String(b?.bookUrl || ''),
         total: Math.max(0, Math.round(Number(b?.totalChapterNum) || 0)),
         lastIndex: Number.isFinite(Number(b?.durChapterIndex)) ? Number(b.durChapterIndex) : -1,
+        // 哪个源：默认源是顶点小说，三本例外在玄幻阁（顶点版不分段/缺章）。查阅和日志都用它。
+        origin: String(b?.originName || ''),
       })).filter((b) => b.bookUrl);
     },
     /** 目录：只取 index 和标题，章节 url 用不上（正文接口只认 bookUrl + index）。 */
@@ -122,6 +217,22 @@ export const READ_GAP_MS = 10 * 60e3;       // 两章之间至少隔一次心跳
 export const READS_PER_DAY = 80;            // 一天最多读这么多章（他定的）
 export const READ_MAX_CHARS = 3000;         // 喂给模型的正文上限
 export const READ_TITLES_KEEP = 60;         // 记住最近读过的标题：靠它躲开目录里的重复章
+export const READING_EMOTION_DAY_MAX = 1.0; // 读书推给情绪引擎的强度，一天累计上限（80 章不能把心境钉死）
+export const READ_SKIP_TRIES = 3;           // 连续遇到几个占位/坏章就这次不读了
+export const PREFERRED_SOURCE = '顶点小说';  // 默认源（他定的）。只用来排序/记日志，不写死——三本例外在玄幻阁
+
+/**
+ * `[书:…]` 里那句「想看什么」。只认两种：目录，或者第 N 章。
+ * @returns {{kind:'toc'}|{kind:'chapter', index:number}|null}
+ */
+export function parseBookLookup(spec) {
+  const s = String(spec ?? '').trim();
+  if (!s) return null;
+  if (/目录|章节|更新|最新|到哪|多少章/.test(s)) return { kind: 'toc' };
+  const m = /(\d{1,5})/.exec(s);
+  if (m) return { kind: 'chapter', index: Math.max(0, Number(m[1]) - 1) };
+  return null;
+}
 
 /**
  * 她现在该不该去看书。
@@ -139,11 +250,15 @@ export function isBored({ now = 0, lastUserAt = 0, lastReadAt = 0, readsToday = 
   return now - Number(lastUserAt) >= BORED_QUIET_MS;
 }
 
-/** 看完之后的进度。章号用来躲重复，标题用来躲缺章之后的重读。换书就重新开始算。 */
-export function noteRead(state = {}, { now = 0, book = {}, index = 0, title = '', num = null, thought = '' } = {}) {
+/**
+ * 看完之后的进度。章号用来躲重复，标题用来躲缺章之后的重读。换书就重新开始算。
+ * skipped=true 表示这一章是占位符/坏源（太短），只推进进度、不覆盖上一次的感想与标签。
+ */
+export function noteRead(state = {}, { now = 0, book = {}, index = 0, title = '', num = null, thought = '', label = '', intensity = 0, want = '', anchor = '', skipped = false } = {}) {
   const bookUrl = String(book.bookUrl || state.bookUrl || '');
   const sameBook = bookUrl === String(state.bookUrl || '');
   const keep = sameBook ? [String(title || '').trim(), ...(state.readTitles || [])] : [String(title || '').trim()];
+  const pick = (fresh, old) => (skipped ? old : fresh);
   return {
     bookUrl,
     bookName: String(book.name || state.bookName || ''),
@@ -151,10 +266,19 @@ export function noteRead(state = {}, { now = 0, book = {}, index = 0, title = ''
     title: String(title || ''),
     lastNum: Number.isFinite(Number(num)) ? Number(num) : (sameBook ? (state.lastNum ?? null) : null),
     readTitles: keep.filter(Boolean).slice(0, READ_TITLES_KEEP),
-    thought: String(thought || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+    thought: pick(String(thought || '').replace(/\s+/g, ' ').trim().slice(0, 120), String(state.thought || '')),
+    // 上一章的标签和锚点：注入时用来看她「刚读完是什么滋味」，也给 P2 的态度账本当输入。
+    label: pick(String(label || ''), String(state.label || '')),
+    intensity: pick(Number.isFinite(Number(intensity)) ? Number(intensity) : 0, Number(state.intensity) || 0),
+    want: pick(String(want || ''), String(state.want || '')),
+    anchor: pick(String(anchor || ''), String(state.anchor || '')),
+    skippedChapters: skipped ? (Number(state.skippedChapters) || 0) + 1 : 0,
     at: now,
   };
 }
+
+// 刚读完那一章的滋味，直接写进注入里——光有「想的是」没有「感觉是」，读起来还是像书评。
+const READ_WORD = { 爽: '看得你挺爽', 触动: '看得你心里一动', 酸: '看得你心里发酸', 闷: '看得你有点闷', 尬: '看得你有点尬', 烦: '看得你有点烦' };
 
 /** 注入给她的那一行。没有就不写——空块比假句子好。 */
 export function novelLine(state, now = 0) {
@@ -165,5 +289,7 @@ export function novelLine(state, now = 0) {
   const when = hours < 1 ? '刚才' : hours < 24 ? `${hours} 小时前` : `${Math.round(hours / 24)} 天前`;
   const where = state.title ? `第 ${Number(state.index) + 1} 章「${state.title}」` : `第 ${Number(state.index) + 1} 章`;
   const thought = String(state.thought || '').trim();
-  return `你${when}自己在看《${name}》，读到${where}${thought ? `，当时想的是：「${thought}」` : ''}。`;
+  // 只有 40 分钟内的才算「这会儿还带着的滋味」；过了就只剩「当时想的是」。
+  const feel = now - at < 40 * 60e3 ? READ_WORD[state.label] : '';
+  return `你${when}自己在看《${name}》，读到${where}${feel ? `，${feel}` : ''}${thought ? `，当时想的是：「${thought}」` : ''}。`;
 }

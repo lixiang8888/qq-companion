@@ -1,7 +1,7 @@
 // 读书后端：三个接口的契约、正文清洗、下一章怎么挑。不联网。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_BASE, cleanText, createNovel, isBored, noteRead, novelLine, planRead } from '../src/novel.js';
+import { anchorOf, DEFAULT_BASE, cleanText, createNovel, isBored, noteRead, novelLine, parseBookLookup, parseReaction, planRead, reactionEmotion, REACTIONS } from '../src/novel.js';
 
 const jsonResponse = (body) => ({ ok: true, status: 200, json: async () => body });
 
@@ -182,4 +182,108 @@ test('注入那一行：说清在看什么、看到哪、当时想什么', () =>
   // 没读过就一个字都不写
   assert.equal(novelLine({}, NOON), '');
   assert.equal(novelLine({ bookName: '' }, NOON), '');
+});
+
+// ---- 2026-11-18：洗广告（三家源都实测过）、反应→情绪、占位章跳过、[书:] 查阅 ----
+
+test('洗广告：顶点每章开头的站名广告整行丢掉，正文不动', () => {
+  const raw = [
+    '　　萧炎抬起头来，目光扫过人群。',
+    '　　顶点小说 请记住我们的网址：www .x23us.us',
+    '　　》二三中文全文字更新,牢记网址:m.23uswx.la',
+    '　　「我认输。」',
+  ].join('\n');
+  const out = cleanText(raw);
+  assert.equal(out, '萧炎抬起头来，目光扫过人群。\n「我认输。」');
+  assert.ok(!/网址|www|m\.23uswx/.test(out));
+});
+
+test('洗广告：夹在长段落里的混淆贴片只删那一段，同行的正文留着', () => {
+  const raw = '　　生命是世间最伟大的奇迹。\\wＷｗ。 q Β5 .COM \\． 　　四方上下曰宇。';
+  const out = cleanText(raw);
+  assert.match(out, /生命是世间最伟大的奇迹/);
+  assert.match(out, /四方上下曰宇/);
+  assert.ok(!/COM/.test(out), '贴片要删干净');
+});
+
+test('反应解析：标记拆出来，标记从感想里剔掉', () => {
+  const text = '又是这种打脸桥段，饭都凉了。[读:烦 2 想弃]';
+  const r = parseReaction(text, '');
+  assert.equal(r.thought, '又是这种打脸桥段，饭都凉了。');
+  assert.equal(r.label, '烦');
+  assert.equal(r.intensity, 2);
+  assert.equal(r.want, '想弃');
+  // 没写标记 = 无感；感想照存（那是她的话）
+  const plain = parseReaction('还行吧', '');
+  assert.equal(plain.label, '无感');
+  assert.equal(plain.thought, '还行吧');
+  assert.equal(reactionEmotion(plain), null);
+});
+
+test('锚点：引文对得上才算读过；对不上再用连续 5 字重合兜底', () => {
+  const body = '他紧握的手掌因为大力，尖锐的指甲深深的刺进了掌心之中，带来一阵疼痛。';
+  assert.equal(anchorOf('「刺进了掌心」这段看得我手心也跟着疼', body), '刺进了掌心');
+  // 没有引号但确实用了原文五个字
+  assert.equal(anchorOf('尖锐的指甲刺进了掌心，疼', body), '尖锐的指甲');
+  // 泛泛而谈：没有锚点
+  assert.equal(anchorOf('这章真好看，主角太惨了', body), '');
+  assert.equal(anchorOf('这章真好看', '完全不相干的正文内容在这里'), '');
+});
+
+test('反应 → 情绪：七个标签各自的 v/a/d，强度 1~3，无锚点不推', () => {
+  for (const [label, want] of Object.entries(REACTIONS)) {
+    const r = { label, intensity: 2, anchored: true, thought: 'x', anchor: 'x' };
+    const e = reactionEmotion(r);
+    if (!want) { assert.equal(e, null, `${label} 不该有情绪`); continue; }
+    assert.equal(e.label, label);
+    assert.equal(e.v, want.v);
+    assert.equal(e.a, want.a);
+    assert.equal(e.d, want.d);
+    assert.equal(e.intensity, 0.5);
+  }
+  // 强度换算
+  assert.equal(reactionEmotion({ label: '爽', intensity: 1, anchored: true }).intensity, 0.3);
+  assert.equal(reactionEmotion({ label: '爽', intensity: 3, anchored: true }).intensity, 0.75);
+  // 没锚点：不推情绪（账也没记）
+  assert.equal(reactionEmotion({ label: '爽', intensity: 3, anchored: false }), null);
+});
+
+test('占位章跳过：推进进度，但不覆盖上一次的感想和标签', () => {
+  const book = { bookUrl: 'http://x/1', name: '宿命之环' };
+  const read = noteRead({}, { now: NOON, book, index: 0, title: '第一章 欢迎收藏', thought: '好吧', label: '闷', anchor: '好吧' });
+  const skipped = noteRead(read, { now: NOON + 1, book, index: 1, title: '第二章 占位', num: 2, skipped: true });
+  assert.equal(skipped.index, 1, '进度往前走');
+  assert.equal(skipped.lastNum, 2);
+  assert.equal(skipped.thought, '好吧', '感想还是上一次的');
+  assert.equal(skipped.label, '闷');
+  assert.equal(skipped.skippedChapters, 1);
+  // 下一次真读到，计数归零
+  const back = noteRead(skipped, { now: NOON + 2, book, index: 2, title: '第三章 真东西', num: 3, thought: '这次有点意思', label: '触动' });
+  assert.equal(back.skippedChapters, 0);
+  assert.equal(back.thought, '这次有点意思');
+});
+
+test('注入那一行：刚读完的滋味在，过了 40 分钟就只剩「当时想的是」', () => {
+  const s = noteRead({}, { now: NOON, book: { bookUrl: 'http://x/1', name: '斗破苍穹' }, index: 2, title: '第三章', thought: '有点替他不值', label: '闷', anchor: '替他不值' });
+  assert.match(novelLine(s, NOON + 10 * 60e3), /闷/);
+  const later = novelLine(s, NOON + 2 * H);
+  assert.doesNotMatch(later, /闷/);
+  assert.match(later, /有点替他不值/);
+});
+
+test('[书:] 想看什么：目录 / 第 N 章都认，看不懂就不动', () => {
+  assert.deepEqual(parseBookLookup('目录'), { kind: 'toc' });
+  assert.deepEqual(parseBookLookup('更新到哪了'), { kind: 'toc' });
+  assert.deepEqual(parseBookLookup('第12章'), { kind: 'chapter', index: 11 });
+  assert.deepEqual(parseBookLookup('12'), { kind: 'chapter', index: 11 });
+  assert.equal(parseBookLookup('随便看看'), null);
+  assert.equal(parseBookLookup(''), null);
+});
+
+test('书架带上源名：换个源之后她/日志能看出是哪家', async () => {
+  const { novel } = client({
+    '/getBookshelf': () => ({ data: [{ name: '遮天', bookUrl: 'http://x/1', totalChapterNum: 1877, originName: '顶点小说' }] }),
+  });
+  const [b] = await novel.shelf();
+  assert.equal(b.origin, '顶点小说');
 });

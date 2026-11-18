@@ -33,6 +33,17 @@ test('剔掉标记后不留下开头的标点', () => {
   assert.equal(parseActions('[表情:无语]，你继续').text, '你继续');
 });
 
+test('书：翻自己的书，和查/表情互不打架', () => {
+  const toc = parseActions('[书:目录]');
+  assert.deepEqual(toc.books, ['目录']);
+  assert.equal(toc.text, '');
+  const ch = parseActions('我记得那段[书:第12章]');
+  assert.deepEqual(ch.books, ['第12章']);
+  assert.equal(ch.text, '我记得那段');
+  const mixed = parseActions('[表情:无语][查:天气][书:目录]');
+  assert.deepEqual([mixed.stickers, mixed.searches, mixed.books], [['无语'], ['天气'], ['目录']]);
+});
+
 test('没有指令的普通句子原样返回', () => {
-  assert.deepEqual(parseActions('今天好累啊'), { text: '今天好累啊', stickers: [], searches: [] });
+  assert.deepEqual(parseActions('今天好累啊'), { text: '今天好累啊', stickers: [], searches: [], books: [] });
 });
