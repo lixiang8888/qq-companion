@@ -25,11 +25,25 @@
 | 项目 | 许可 | 关系 |
 |---|---|---|
 | [Legado / 阅读 3.0](https://github.com/gedoor/legado) | 原 GPL-3.0（仓库现在已无 LICENSE 可核，见下） | 她读书的后端。**仓库里不含它的任何代码或 APK**：它是装在安卓模拟器里的独立 App，我们只调它自带的本地 Web 服务（`/getBookshelf`、`/getChapterList`、`/getBookContent`），不链接、不打包、不分发 |
+| [ApkStart](https://github.com/RoutineMiku/apkstart) | MIT | 让 Legado 跑起来的安卓应用运行器（Windows 上的 QEMU + Android 14）。**只当外部程序用**：下的是官方轻量便携版，只改过它的 `settings.json`（关自启/预启、清空 device），没改一行代码；仓库里不含它的代码或二进制 |
 | [SnowLuma](https://github.com/SnowLuma/SnowLuma) | **源码可见、非商业**（不是 OSI 开源） | 只通过它的 HTTP / WebSocket 接口通信，**仓库里不含它的任何代码或二进制**。这条不能破：它的许可与 MIT 不兼容 |
 | [NapCat](https://github.com/NapNeko/NapCatQQ) | 见其仓库 | 动作名（`send_qzone_msg` 等）和参数形状属于接口事实，代码未复制 |
 | [Open-Meteo](https://open-meteo.com/) | CC BY 4.0（数据）/ 免密钥接口 | 只按 HTTP 公开接口取天气观测值，不含其代码。免费额度前提是非商业用途 |
 | [Tavily](https://tavily.com/) | 商业接口，按账号条款 | 只调 `/search` 接口；key 存在本机 `config.json`，不进仓库 |
 | [ffmpeg](https://ffmpeg.org/) | gyan.dev 的 essentials 构建是 **GPLv3** | `src/video.js` 只把它当**外部程序**用 `spawn` 调（抽帧），不链接、不打包。**仓库里不含它的二进制**——需要时自己下到 `<数据目录>/bin/ffmpeg.exe` |
+
+### ApkStart 的许可链（它自己 MIT，但运行时是别人的）
+
+ApkStart 本体是 **MIT**（Copyright (c) 2026 ApkStart contributors）。它拉起来的运行时不是它的：
+
+| 运行时组件 | 许可 | 说明 |
+|---|---|---|
+| Android Emulator（QEMU） | **GPL-2.0** | 由 ApkStart 下载 / 打包，我们只是运行，**不重分发** |
+| Android 系统镜像（API 34） | Google 的 SDK/系统镜像条款，**不可再分发** | 同上，本机运行 |
+| adb / platform-tools | Apache-2.0 | 同上 |
+
+所以我们这边的边界只有一句话：**不把 ApkStart、模拟器、系统镜像放到任何仓库或分发物里**。
+换台机器要自己下（轻量便携版 96 MiB + 首次启动下运行时），这也正是我们现在的做法。
 
 ### Legado 的特殊情况（2026-11-18 核对）
 

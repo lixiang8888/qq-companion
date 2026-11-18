@@ -85,6 +85,34 @@ Schedule、委派、记忆基础设施、可选 B站 MCP。绑 DSH 0.2.0-rc.2，
 
 只读 README 与设计说明，未复制代码。许可证与「借了什么」见 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
 
+### ApkStart —— 让 APK 在 Windows 上跑起来的那个壳
+
+<https://github.com/RoutineMiku/apkstart> · **MIT** · Electron + QEMU · Windows 10/11 x64 · v0.5.0
+
+**为什么用它**：她读书的后端必须在安卓里（见下一节 Legado）。要么自己拼 qemu / adb / AVD / 窗口嵌入，
+要么找一个已经拼好的。ApkStart 就是拼好的那个：「双击 APK 即装、每个应用一个独立窗口、自持 QEMU 运行时、
+空闲自动回收」。自己写这套等于重做一个模拟器前端，没有胜算——**这不是偷懒，是选型**。
+
+**我们怎么用它**（都是配置，不改代码）：
+
+| 项 | 我们的选择 |
+|---|---|
+| 形态 | **轻量便携版**（96 MiB，解压到 `D:\大烧货\apkstart\app`；运行时首次启动联网下到 `%APPDATA%\ApkStart\runtime`，约 4 GB） |
+| 只有改过的东西 | 它的 `settings.json`：`autoStart:false`、`autoDeploy:false`、`prewarm:false`、`device:''`（原来指 MuMu 的 127.0.0.1:5555） |
+| ApkStart 本体 | **不常驻**：它的 GUI 现在不在链路里。我们只用它的运行时目录（`runtime\platform-tools\adb.exe`、`runtime\emulator\emulator.exe`）和 AVD |
+| 运行时 | 手工建的 AVD `qqreader`（Android 14），adb 端口 **5038**（避开 MuMu 的 5037），模拟器 5580，`forward tcp:1123 → tcp:1122` |
+| 谁拉起它 | 我们自己的 `D:\大烧货\apkstart\启动阅读器.ps1`（7 步：DSH → SnowLuma → adb → 模拟器 → 拉起 Legado → 点开 Web 服务 → 体检）——**只做编排**，不重写 ApkStart |
+
+**两条它教给我们的经验**（都不是它的 bug，是安卓/Electron 的坑）：
+
+1. **必须带窗口启动**：无头模式下 Android 不出 VSYNC，应用进程活着但屏幕上永远是空的（ApkStart README 原话）。
+   所以我们后来改成了可见窗口，`wm size`/`wm density` 调成 720×1280 @320。
+2. **从 DSH 进程里拉 Electron 程序前要 `Remove-Item Env:ELECTRON_RUN_AS_NODE`**：变量会泄漏到子进程，
+   让 Electron 退化成纯 node、什么都不做直接退 0。表现为「点了没反应」，查了很久。
+
+许可链要单独说：**ApkStart 本体 MIT，但运行时是 QEMU（GPL-2.0）+ Google 的 Android 系统镜像（不可再分发）**。
+我们只在本机运行，不把这三样放进任何仓库或分发物——细节在 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
+
 ### Legado /「阅读 3.0」—— 她读书的后端，**唯一一个真装上的现成项目**
 
 <https://github.com/gedoor/legado> · 原 GPL-3.0 · Kotlin · 约 47.2k★ · **上游已于 2026-05-27 被作者清空**

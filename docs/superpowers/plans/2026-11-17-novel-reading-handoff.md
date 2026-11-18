@@ -24,6 +24,8 @@
 
 **后端**：apkstart 的 emulator + Android 14 Play 镜像，手工建的 AVD 叫 `qqreader`，headless。
 
+> **apkstart 是什么**：[ApkStart](https://github.com/RoutineMiku/apkstart)（MIT，作者 RoutineMiku）——Windows 上的安卓应用运行器：双击 APK 即装、每个应用一个窗口，自持 QEMU + Android 14 运行时。我们用的是**轻量便携版**（96 MiB，解压到 `D:\大烧货\apkstart\app`，运行时首次启动联网下到 `%APPDATA%\ApkStart\runtime`），**只改过它的 `settings.json`**（关 `autoStart/autoDeploy/prewarm`、清空 `device`），**没改它一行代码**；仓库里也不含它的任何代码或二进制。见 [THIRD_PARTY_NOTICES.md](../../../THIRD_PARTY_NOTICES.md)。
+
 | 项 | 值 |
 |---|---|
 | AVD | `%USERPROFILE%\.android\avd\qqreader.avd`（Legado + 书源 + 书架都在 userdata 里，重启不丢） |
