@@ -85,14 +85,14 @@ GET /getBookContent?url=<bookUrl>&index=N
 
 ## 五、运维：一个桌面脚本
 
-`C:\Users\19472\Desktop\启动全部.bat` → 调 `D:\大烧货\apkstart\启动阅读器.ps1`（6 步：DSH → SnowLuma → adb → 模拟器 → 拉起 Legado → forward + 体检）。都开着时会全部跳过，只体检。
+`C:\Users\19472\Desktop\启动全部.bat` → 调 `D:\大烧货\apkstart\启动阅读器.ps1`（7 步：DSH → SnowLuma → adb → 模拟器 → 拉起 Legado → 点开 Web 服务 → 体检）。都开着时会全部跳过，只体检。
 
 **四个坑**（前三个都实测踩过，别"优化"掉）：
 
 1. `.ps1` 必须带 **UTF-8 BOM**，否则 `powershell.exe`（5.1）按 ANSI 读，中文变乱码直接语法报错。注意：某些编辑器/补丁工具会**把 BOM 删掉**，改完要查前三字节是不是 `EF BB BF`。
 2. 从 DSH 进程里拉 Electron 程序前要 `Remove-Item Env:ELECTRON_RUN_AS_NODE`，不然 exe 退化成纯 node、什么都不做直接退 0（apkstart 之前「点了没反应」就是这个）。
 3. `.bat` 必须**全 ASCII**，两个原因叠加：cmd 按系统代码页（936）读 .bat，存 UTF-8 会被拆行（`title 启动 SnowLuma` 变成去执行 `nowLuma`）；而且 cmd 把**中文参数**传给子进程会坏（实测 `-File "D:\<中文目录>\x.ps1"` → `does not exist`，目录名中文就坏，跟文件名无关）。所以 .bat 里用通配符 `D:\*\apkstart\*.ps1` 定位脚本，绝不写中文路径。
-4. 模拟器冷启动后 **Legado 不会自己起来**，App 不跑，1122 就没人在听；另外「我的 → Web service」开关必须开着，并允许它后台运行（开关只在 App 内，脚本管不了；开关状态会存住，设一次就行）。脚本现在会用 `monkey` 把 App 拉起来。
+4. 模拟器**正常关机**再开会自己恢复 App 和 Web 服务（快照），但 App 一旦被 force-stop / 重装，**「Web service」开关就回到关闭状态，1122 没人听**。脚本第 6 步用 uiautomator 摸到「我的 → 下滑 → Web service」右边那个开关点开（靠 resource-id `switchWidget` 找，不写死坐标；320x480 屏）；摸不到就打印提示让人手动点。第一次开时 Legado 会弹「允许后台运行」，要手动 Allow 一次（只一次）。
 
 ## 六、性能与系统改动（他已确认过）
 
