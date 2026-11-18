@@ -181,19 +181,20 @@ test('她无聊的时候自己去看书：读一章、写一句感想、记进�
 
 // ---- 2026-11-18：读完真的会有情绪；占位章会跳过；[书:] 能翻书 ----
 
-function novelSetup({ replies, chapters, content }) {
+function novelSetup({ replies, chapters, content, shelf = null }) {
   const dataDir = mkdtempSync(join(tmpdir(), 'qqc-feel-'));
   const fetchImpl = async (url) => {
     const u = new URL(String(url));
     if (u.pathname === '/getBookshelf') {
-      return { ok: true, status: 200, json: async () => ({ data: [{ name: '斗破苍穹', bookUrl: 'http://x/1', totalChapterNum: chapters.length, originName: '顶点小说' }] }) };
+      const data = shelf || [{ name: '斗破苍穹', bookUrl: 'http://x/1', totalChapterNum: chapters.length, originName: '顶点小说' }];
+      return { ok: true, status: 200, json: async () => ({ data }) };
     }
     if (u.pathname === '/getChapterList') {
       return { ok: true, status: 200, json: async () => ({ data: chapters }) };
     }
     if (u.pathname === '/getBookContent') {
       const i = Number(u.searchParams.get('index'));
-      return { ok: true, status: 200, json: async () => ({ data: content(i) }) };
+      return { ok: true, status: 200, json: async () => ({ data: content(i, u.searchParams.get('url')) }) };
     }
     return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
   };
@@ -275,6 +276,146 @@ test('[书:] 翻书：目录和某一章都能取，正文过清洗', async () =
   assert.match(ch, /第二章 斗气大陆/);
   assert.ok(!ch.includes('x23us'), '翻出来的正文也不能带广告');
   assert.match(await host.novel.look('看不懂'), /看不懂/);
+});
+
+// ---- 2026-11-18：P2 书账本 / 弃书 / 读完重读；P3 强感触进记忆 / 想一想 ----
+
+const LONG_BODY = '　　他紧握手掌，尖锐的指甲深深的刺进了掌心之中，带来一阵阵钻心的疼痛。'.repeat(8);
+
+test('读书：书账本落地（态度/最近几章），强感触真的进记忆卡', async () => {
+  const { host, tick } = novelSetup({
+    replies: ['嗯', '看到「刺进了掌心」那一下，我心里发酸。[读:酸 2 继续]'],
+    chapters: [{ index: 0, title: '第一章 陨落的天才' }],
+    content: () => LONG_BODY,
+  });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(Date.now() / 1000) });
+  tick(3 * 3600e3);
+  const st = await host.novel.read();
+
+  const rec = st.books['http://x/1'];
+  assert.equal(rec.name, '斗破苍穹');
+  assert.equal(rec.reads, 1);
+  assert.ok(rec.attitude > 0, '酸是往上的');
+  assert.equal(rec.recent[0].label, '酸');
+  assert.equal(rec.recent[0].anchor, '刺进了掌心');
+
+  // 强感触（酸 + 强度 2）写进记忆卡：source 必须是 seen——她真的读到了，不是他说的
+  const m = host.memory.card().records.find((r) => String(r.text).includes('刺进了掌心'));
+  assert.ok(m, '记忆卡里有这一条');
+  assert.equal(m.source, 'seen');
+  assert.ok(m.heat > 0 && m.heat <= 0.6, '热度封顶 0.6，不跟他说的话抢权重');
+});
+
+test('读书：连着说烦到线就真弃这本书，下一次换另一本', async () => {
+  const { host, tick, dataDir } = novelSetup({
+    replies: [
+      '嗯',
+      '看着「刺进了掌心」这段，越看越烦。[读:烦 2 想弃]',
+      '看着「刺进了掌心」这段，还行吧。[读:闷 1 继续]',
+    ],
+    chapters: [{ index: 0, title: '第一章 陨落的天才' }, { index: 1, title: '第二章 斗气大陆' }],
+    content: () => LONG_BODY,
+    shelf: [
+      { name: '斗破苍穹', bookUrl: 'http://x/1', totalChapterNum: 2, originName: '顶点小说' },
+      { name: '遮天', bookUrl: 'http://y/2', totalChapterNum: 2, originName: '顶点小说' },
+    ],
+  });
+  // 手上这本已经连烦 5 章、态度跌破线：再一章烦的就会弃
+  writeFileSync(join(dataDir, 'novel.json'), JSON.stringify({
+    bookUrl: 'http://x/1', bookName: '斗破苍穹', index: 0, title: '第一章 陨落的天才', lastNum: 1,
+    readTitles: ['第一章 陨落的天才'],
+    books: {
+      'http://x/1': {
+        name: '斗破苍穹', reads: 6, attitude: -0.45, streak: 5, wantDrop: 1, lastLabel: '烦',
+        recent: [{ title: '第六章', label: '烦', intensity: 2, thought: '又是这一套', at: 1 }],
+      },
+    },
+  }));
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(Date.now() / 1000) });
+  tick(3 * 3600e3);
+
+  const st = await host.novel.read();
+  const rec = st.books['http://x/1'];
+  assert.ok(rec.droppedAt > 0, '弃了');
+  assert.equal(rec.dropReason, '看着「刺进了掌心」这段，越看越烦。', '弃书原因就是她最后那句话');
+
+  // 下一次真的换书：弃过的不再选
+  tick(20 * 60e3);
+  const next = await host.novel.read();
+  assert.equal(next.bookUrl, 'http://y/2');
+  assert.equal(next.bookName, '遮天');
+});
+
+test('读书：目录到末尾就标「读完」，不空转；态度好就从头重读一遍', async () => {
+  const { host, ctx, tick, dataDir } = novelSetup({
+    replies: ['嗯', '看着「刺进了掌心」这段，挺爽。[读:爽 3 继续]'],
+    chapters: [{ index: 0, title: '第一章 陨落的天才' }, { index: 1, title: '第二章 斗气大陆' }],
+    content: () => LONG_BODY,
+  });
+  writeFileSync(join(dataDir, 'novel.json'), JSON.stringify({
+    bookUrl: 'http://x/1', bookName: '斗破苍穹', index: 1, title: '第二章 斗气大陆', lastNum: 2, at: 1,
+    readTitles: ['第二章 斗气大陆', '第一章 陨落的天才'],
+    books: { 'http://x/1': { name: '斗破苍穹', reads: 2, attitude: 0.5 } },
+  }));
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(Date.now() / 1000) });
+  tick(3 * 3600e3);
+
+  const callsBefore = ctx.calls.length;
+  const done = await host.novel.read();
+  assert.ok(done.books['http://x/1'].finishedAt > 0, '标了读完');
+  assert.equal(ctx.calls.length, callsBefore, '读完了这一轮不读，也不调模型');
+
+  // 态度 0.5 ≥ 0.3：念旧，从头重读这本，而不是立刻换
+  const again = await host.novel.read();
+  assert.equal(again.index, 0, '从第一章重读');
+  assert.ok(again.books['http://x/1'].reReadAt > 0);
+  assert.equal(again.books['http://x/1'].finishedAt, 0, '重读开始，读完的标记清掉');
+});
+
+test('想一想：没真材料就不问；有材料才想，一天只问一次', async () => {
+  const { host, ctx, tick } = novelSetup({
+    replies: ['嗯', '看着「刺进了掌心」这段，心里闷。[读:闷 2 继续]', '他为什么总是不说呢。'],
+    chapters: [{ index: 0, title: '第一章 陨落的天才' }],
+    content: () => LONG_BODY,
+  });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(Date.now() / 1000) });
+  tick(3 * 3600e3);
+
+  // 还没真读到什么：没材料，不问模型
+  let calls = ctx.calls.length;
+  const none = await host.novel.think();
+  assert.equal(ctx.calls.length, calls, '空着比硬凑好');
+  assert.ok(!none.thoughts);
+
+  await host.novel.read(); // 这一章有真反应（闷）
+  const st = await host.novel.think();
+  assert.equal(st.thoughts.length, 1);
+  assert.equal(st.thoughts[0].text, '他为什么总是不说呢。');
+  assert.ok(st.thoughtDay, '记下今天问过了');
+  assert.match(host.novel.mind().text, /这两天自己在想/);
+
+  // 当天不再追问
+  calls = ctx.calls.length;
+  const again = await host.novel.think();
+  assert.equal(ctx.calls.length, calls, '一天只问一次');
+  assert.equal(again.thoughts.length, 1);
+});
+
+test('想一想：她回「没有」就不写念头，但当天也不追问了', async () => {
+  const { host, ctx, tick } = novelSetup({
+    replies: ['嗯', '看着「刺进了掌心」这段，心里闷。[读:闷 2 继续]', '没有。'],
+    chapters: [{ index: 0, title: '第一章 陨落的天才' }],
+    content: () => LONG_BODY,
+  });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(Date.now() / 1000) });
+  tick(3 * 3600e3);
+  await host.novel.read();
+  const st = await host.novel.think();
+  assert.ok(!st.thoughts, '回「没有」就不编一条');
+  assert.ok(st.thoughtDay, '但记下今天问过了，不再追问');
+  const calls = ctx.calls.length;
+  await host.novel.think();
+  assert.equal(ctx.calls.length, calls);
 });
 
 test('面板操作：忘记一条、置顶一条、再找回', async () => {

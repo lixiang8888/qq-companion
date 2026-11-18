@@ -55,9 +55,13 @@ export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', 
   const shotText = !perception?.total
     ? ''
     : ` · 图 ${perception.total} 张（原图 ${perception.pixels} 张，占 ${(Number(perception.bytes) / 1024 / 1024).toFixed(1)} MB）`;
-  // 她自己在看的书：写到「第几章」和上一句感想。没读过就直说，别空着。
+  // 她自己在看的书：写到「第几章」、对这本书的态度、上一句感想。没读过就直说，别空着。
+  const bookRec = novel?.books?.[novel.bookUrl];
+  const attitude = Number(bookRec?.attitude) || 0;
+  const attitudeText = Math.abs(attitude) < 0.2 ? ''
+    : ` · 对这本：${attitude >= 0.5 ? '挺喜欢' : attitude >= 0.2 ? '看得顺' : attitude <= -0.5 ? '快看不下去了' : '有点腻'}`;
   const novelText = novel?.bookName
-    ? ` · 在读《${novel.bookName}》第 ${Number(novel.index) + 1} 章${novel.label ? ` · 上次：${novel.label}` : ''}${novel.thought ? `（「${String(novel.thought).slice(0, 24)}」）` : ''}${novel.readsToday ? `，今天读了 ${novel.readsToday} 章` : ''}`
+    ? ` · 在读《${novel.bookName}》第 ${Number(novel.index) + 1} 章${attitudeText}${novel.label ? ` · 上次：${novel.label}` : ''}${novel.thought ? `（「${String(novel.thought).slice(0, 24)}」）` : ''}${novel.readsToday ? `，今天读了 ${novel.readsToday} 章` : ''}`
     : '';
   const stickerGrid = stickerItems.length
     ? `<div class="stickers">${stickerItems.map((s) => `<div class="sticker">

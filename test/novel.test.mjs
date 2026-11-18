@@ -1,7 +1,7 @@
 // 读书后端：三个接口的契约、正文清洗、下一章怎么挑。不联网。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { anchorOf, DEFAULT_BASE, cleanText, createNovel, isBored, noteRead, novelLine, parseBookLookup, parseReaction, planRead, reactionEmotion, REACTIONS } from '../src/novel.js';
+import { anchorOf, bookLine, DEFAULT_BASE, cleanText, createNovel, DROP_ATTITUDE, isBored, mindLine, nextRead, noteRead, noteThought, novelLine, parseBookLookup, parseReaction, planRead, reactionEmotion, REACTIONS, recentReactions, REREAD_MIN_ATTITUDE, shouldDrop, THOUGHT_KEEP, THOUGHT_TTL, thoughtLine, updateBook } from '../src/novel.js';
 
 const jsonResponse = (body) => ({ ok: true, status: 200, json: async () => body });
 
@@ -286,4 +286,135 @@ test('书架带上源名：换个源之后她/日志能看出是哪家', async (
   });
   const [b] = await novel.shelf();
   assert.equal(b.origin, '顶点小说');
+});
+
+// ---- 2026-11-18：P2 对书的态度 / 弃书 / 追更 / 重读；P3 念头 ----
+
+const BOOK = (url, name, total = 100) => ({ bookUrl: url, name, total, origin: '顶点小说' });
+
+test('态度账本：连烦态度一路跌到弃书线，连爽是正的但不弃', () => {
+  let rec = { name: '斗破苍穹' };
+  const seen = [];
+  for (let i = 0; i < 5; i++) {
+    rec = updateBook(rec, { reaction: { label: '烦', intensity: 2, thought: '又是这一套' }, title: `第${i + 1}章`, now: NOON + i });
+    seen.push(rec.attitude);
+  }
+  for (let i = 1; i < seen.length; i++) assert.ok(seen[i] < seen[i - 1], '每章都在往下掉');
+  assert.ok(seen.at(-1) <= DROP_ATTITUDE);
+  assert.equal(rec.streak, 5);
+  assert.equal(shouldDrop(rec), true);
+  assert.equal(rec.recent.length, 5, '最近五章的反应留着，下一次反应要用');
+  assert.equal(rec.recent[0].title, '第5章');
+
+  let good = { name: '遮天' };
+  for (let i = 0; i < 3; i++) good = updateBook(good, { reaction: { label: '爽', intensity: 2 }, title: `第${i + 1}章`, now: NOON + i });
+  assert.ok(good.attitude > REREAD_MIN_ATTITUDE, '读得高兴，值得重读');
+  assert.equal(shouldDrop(good), false);
+  assert.equal(good.streak, 0);
+});
+
+test('态度账本：无感也在缓慢消耗；没锚点的反应不算账', () => {
+  let bored = { name: '完美世界' };
+  for (let i = 0; i < 10; i++) bored = updateBook(bored, { reaction: { label: '无感' }, title: `第${i + 1}章`, now: NOON + i });
+  assert.ok(bored.attitude < 0, '无聊也是消耗');
+  assert.ok(bored.attitude > -0.3, '但很慢（每章 −0.03），十章还不该弃');
+  assert.equal(shouldDrop(bored), false);
+
+  const none = updateBook({ name: 'x', attitude: 0.2 }, { reaction: { label: '' }, title: '第1章', now: NOON });
+  assert.equal(none.attitude, 0.2, '引不出原文的反应该一个字都不动');
+  assert.deepEqual(none.recent, []);
+  assert.equal(none.lastLabel, '');
+});
+
+test('弃书判据：前三章不判、连烦 5 章、连说两次想弃', () => {
+  assert.equal(shouldDrop({ reads: 2, streak: 9, attitude: -1 }), false, '开头难看很正常');
+  assert.equal(shouldDrop({ reads: 3, streak: 5, attitude: 0 }), true);
+  assert.equal(shouldDrop({ reads: 3, streak: 1, wantDrop: 2, attitude: 0 }), true);
+  assert.equal(shouldDrop({ reads: 3, streak: 1, wantDrop: 1, attitude: -0.4 }), false);
+  assert.equal(shouldDrop({}), false);
+});
+
+test('下一本读哪：接着读 / 重读 / 换一本 / 追更等着', () => {
+  const shelf = [BOOK('u1', '斗破苍穹'), BOOK('u2', '缺章源', 0), BOOK('u3', '完美世界')];
+  // 没有能读的：等着，不空转
+  assert.equal(nextRead({ shelf: [], books: {}, state: {} }).kind, 'wait');
+  assert.equal(nextRead({ shelf: [BOOK('u1', 'x', 0)], books: {}, state: {} }).kind, 'wait', '0 章是取目录失败，跳过');
+  // 上次那本没读完 → 接着读
+  const cont = nextRead({ shelf, books: { u1: { reads: 3 } }, state: { bookUrl: 'u1' } });
+  assert.equal(cont.kind, 'continue');
+  assert.equal(cont.book.bookUrl, 'u1');
+  // 读完了、态度好 → 重读同一本
+  const re = nextRead({ shelf, books: { u1: { reads: 30, attitude: 0.4, finishedAt: NOON } }, state: { bookUrl: 'u1' } });
+  assert.equal(re.kind, 'reread');
+  assert.equal(re.book.bookUrl, 'u1');
+  // 读完了、态度不好 → 换一本没读过的
+  const sw = nextRead({ shelf, books: { u1: { reads: 30, attitude: -0.6, finishedAt: NOON } }, state: { bookUrl: 'u1' } });
+  assert.equal(sw.kind, 'switch');
+  assert.equal(sw.book.bookUrl, 'u3');
+  // 弃过的不再选
+  const afterDrop = nextRead({ shelf, books: { u1: { droppedAt: NOON } }, state: { bookUrl: 'u1' } });
+  assert.equal(afterDrop.kind, 'switch');
+  assert.equal(afterDrop.book.bookUrl, 'u3');
+  // 上次那本弃了、另有一本读了一半：先接着那本，别当没读过（否则会一直等下去）
+  const half = nextRead({ shelf, books: { u1: { droppedAt: NOON }, u3: { reads: 4 } }, state: { bookUrl: 'u1' } });
+  assert.equal(half.kind, 'switch');
+  assert.equal(half.book.bookUrl, 'u3');
+  // 全弃了 → 追更等着
+  assert.equal(nextRead({ shelf, books: { u1: { droppedAt: NOON }, u3: { droppedAt: NOON } }, state: { bookUrl: 'u1' } }).kind, 'wait');
+  // 同一本只重读一次
+  const once = nextRead({ shelf: [BOOK('u1', 'x')], books: { u1: { reads: 30, attitude: 0.9, finishedAt: NOON, reReadAt: NOON + 1 } }, state: { bookUrl: 'u1' } });
+  assert.equal(once.kind, 'wait');
+});
+
+test('对书态度那一行：真的占分量才说', () => {
+  const st = { bookUrl: 'u1', bookName: '斗破苍穹', at: NOON, books: { u1: { name: '斗破苍穹', attitude: -0.35 } } };
+  assert.match(bookLine(st), /《斗破苍穹》有点腻/);
+  assert.match(bookLine({ ...st, books: { u1: { name: '斗破苍穹', attitude: 0.6 } } }), /挺喜欢/);
+  assert.match(bookLine({ ...st, books: { u1: { name: '斗破苍穹', attitude: -0.6 } } }), /快看不下去了/);
+  assert.equal(bookLine({ ...st, books: { u1: { name: '斗破苍穹', attitude: 0.1 } } }), '');
+  assert.equal(bookLine({}), '');
+});
+
+test('念头：36 小时内注入，过期就不提；超过 20 条只留最近的', () => {
+  const st = noteThought({}, '他好像也是这样，嘴上不说', NOON);
+  assert.equal(st.thoughts.length, 1);
+  assert.match(thoughtLine(st, NOON + H), /嘴上不说/);
+  assert.equal(thoughtLine(st, NOON + 40 * H), '');
+  assert.equal(thoughtLine({}, NOON), '');
+
+  let many = {};
+  for (let i = 0; i < 25; i++) many = noteThought(many, `念头 ${i}`, NOON + i);
+  assert.equal(many.thoughts.length, THOUGHT_KEEP);
+  assert.equal(many.thoughts.at(-1).text, '念头 24');
+  assert.equal(noteThought({}, '   ', NOON).thoughts, undefined, '空念头不记');
+  assert.equal(noteThought({}, '想'.repeat(300), NOON).thoughts[0].text.length, 100);
+});
+
+test('每轮只注入一条读书的内容：念头 > 对书态度 > 读到哪', () => {
+  const base = {
+    bookUrl: 'u1', bookName: '斗破苍穹', index: 2, title: '第3章', thought: '有点替他不值',
+    at: NOON, books: { u1: { name: '斗破苍穹', attitude: -0.4 } },
+  };
+  const withAttitude = mindLine(base, NOON);
+  assert.match(withAttitude.text, /有点腻/, '有态度就报态度');
+  assert.equal(withAttitude.ttl, 12 * H);
+  const withThought = mindLine(noteThought(base, '主角太倔了', NOON), NOON);
+  assert.match(withThought.text, /这两天自己在想/);
+  assert.equal(withThought.ttl, THOUGHT_TTL);
+  const plain = mindLine({ ...base, books: {} }, NOON);
+  assert.match(plain.text, /《斗破苍穹》/);
+  assert.match(plain.text, /有点替他不值/);
+  assert.deepEqual(mindLine({}, NOON), { text: '', at: NOON, ttl: 12 * H });
+});
+
+test('最近几章的反应：新的在前、能按时间切、跨书汇总', () => {
+  const st = {
+    books: {
+      u1: { name: '斗破苍穹', recent: [{ title: '第2章', label: '闷', at: NOON - H }, { title: '第1章', label: '爽', at: NOON - 2 * H }] },
+      u2: { name: '遮天', recent: [{ title: '第1章', label: '触动', at: NOON }] },
+    },
+  };
+  assert.deepEqual(recentReactions(st, { limit: 5 }).map((r) => r.book), ['遮天', '斗破苍穹', '斗破苍穹']);
+  assert.deepEqual(recentReactions(st, { since: NOON - H / 2 }).map((r) => r.label), ['触动']);
+  assert.deepEqual(recentReactions({}, {}), []);
 });

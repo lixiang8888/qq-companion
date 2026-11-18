@@ -1,6 +1,6 @@
 # 读书的感受（reading feelings）设计
 
-日期：2026-11-18 · 状态：**P1 已实现**（2026-11-18，586 测试全过；A1–A8）；P2/P3 待做 · 项目：qq-companion
+日期：2026-11-18 · 状态：**P1/P2/P3 全部已实现**（2026-11-18，600 测试全过；实现中的取舍见 §十六）· 项目：qq-companion
 
 ## 一、要解决的是什么
 
@@ -185,7 +185,7 @@ if (emo && budgetLeftToday > 0) {
 - **不跨源搜索**：`/searchBook` 的 HTTP 接口是坏的，真正的搜索是 WebSocket + App 访问令牌，没配。所以查阅只能查书架里已有的书。
 - 提示词里告诉她这两个标记（`host.js:94` 那份协议清单加一行）。
 
-## 六、改动 B（P2）：对书的态度 → 弃书 / 追更 / 重读
+## 六、改动 B（P2）：对书的态度 → 弃书 / 追更 / 重读（已实现）
 
 ### B1 数据结构（`novel.json`）
 
@@ -255,7 +255,7 @@ DROP_WANT       = 2      // 她连着两次说「想弃」= 主动放弃，比�
 - **0 章书**：`shelf` 里 `total === 0` 的不进候选（现在会浪费一次拉目录）。
 - **读完从头循环**：`planRead` 的第三条（`novel.js:67`）保留给「重读」，但只有 `reread` 动作才允许走进它；普通读取到目录末尾就停，进 wait/换书。
 
-## 七、改动 C（P3）：记忆与念头
+## 七、改动 C（P3）：记忆与念头（已实现）
 
 ### C1 强感触进记忆卡
 
@@ -344,7 +344,7 @@ v1 **不做** genre/标签分类。等有 20 章真实反应之后再看 `recent
 12. host 端到端（假 fetch + 假 `complete`）：读完 → `affect.emotion.label` 写入；强反应 → 记忆卡有 `source: 'seen'`；`novel.json` 有 `books[url]`。
 13. host：无锚点的反应 → 情绪不变、感想仍存。
 14. `thinkIfBored`：没材料 → 不调用模型；有材料 → 写 `thoughts` 且当天不再问；回「没有」→ 不写。
-15. 回归：现有 572 条全过；`planRead`/`noteRead` 的旧行为不变（旧状态文件没有 `books` 也能读）。
+15. 回归：现有 586 条全过；`planRead`/`noteRead` 的旧行为不变（旧状态文件没有 `books` 也能读）。
 
 ## 十二、验收（可观察）
 
@@ -383,3 +383,47 @@ A 不做完就做 B/C，等于在不会动的情绪上盖楼。
 - 想一想允许回「没有」，且回了就记下当天问过——**不被追问的东西才是她自己的**。
 - 不做 genre/品味分类，等真实分布。
 - 读书永远不给关系加权。
+
+## 十六、实现记录（P2/P3，2026-11-18）
+
+**P2 落在哪**
+
+| 东西 | 在哪 |
+|---|---|
+| `ATTITUDE_ALPHA` / `ATTITUDE_DELTA` / `updateBook` / `shouldDrop` | `src/novel.js` |
+| `nextRead`（continue / reread / switch / wait） | `src/novel.js` |
+| `recentReactions`（反应 prompt 和「想一想」的素材） | `src/novel.js` |
+| 弃书 / 读完 / 重读的落地与日志 | `src/host.js` `readNovelIfBored()` |
+| `bookLine` / `mindLine`（三选一注入） | `src/novel.js` + `host.js` 的 `novel` 块 |
+| 面板「对这本：有点腻」 | `src/panel.js` |
+
+**P3 落在哪**
+
+| 东西 | 在哪 |
+|---|---|
+| `thoughtLine` / `noteThought` / `THOUGHT_TTL` / `THOUGHT_KEEP` | `src/novel.js` |
+| `thinkIfBored()`（一天一次、允许回「没有」、强念头写 `source: 'inferred'` 记忆卡） | `src/host.js`，挂心跳 |
+| 强感触写 `source: 'seen'` 记忆卡（热度 ≤0.6） | `src/host.js` `readNovelIfBored()` |
+
+**和设计不一样 / 补的（都带原因）**
+
+1. `updateBook(prev, { reaction, title, now })` 用对象传参，跟 `noteRead` 一个样。
+2. **没锚点的反应不改态度**：EWMA 的 0 会把态度往基线拉，等于「没读到」也会慢慢洗白一本书。有标签才动账，无感也算（每章 −0.03）。
+3. `shouldDrop(book)` 只回布尔；`dropReason` 用她最近那一句感想（即设计里的「用她最后那句感想」）。
+4. `nextRead` 多一条兜底：上次那本**弃了或者从书架消失**时，先找回一本「读了一半」的（`reads > 0 && !finishedAt`）。没有这条，那种状态会永远 wait——功能死胡同比多读一章糟。
+5. 「读完」不靠猜：`planRead` 返回 `wrapped` 且那本是 continue，就标 `finishedAt`，**这一轮不读、不调模型**；下一次心跳再决定重读还是换书。多等 10 分钟，换来的是不会在心跳密集时连着空转。
+6. `books[url].recent` 连无感也存（反应 prompt 要能看到「你前几章都没什么感觉」）；没锚点的不存。
+7. 「想一想」的材料判据只留一条：**今天有非无感的反应**。态度变化本来就只从反应来，再加一条是重复。
+8. 回「没有」用**精确匹配**（`^「?没有」?[。.．!！…]?$`）不是前缀——「没有人真正在意他」是真念头，不能被吃掉。
+9. 强念头进记忆的判据：念头里出现了**能和她某条反应锚点对上**的原文片段，才算「提到具体细节」；否则只落 `thoughts[]`。
+10. `THOUGHT_MAX_PER_DAY` 这个常数删了：闸就是 `thoughtDay === 今天`，一天一次是它的结构性质，多一个常数只会漂。
+11. 追更的 `waitingAt` 超过 6 小时才写一次：心跳十分钟一次，不然每十分钟无意义地写一次盘。
+12. 一轮只注入一条（念头 > 态度 > 读到哪）：`mindLine` 返回 `{text, at, ttl}`，每条带自己的有效期（念头 36h，其余 12h）。
+
+**新增测试 14 条**（586 → 600）
+
+- `novel.test.mjs` +8：态度账本（跌到弃书线 / 连爽不弃 / 无感慢消耗 / 没锚点不记账）、弃书判据、`nextRead` 七种走向（含弃书后找回半本）、`bookLine`、念头 36h 与 20 条上限、`mindLine` 优先级、`recentReactions`。
+- `host.test.mjs` +5：书账本落地 + 强感触进记忆（`source: 'seen'`、热度 ≤0.6）、连烦到线弃书且下一本真的换书、读到末尾标 finished 不调模型且态度好就从头重读、想一想（无材料不调模型 / 有材料写念头 / 当天只问一次 / 回「没有」不写但当天不问）。
+- `panel.test.mjs` +1：读书那行带「对这本：有点腻」，态度不占分量时不写。
+
+**还没验证的**（要真跑两周）：`recent` 的标签分布、`dropAttitude=-0.5` 这条线合不合适、念头会不会写成空话。看的方法在 §十二。

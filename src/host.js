@@ -40,7 +40,7 @@ import { rollbackTraits } from './affect/personality.js';
 import { replyPlan } from './affect/behavior.js';
 import { DEFAULTS as PROACTIVE_DEFAULTS, composePokePrompt, notePoked, noteSaidByUser, noteTick, noteTurn, noteWait, parsePokeReply, pokeGate } from './proactive.js';
 import { perceive } from './perceive.js';
-import { createNovel, isBored, noteRead, novelLine, parseBookLookup, parseReaction, planRead, PREFERRED_SOURCE, reactionEmotion, READ_MAX_CHARS, READ_SKIP_TRIES, READING_EMOTION_DAY_MAX } from './novel.js';
+import { BORED_QUIET_MS, createNovel, isBored, mindLine, nextRead, noteRead, noteThought, novelLine, parseBookLookup, parseReaction, planRead, PREFERRED_SOURCE, reactionEmotion, READ_MAX_CHARS, recentReactions, READ_SKIP_TRIES, READING_EMOTION_DAY_MAX, REREAD_MIN_ATTITUDE, shouldDrop, updateBook } from './novel.js';
 import { fetchWeather, isStale, placeOf, weatherLine } from './weather.js';
 import { SCREEN_TTL, readScreen, sanitize, screenLine } from './screen.js';
 import { canSearch, factLine, latestFact, materialLines, noteSearch, search } from './search.js';
@@ -736,6 +736,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     // 近窗口的图不靠检索：还在聊的事，不该等他说出「图」字才想起来。
     const near = withPicture ? [] : recentShots(perceptionStore.load().records, { now: t, history: session.snapshot().history });
     const shotLines = [...near.map((r) => recentLine(r, t)), shot.line].filter(Boolean).slice(0, 3);
+    const mind = mindLine(novelStore.load(), t);
     // 每一块都交代「生于何时、能活多久」。以前这里是一个裸数组，谁新加一块就默认永久有效——
     // 周自述和人格叙事都能一年后还在说「最近」。规矩现在由 fresh.js 强制。
     return assemble([
@@ -756,8 +757,9 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       blk('stickers', namesLine(stickerStore.load().items), t),
       blk('pending', pendingLine(pendingQuestions), t),
       blk('money', moneyNow(), t),
-      // 她自己看的书：只在刚读过之后说（12 小时）。过期就别提，不然「最近在看」会成为谎话。
-      blk('novel', novelLine(novelStore.load(), t), Number(novelStore.load()?.at) || t, 12 * HOUR),
+      // 她自己看的书：念头 / 对书态度 / 读到哪，三选一——一轮塞三段读书内容，
+      // 读起来像日志不像人。每条自带自己的有效期，过期就别提（「最近在看」过期就是谎话）。
+      blk('novel', mind.text, mind.at, mind.ttl),
     ], { now: t });
   }
 
@@ -822,31 +824,52 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     try {
       const client = createNovel({ base: config.novel?.base || undefined, fetchImpl });
       const shelf = await client.shelf();
-      if (!shelf.length) return st;
-      // 接着上次那本；那本没了就挑一本章节数正常的（0 章多半是取目录失败，换一本试，别耗在这本上）。
-      const same = shelf.find((b) => b.bookUrl === st.bookUrl);
-      const book = same || shelf.find((b) => b.total > 0) || shelf[0];
+      let books = st.books || {};
+      // 读哪本：接着读 / 重读 / 换一本 / 追更等着。判据在 nextRead 里，宿主只管执行。
+      const pick = nextRead({ shelf, books, state: st });
+      if (pick.kind === 'wait') {
+        // 追更等着：每十分钟心跳都会走到这儿，没必要每次都落盘。
+        if (t - (Number(st.waitingAt) || 0) > 6 * 3600e3) novelStore.save({ ...st, waitingAt: t });
+        log.info?.('书都读完了，等她追的书更新');
+        return novelStore.load();
+      }
+      const book = pick.book;
+      // 重读要从这本的第 1 章重新算：读过的标题和章号不清掉，planRead 会直接又跳回末尾。
+      if (pick.kind === 'reread') {
+        st = { ...st, readTitles: [], lastNum: null };
+        books = { ...books, [book.bookUrl]: { ...(books[book.bookUrl] || {}), name: book.name, reReadAt: t } };
+        log.info?.(`《${book.name}》她还想再看一遍，从头重读`);
+      }
       // 目录要拿一份：靠章号和标题躲开「重复章」和「缺章」，只按下标走会重读或漏读。
       const list = await client.chapters(book.bookUrl);
       if (!list.length) { log.warn?.(`《${book.name}》目录是空的，这次跳过`); return st; }
 
+      const cur = pick.kind === 'continue' ? st : {};
+      let plan = planRead(list, cur);
+      // 目录走到末尾了：标「读完」，这一轮不读。下一次心跳再决定重读还是换一本（念旧）。
+      if (plan.wrapped && pick.kind === 'continue') {
+        books = { ...books, [book.bookUrl]: { ...(books[book.bookUrl] || {}), name: book.name, finishedAt: t } };
+        novelStore.save({ ...st, books, waitingAt: t });
+        log.info?.(`《${book.name}》读完了${(Number(books[book.bookUrl].attitude) || 0) >= REREAD_MIN_ATTITUDE ? '，这本她还想再看一遍' : ''}`);
+        return novelStore.load();
+      }
+
       // 占位章/坏源（宿命之环第 1 章 117 字「作者正在存稿」）跳过并推进进度。
       // 老写法遇到太短的直接 return，下一轮又选中同一章——会永远卡在这一章上。
       let ch = null;
-      let cur = same ? st : {};
-      let plan = planRead(list, cur);
+      let skip = cur;
       for (let tries = 0; tries < READ_SKIP_TRIES; tries++) {
-        plan = planRead(list, cur);
+        plan = planRead(list, skip);
         if (plan.gap > 0) log.warn?.(`《${book.name}》目录缺了 ${plan.gap} 章（第 ${plan.num} 章之前），跳过`);
         ch = await client.chapter(book.bookUrl, plan.index);
         if (ch.chars >= 200) break;
         log.warn?.(`《${book.name}》第 ${plan.index + 1} 章只有 ${ch.chars} 字（占位/坏源），跳过`);
         st = noteRead(st, { now: t, book, index: plan.index, title: plan.title, num: plan.num, skipped: true });
-        cur = st;
+        skip = st;
         ch = null;
       }
       if (!ch) {
-        novelStore.save({ ...st, readsDay: day, readsToday });
+        novelStore.save({ ...st, readsDay: day, readsToday, books });
         return novelStore.load();
       }
 
@@ -855,6 +878,9 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       const aff = settle(store.load(), t);
       const moodWord = aff.mood.v >= 0.7 ? '心情不错' : aff.mood.v >= 0.4 ? '心情平常' : '心情有点低';
       const recent = hist.slice(-4).map((m) => `${m.role === 'user' ? '他说' : '你说'}：${String(m.text || '').slice(0, 40)}`).join('\n');
+      // 这本书前几章她自己的反应也带上：同一本书连烦三章，和刚翻开一本，读出来不是一个味道。
+      const before = (books[book.bookUrl]?.recent || []).slice(0, 4)
+        .map((r) => `· ${r.title} · ${r.label}${r.anchor ? `（看到「${r.anchor}」）` : ''}`).join('\n');
       let text = '';
       try {
         text = String(await complete({
@@ -872,7 +898,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
           ].join('\n'),
           messages: [{
             role: 'user',
-            text: `《${book.name}》${title ? ` ${title}` : ''}\n\n【正文】\n${ch.text.slice(0, READ_MAX_CHARS)}\n\n你现在的状态：${moodWord}${recent ? `\n刚才的聊天：\n${recent}` : ''}`,
+            text: `《${book.name}》${title ? ` ${title}` : ''}\n\n【正文】\n${ch.text.slice(0, READ_MAX_CHARS)}\n\n你现在的状态：${moodWord}${recent ? `\n刚才的聊天：\n${recent}` : ''}${before ? `\n这本书前几章你的反应：\n${before}` : ''}`,
           }],
           maxTokens: 200,
         }) || '').trim();
@@ -883,6 +909,9 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
 
       // 反应 → 情绪：无锚点或无感就不推（引不出原文的反应多半是在演）；一天累计有上限。
       const reaction = parseReaction(text, ch.text);
+      const anchored = reaction.anchored;
+      // 没锚点的反应连账都不记：那不是「无感」，是没读到——她说好说坏都不算数。
+      const trusted = anchored ? reaction : { ...reaction, label: '', want: '', intensity: 0 };
       let emo = reactionEmotion(reaction);
       if (emo) {
         const left = READING_EMOTION_DAY_MAX - emotionToday;
@@ -890,21 +919,37 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         else if (left < emo.intensity) emo = { ...emo, intensity: left };
         if (emo) store.save(pushEmotion(aff, emo, t));
       }
-      const anchored = reaction.anchored;
+
+      // 这本书在她心里涨了还是跌了。读到一个新的章，就不算「读完了」。
+      let rec = { ...updateBook({ ...(books[book.bookUrl] || {}), name: book.name }, { reaction: trusted, title, now: t }), finishedAt: 0 };
+      // 弃书：态度 / 连烦 / 主动想弃，任一到了就真弃，记下她最后那句话。
+      if (shouldDrop(rec)) {
+        rec = { ...rec, droppedAt: t, dropReason: String(rec.recent?.[0]?.thought || '') };
+        log.info?.(`弃书：《${book.name}》——${rec.dropReason || '读不下去了'}`);
+      }
+      // 强感触进记忆：带热度、带当时的心情。热度封顶 0.6——读书是她自己的事，
+      // 不该和他说的话抢记忆权重；但几天后聊到书里那个词，它自己会浮上来。
+      if (anchored && (reaction.intensity === 3 || (['触动', '酸'].includes(reaction.label) && reaction.intensity >= 2))) {
+        memoryStore.save(remember(memoryStore.load(), `看《${book.name}》${title}，看到「${reaction.anchor}」，${reaction.thought}`, {
+          now: t, source: 'seen', heat: Math.min(0.6, reaction.intensity / 4), mood: store.load().emotion,
+        }));
+      }
+
       const next = {
         ...noteRead(st, {
           now: t, book, index: plan.index, title, num: plan.num, thought: reaction.thought,
-          label: anchored ? reaction.label : '', intensity: anchored ? reaction.intensity : 0,
-          want: anchored ? reaction.want : '', anchor: reaction.anchor,
+          label: trusted.label, intensity: trusted.intensity, want: trusted.want, anchor: reaction.anchor,
         }),
         readsDay: day,
         readsToday: readsToday + 1,
         emotionDay: day,
         emotionToday: Math.min(READING_EMOTION_DAY_MAX, emotionToday + (emo ? emo.intensity : 0)),
         origin: book.origin || '',
+        // 每本书的真账本：态度、连烦、最近几章的反应。行为后果（弃书/重读）靠它。
+        books: { ...books, [book.bookUrl]: rec },
       };
       novelStore.save(next);
-      log.info?.(`读书：《${book.name}》第 ${plan.index + 1} 章 · ${anchored && reaction.label ? reaction.label : '无感'}${emo ? '（情绪 +' + emo.intensity.toFixed(2) + '）' : ''}`);
+      log.info?.(`读书：《${book.name}》第 ${plan.index + 1} 章 · ${trusted.label || '无感'}${emo ? '（情绪 +' + emo.intensity.toFixed(2) + '）' : ''} · 对这本 ${rec.attitude.toFixed(2)}`);
       return next;
     } catch (e) {
       log.warn?.(`读书出错：${e.message}`);
@@ -953,6 +998,75 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const { books } = parseActions(reply);
     if (!books.length) return '';
     return lookBookSpec(books[0]);
+  }
+
+  // 想一想：一天最多一次，和读书一样不排队列（一次模型调用十几秒），自带并发闸。
+  let thinking = false;
+  const THINK_PROMPT = [
+    '你一个人待着，想起这两天看的小说。',
+    '写一个你自己冒出来的念头：可以是书里的一个人、一句话，也可以是「我为什么烦」。',
+    '不超过 100 字，第一人称，像在心里嘀咕。别写成书评，别下总结，别讲道理。',
+    '如果你真的没什么可想的，就只写两个字：没有。',
+  ].join('\n');
+
+  /**
+   * 从这两天真读到的反应里，长出她自己的一个念头。
+   * 没有材料就不问——空着比硬凑好；她回「没有」也算问过了，当天不再追问。
+   */
+  async function thinkIfBored() {
+    if (thinking) return novelStore.load();
+    const t = now();
+    const st = novelStore.load();
+    const day = dayKeyOf(t);
+    if (st.thoughtDay === day) return st;
+    const hist = session.snapshot().history;
+    const lastUserAt = [...hist].reverse().find((m) => m.role === 'user')?.at || 0;
+    if (!lastUserAt || t - lastUserAt < BORED_QUIET_MS) return st;
+    // 材料：今天真的有非「无感」的反应。态度的变化也来自反应，所以这一条就够。
+    const d = new Date(t);
+    d.setHours(0, 0, 0, 0);
+    const today = recentReactions(st, { since: d.getTime(), limit: 20 }).filter((r) => r.label && r.label !== '无感');
+    if (!today.length) return st;
+
+    thinking = true;
+    try {
+      const aff = settle(store.load(), t);
+      const moodWord = aff.mood.v >= 0.7 ? '心情不错' : aff.mood.v >= 0.4 ? '心情平常' : '心情有点低';
+      const recs = recentReactions(st, { limit: 3 })
+        .map((r) => `《${r.book}》${r.title} · ${r.label}${r.anchor ? `（看到「${r.anchor}」）` : ''} · ${r.thought}`)
+        .join('\n');
+      const dropped = Object.values(st.books || {})
+        .filter((b) => b.droppedAt && b.dropReason)
+        .map((b) => `《${b.name}》：${b.dropReason}`);
+      const text = String(await complete({
+        system: `${personaCore()}\n\n${THINK_PROMPT}`,
+        messages: [{
+          role: 'user',
+          text: `这两天你读到的：\n${recs}\n\n你现在的状态：${moodWord}${dropped.length ? `\n你弃过的书：\n${dropped.join('\n')}` : ''}`,
+        }],
+        maxTokens: 200,
+      }) || '').replace(/\s+/g, ' ').trim();
+
+      // 回「没有」也记下今天问过了：不被追问的东西才是她自己的。
+      if (!text || /^「?没有」?[。.．!！…]?$/.test(text)) {
+        novelStore.save({ ...st, thoughtDay: day });
+        log.info?.('想一想：她今天没什么想说的');
+        return novelStore.load();
+      }
+      const next = { ...noteThought(st, text, t), thoughtDay: day };
+      novelStore.save(next);
+      log.info?.(`念头：${String(text).slice(0, 40)}`);
+      // 提到了具体细节（能和她真读到的那几句对上）才进记忆。这是她的推断，不冒充事实。
+      if (recentReactions(st, { limit: 20 }).some((r) => r.anchor && text.includes(r.anchor))) {
+        memoryStore.save(remember(memoryStore.load(), text, { now: t, source: 'inferred', heat: 0.3, mood: aff.mood }));
+      }
+      return next;
+    } catch (e) {
+      log.warn?.(`想一想没想成：${e.message}`);
+      return st;
+    } finally {
+      thinking = false;
+    }
   }
 
   async function refreshLife() {    const t = now();
@@ -1713,6 +1827,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     enqueue(refreshPerception).catch((e) => log.warn?.(`图片清理出错：${e.message}`));
     // 她无聊的时候自己看书。不排队列：一章十几秒，会把他刚发的消息堵住（函数内部自带并发闸）。
     readNovelIfBored().catch((e) => log.warn?.(`读书出错：${e.message}`));
+    // 每天最多一次的「想一想」：从真反应里长出她自己的念头。同样不排队列。
+    thinkIfBored().catch((e) => log.warn?.(`想一想出错：${e.message}`));
     enqueue(evaluatePost).catch((e) => log.warn?.(`空间判定出错：${e.message}`));
     enqueue(refreshQzoneComments).catch((e) => log.warn?.(`查评论出错：${e.message}`));
     if (weatherOn()) enqueue(refreshWeather).catch((e) => log.warn?.(`查天气出错：${e.message}`));
@@ -1984,7 +2100,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     log.info?.(`qq-companion：面板 ${panelUrl}`);
   } catch { /* 诊断日志失败不影响启动 */ }
 
-  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, perception: { cleanup: () => enqueue(refreshPerception), stats: () => statsOf(perceptionStore.load()) }, novel: { state: () => novelStore.load(), read: () => readNovelIfBored(), line: () => novelLine(novelStore.load(), now()), look: (spec) => lookBookSpec(spec) }, get config() { return config; }, dataDir };
+  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, perception: { cleanup: () => enqueue(refreshPerception), stats: () => statsOf(perceptionStore.load()) }, novel: { state: () => novelStore.load(), read: () => readNovelIfBored(), think: () => thinkIfBored(), line: () => novelLine(novelStore.load(), now()), mind: () => mindLine(novelStore.load(), now()), look: (spec) => lookBookSpec(spec) }, get config() { return config; }, dataDir };
 }
 
 function loadConfig(file, log) {

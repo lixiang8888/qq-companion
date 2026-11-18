@@ -293,3 +293,159 @@ export function novelLine(state, now = 0) {
   const feel = now - at < 40 * 60e3 ? READ_WORD[state.label] : '';
   return `你${when}自己在看《${name}》，读到${where}${feel ? `，${feel}` : ''}${thought ? `，当时想的是：「${thought}」` : ''}。`;
 }
+
+// ---- P2：对一本书的态度会累积，并且有后果（弃书 / 追更 / 重读） ----
+//
+// 态度是「跨章」的东西：一章的滋味进情绪（分钟级），一本书的好坏感进 attitude（天级）。
+// 没有这一层，「读多了会反感」就是个形容词——她只能每章都烦，永远烦不到弃书。
+
+export const ATTITUDE_ALPHA = 0.15;        // 每章权重：最近几章算得多，但一章洗不白
+export const DROP_ATTITUDE = -0.5;         // 态度跌破这条线就弃
+export const DROP_STREAK = 5;              // 或者连烦 5 章
+export const DROP_MIN_READS = 3;           // 前三章不判：开头难看很正常（偏念旧）
+export const DROP_WANT = 2;                // 她连着两次说「想弃」= 主动放弃，比态度硬
+export const REREAD_MIN_ATTITUDE = 0.3;    // 读完了值不值得再读一遍
+const RECENT_KEEP = 5;                     // 每本书留最近几条反应：下一次反应要带上它
+
+/** 一章的标签值多少态度分。无感也是消耗，只是很慢（−0.2 × 0.15 = 每章 −0.03）。 */
+const ATTITUDE_DELTA = { 爽: 1, 触动: 0.8, 酸: 0.55, 闷: -0.3, 尬: -0.6, 烦: -1, 无感: -0.2 };
+
+const round3 = (x) => Math.round(x * 1000) / 1000;
+
+/**
+ * 读完一章，这本书在她心里涨了还是跌了。没锚点（label 空）不算账——那不是「无感」，是没读到。
+ * @returns {object} 这本书的新记录（不碰 state）
+ */
+export function updateBook(prev = {}, { reaction = {}, title = '', now = 0 } = {}) {
+  const label = String(reaction.label || '');
+  const delta = ATTITUDE_DELTA[label];
+  // 引不出原文（label 空）= 没有证据，态度原样留着。有标签才动账，无感也算
+  // （EWMA 的 0 会把态度往基线拉，那等于没读到也会慢慢「洗白」一本书）。
+  const attitude = delta === undefined
+    ? (Number(prev.attitude) || 0)
+    : round3((Number(prev.attitude) || 0) * (1 - ATTITUDE_ALPHA) + delta * ATTITUDE_ALPHA);
+  const ugly = label === '尬' || label === '烦' || reaction.want === '想弃';
+  const wants = reaction.want === '想弃';
+  const entry = label ? {
+    title: String(title || ''),
+    label,
+    intensity: Number(reaction.intensity) || 0,
+    thought: String(reaction.thought || ''),
+    anchor: String(reaction.anchor || ''),
+    at: now,
+  } : null;
+  return {
+    ...prev,
+    reads: (Number(prev.reads) || 0) + 1,
+    attitude,
+    streak: ugly ? (Number(prev.streak) || 0) + 1 : 0,
+    wantDrop: wants ? (Number(prev.wantDrop) || 0) + 1 : 0,
+    lastLabel: label || String(prev.lastLabel || ''),
+    lastAt: now,
+    recent: entry ? [entry, ...(prev.recent || [])].slice(0, RECENT_KEEP) : (prev.recent || []),
+  };
+}
+
+/** 该不该弃这本书。念旧体现在：前三章不判，态度线偏松，主动说「想弃」两次才认。 */
+export function shouldDrop(book = {}) {
+  if ((Number(book.reads) || 0) < DROP_MIN_READS) return false;
+  if ((Number(book.wantDrop) || 0) >= DROP_WANT) return true;
+  if ((Number(book.streak) || 0) >= DROP_STREAK) return true;
+  return (Number(book.attitude) || 0) <= DROP_ATTITUDE;
+}
+
+/**
+ * 下一次读哪本。一次只读一本，跟人一样。
+ *
+ * - continue：上次那本没读完
+ * - reread：读完了但态度不错（同一本只重读一次）
+ * - switch：换一本没读过的
+ * - wait：全读完/全弃了——追更等着，不发模型调用
+ * @returns {{kind:'continue'|'reread'|'switch'|'wait', book:object|null}}
+ */
+export function nextRead({ shelf = [], books = {}, state = {} } = {}) {
+  // 0 章的多半是取目录失败（打开 App 刷新一次就好），不能当坏源，也不能白试一次。
+  const list = (shelf || []).filter((b) => b?.bookUrl && Number(b.total) > 0);
+  const rec = (b) => books[b.bookUrl] || {};
+  const live = list.filter((b) => !rec(b).droppedAt);
+  if (!live.length) return { kind: 'wait', book: null };
+  const cur = state.bookUrl ? live.find((b) => b.bookUrl === state.bookUrl) : null;
+  if (cur && !rec(cur).finishedAt) return { kind: 'continue', book: cur };
+  if (cur) {
+    const r = rec(cur);
+    // 念旧：读完的书如果读得挺高兴，先重读一遍，而不是立刻换新的。
+    if ((Number(r.attitude) || 0) >= REREAD_MIN_ATTITUDE && !r.reReadAt) return { kind: 'reread', book: cur };
+  }
+  // 上次那本弃了/没了：先找回一本没读完的（她读了一半的书不能白丢），再找没读过的。
+  const open = live.find((b) => !rec(b).finishedAt && (Number(rec(b).reads) || 0) > 0);
+  if (open) return { kind: 'switch', book: open };
+  const unread = live.find((b) => !(Number(rec(b).reads) > 0));
+  if (unread) return { kind: 'switch', book: unread };
+  const reread = live
+    .filter((b) => !rec(b).reReadAt && (Number(rec(b).attitude) || 0) >= REREAD_MIN_ATTITUDE)
+    .sort((a, b) => (Number(rec(b).attitude) || 0) - (Number(rec(a).attitude) || 0))[0];
+  return reread ? { kind: 'reread', book: reread } : { kind: 'wait', book: null };
+}
+
+/** 她最近几章的真实反应（新的在前）。反应 prompt 和「想一想」都从这里取材料。 */
+export function recentReactions(state = {}, { since = 0, limit = 3 } = {}) {
+  const out = [];
+  for (const rec of Object.values(state.books || {})) {
+    for (const r of rec?.recent || []) {
+      const at = Number(r?.at) || 0;
+      if (at < since) continue;
+      out.push({
+        book: String(rec.name || ''), title: String(r.title || ''), label: String(r.label || ''),
+        intensity: Number(r.intensity) || 0, thought: String(r.thought || ''),
+        anchor: String(r.anchor || ''), at,
+      });
+    }
+  }
+  return out.sort((a, b) => b.at - a.at).slice(0, Math.max(0, limit));
+}
+
+// ---- P3：念头（每天最多一次「想一想」） ----
+
+export const THOUGHT_KEEP = 20;
+export const THOUGHT_TTL = 36 * 3600e3;   // 念头比感想活得久：它是「这两天在想」，不是「刚看完」
+
+/** 最近一条念头。过期不注——「你这两天在想」隔了三天就是假话。 */
+export function thoughtLine(state = {}, now = 0) {
+  const list = state.thoughts || [];
+  const last = list[list.length - 1];
+  const text = String(last?.text || '').trim();
+  const at = Number(last?.at) || 0;
+  if (!text || !at || now - at > THOUGHT_TTL) return '';
+  return `你这两天自己在想：「${text}」`;
+}
+
+/** 她对这本书的态度，占分量（|态度| ≥0.2）才说。 */
+export function bookLine(state = {}) {
+  const rec = (state.books || {})[state.bookUrl];
+  const a = Number(rec?.attitude) || 0;
+  const name = String(rec?.name || state.bookName || '').trim();
+  if (!name || Math.abs(a) < 0.2) return '';
+  const word = a >= 0.5 ? '挺喜欢这本' : a >= 0.2 ? '看得挺顺' : a <= -0.5 ? '快看不下去了' : '有点腻';
+  return `你对《${name}》${word}。`;
+}
+
+/**
+ * 每轮只注入一条读书相关的东西：念头 > 对书态度 > 读到哪。
+ * 三条一起上，一轮就有三段「她在看书」，读起来像日志不像人。
+ * @returns {{text:string, at:number, ttl:number}}
+ */
+export function mindLine(state = {}, now = 0) {
+  const list = state.thoughts || [];
+  const th = thoughtLine(state, now);
+  if (th) return { text: th, at: Number(list[list.length - 1]?.at) || now, ttl: THOUGHT_TTL };
+  const bl = bookLine(state);
+  if (bl) return { text: bl, at: Number(state.at) || now, ttl: 12 * 3600e3 };
+  return { text: novelLine(state, now), at: Number(state.at) || now, ttl: 12 * 3600e3 };
+}
+
+/** 记一条念头。空的不记——空着比硬凑好。 */
+export function noteThought(state = {}, text = '', now = 0) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 100);
+  if (!t) return state;
+  return { ...state, thoughts: [...(state.thoughts || []), { text: t, at: now }].slice(-THOUGHT_KEEP) };
+}

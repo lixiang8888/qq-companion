@@ -160,3 +160,19 @@ test('面板：还没写日记时说清楚', () => {
   const html = renderPanel({ state: initState(T0), memory: createCard(T0), diaries: [], now: T0 });
   assert.match(html, /还没写过日记/);
 });
+
+test('面板：读书那行带上对这本书的态度', () => {
+  const html = renderPanel({
+    state: initState(T0), memory: createCard(T0), now: T0,
+    novel: { bookName: '斗破苍穹', bookUrl: 'http://x/1', index: 2, label: '闷', thought: '有点替他不值', books: { 'http://x/1': { attitude: -0.35 } } },
+  });
+  assert.match(html, /在读《斗破苍穹》第 3 章/);
+  assert.match(html, /对这本：有点腻/);
+  assert.match(html, /上次：闷/);
+  // 态度还没占分量就一个字都不写
+  const plain = renderPanel({
+    state: initState(T0), memory: createCard(T0), now: T0,
+    novel: { bookName: '遮天', bookUrl: 'http://y/2', index: 0, books: { 'http://y/2': { attitude: 0.05 } } },
+  });
+  assert.ok(!plain.includes('对这本'));
+});
