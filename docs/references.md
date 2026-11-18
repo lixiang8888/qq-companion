@@ -85,6 +85,38 @@ Schedule、委派、记忆基础设施、可选 B站 MCP。绑 DSH 0.2.0-rc.2，
 
 只读 README 与设计说明，未复制代码。许可证与「借了什么」见 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
 
+### Legado /「阅读 3.0」—— 她读书的后端，**唯一一个真装上的现成项目**
+
+<https://github.com/gedoor/legado> · 原 GPL-3.0 · Kotlin · 约 47.2k★ · **上游已于 2026-05-27 被作者清空**
+
+**为什么用它**：这不是「懒得自己写」。实测过「插件直接抓页面 + 启发式提正文」，24 个精选书源 **0 个能读**
+（顶点小说：搜索通、352 章目录通、正文只返回 28 字）。网文站普遍 JS 渲染 / 反爬，176 条书源规则是别人几年攒的，
+重写没有胜算。所以把它装进安卓模拟器，插件只跟它的本地 Web 服务说话：
+
+```
+插件(src/novel.js) --HTTP 127.0.0.1:1123--> Legado(Android, 176 条书源) --> 网文站
+```
+
+三个接口（真机验过）：`GET /getBookshelf`、`/getChapterList?url=<bookUrl>`、`/getBookContent?url=<bookUrl>&index=N`。
+参数名就叫 `url`，传的是**书的地址**不是章节地址（传 bookUrl 才命中缓存）。
+
+**判断：采用，但只当外部程序用。** 不打包、不复制、不链接、不分发；仓库里没有它的代码或 APK，
+换台机器要自己装（`启动阅读器.ps1` 会拉起 App 并点开 Web 服务开关）。
+
+**2026-11-18 核对到的现状（重要）**：
+
+| 事实 | 证据 |
+| --- | --- |
+| 上游仓库已被清空，只剩一页公告 + 一张图 | GitHub API：`pushed_at` 2026-05-27；根目录只有 `README.md`（公告正文）与 `公告链接.png` |
+| 公告承认侵权、承担法律责任、删除全部内容 | `raw.githubusercontent.com/gedoor/legado/main/README.md` 正文 |
+| 许可证现在查不到（`license: null`），GPL-3.0 只是历史说法 | 同上，仓库里已无 LICENSE 文件 |
+| 两位开发者因侵犯著作权罪被判刑（二年 / 一年九个月 + 罚金），涉侵权作品近 4000 部 | [小众软件报道](https://www.appinn.com/xxdu-app-developers-jailed-for-copyright-infringement/)，转自闵行检察 2026-03-24 |
+
+**这意味着什么**：技术上它仍然是最好用的那个（社区分支还在更新），许可上我们也没碰它的代码；
+但**风险不是版权纠纷，是刑事案例**——书源抓的是盗版站，本项目不传播、不售卖，这却改不了源的性质。
+要不要继续用是使用者的选择；如果以后要发布或商用，这条必须先解决（正版源 / 自己的内容），
+不能靠「只是自用」糊过去。
+
 ### dsh-see-now（让 AI 实时看见屏幕）—— **这批里影响最大的一个**
 
 <https://github.com/SAOS-3624/dsh-see-now> · Apache-2.0 · v0.2.1

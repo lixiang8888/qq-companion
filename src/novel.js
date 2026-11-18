@@ -1,4 +1,6 @@
 // 她读书：从安卓里的 Legado 取正文。
+// Legado = https://github.com/gedoor/legado（原 GPL-3.0；上游 2026-05 被作者清空，见 THIRD_PARTY_NOTICES.md）
+// 我们只调它的本地 HTTP，不打包、不复制代码——仓库里没有它的任何东西。
 //
 // 为什么绕这么远：网文站基本都有 JS 渲染/反爬，直接抓页面实测 24 个源 0 个能读。
 // Legado 替我们跑那 176 条书源规则，它自己开一个 Web 服务（默认 1122），

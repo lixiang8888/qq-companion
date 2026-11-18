@@ -24,11 +24,24 @@
 
 | 项目 | 许可 | 关系 |
 |---|---|---|
+| [Legado / 阅读 3.0](https://github.com/gedoor/legado) | 原 GPL-3.0（仓库现在已无 LICENSE 可核，见下） | 她读书的后端。**仓库里不含它的任何代码或 APK**：它是装在安卓模拟器里的独立 App，我们只调它自带的本地 Web 服务（`/getBookshelf`、`/getChapterList`、`/getBookContent`），不链接、不打包、不分发 |
 | [SnowLuma](https://github.com/SnowLuma/SnowLuma) | **源码可见、非商业**（不是 OSI 开源） | 只通过它的 HTTP / WebSocket 接口通信，**仓库里不含它的任何代码或二进制**。这条不能破：它的许可与 MIT 不兼容 |
 | [NapCat](https://github.com/NapNeko/NapCatQQ) | 见其仓库 | 动作名（`send_qzone_msg` 等）和参数形状属于接口事实，代码未复制 |
 | [Open-Meteo](https://open-meteo.com/) | CC BY 4.0（数据）/ 免密钥接口 | 只按 HTTP 公开接口取天气观测值，不含其代码。免费额度前提是非商业用途 |
 | [Tavily](https://tavily.com/) | 商业接口，按账号条款 | 只调 `/search` 接口；key 存在本机 `config.json`，不进仓库 |
 | [ffmpeg](https://ffmpeg.org/) | gyan.dev 的 essentials 构建是 **GPLv3** | `src/video.js` 只把它当**外部程序**用 `spawn` 调（抽帧），不链接、不打包。**仓库里不含它的二进制**——需要时自己下到 `<数据目录>/bin/ffmpeg.exe` |
+
+### Legado 的特殊情况（2026-11-18 核对）
+
+`gedoor/legado` 原为 **GPL-3.0** 的安卓阅读器（约 47.2k star）。现在**上游已被作者清空**：
+仓库里只剩一页公告和一张图（`pushed_at` = 2026-05-27），公告承认侵权、承担法律责任并删除全部内容；
+公开报道称两位开发者因**侵犯著作权罪**被判有期徒刑二年 / 一年九个月并处罚金，涉侵权作品近 4000 部
+（[小众软件报道](https://www.appinn.com/xxdu-app-developers-jailed-for-copyright-infringement/)）。
+所以 GPL-3.0 只能按历史说法记，**仓库里已经没有可核对的 LICENSE 文件**。
+
+这不改变我们的用法（不打包、不分发、只调本地接口），但改变**风险的性质**：
+书源（顶点小说 / 玄幻阁 / 笔趣阁这类）抓的是盗版站，**自用也有著作权风险**，
+而且这条风险不是版权纠纷，是刑事案例。自用、不传播、不售卖是我们这边的底线；要不要继续用，是使用者的选择。
 
 ## 只读过思路的
 
