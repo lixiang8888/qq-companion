@@ -103,7 +103,9 @@ GET /getBookContent?url=<bookUrl>&index=N
 
 ## 五、运维：一个桌面脚本
 
-`C:\Users\19472\Desktop\启动全部.bat` → 调 `D:\大烧货\apkstart\启动阅读器.ps1`（7 步：DSH → SnowLuma → adb → 模拟器 → 拉起 Legado → 点开 Web 服务 → 体检）。都开着时会全部跳过，只体检。
+`C:\Users\19472\Desktop\启动全部.bat` → 调 `D:\大烧货\apkstart\启动阅读器.ps1`（7 步：DSH → **QQ + SnowLuma** → adb → 模拟器 → 拉起 Legado → 点开 Web 服务 → 体检）。都开着时会全部跳过，只体检。
+
+**QQ 是 2026-11-19 才加进去的**：原来它不在脚本里，得手动开——而 SnowLuma 只是网关，QQ 本体不在，它 hook 不到东西，表现是「三步都显示启动成功，但一条消息都收不到」。检测靠 `Get-Process QQ`，已开就跳过；没开就 `Start-Process C:\Program Files\Tencent\QQNT\QQ.exe`（等它自动登录）。顺序是 QQ → SnowLuma 更稳，但不是必须：实测 SnowLuma 先起 3 分钟、QQ 后起，它仍会等到 QQ 出现再 hook。
 
 **她已经能自己拉这个脚本了**（2026-11-19）：`readNovelIfBored()` 连不上后端时调一次这个 ps1，
 `detached` 拉起、不堵心跳，然后把 `wakeAt` 落盘做 **30 分钟冷却**（配置坏了不能每十分钟拉一次）。
