@@ -3,6 +3,7 @@
 // 刻意不用 DSH 会话（session/prompt + remote.mux）：陪伴体要自己掌握「记多少、什么时候压」，
 // 而且插件进程内调用 ctx.llm 已经足够。少一层协议，就少一处会随 DSH 升级而坏的地方。
 
+import { spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -142,6 +143,9 @@ const DEFAULT_CONFIG = {
   search: { enabled: false, key: '', maxPerDay: 5 },
   // 看视频：抽帧要 ffmpeg。ffmpeg 留空则依次找 <dataDir>/bin/ 和 PATH。
   video: { enabled: true, ffmpeg: '', maxSeconds: 90 },
+  // 她读书的后端（安卓模拟器里的 Legado）。base 留空用 novel.js 的默认地址；
+  // launcher 留空 = 后端挂了只记一条日志，不去拉（不想让插件自己开模拟器的人就这么配）。
+  novel: { base: '', launcher: '', cooldownMinutes: 30 },
   // 聊天原文归档（按月一个 jsonl）：压缩之后能翻回原话的唯一地方。
   transcript: { enabled: true },
 };
@@ -162,7 +166,7 @@ export function apply(ctx, config = {}) {
   }
 }
 
-export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, log = console, autoStart = true, fetchImpl = globalThis.fetch, mergeWindowMs = DEFAULT_WINDOW_MS, later = (fn, ms) => setTimeout(fn, ms), clear = (h) => clearTimeout(h), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), screenReader = readScreen, maxPerceptionRecords = MAX_RECORDS } = {}) {
+export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, log = console, autoStart = true, fetchImpl = globalThis.fetch, spawnImpl = spawn, mergeWindowMs = DEFAULT_WINDOW_MS, later = (fn, ms) => setTimeout(fn, ms), clear = (h) => clearTimeout(h), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), screenReader = readScreen, maxPerceptionRecords = MAX_RECORDS } = {}) {
   if (!ctx || typeof ctx !== 'object') throw new Error('缺少 DSH 上下文（apply(ctx) 没拿到 ctx）');
   mkdirSync(dataDir, { recursive: true });
   const configFile = join(dataDir, 'config.json');
@@ -805,6 +809,39 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   let reading = false;
 
   /**
+   * 读书后端连不上时，自己把它拉起来一次。
+   *
+   * 那套东西（模拟器 → App → 「Web service」开关）在 App 每次重启后都会断电：
+   * 开关不持久化，所以冷启动后 1122 没人听，读一章就只会一行 warn。
+   * 拉的是他自己的 7 步脚本（幂等：在跑的都跳过，缺的补上），detached 不堵心跳。
+   * 有冷却：配置坏了不能每十分钟拉一次。
+   */
+  function wakeReader(t) {
+    const st = novelStore.load();
+    const wait = (Number(config.novel?.cooldownMinutes) || 30) * 60e3;
+    if (t - (Number(st.wakeAt) || 0) < wait) return;
+    novelStore.save({ ...st, wakeAt: t });
+    const launcher = String(config.novel?.launcher || '');
+    if (!launcher) {
+      log.warn?.('读书后端连不上，而且没配 novel.launcher：没法自己去拉阅读器');
+      return;
+    }
+    if (!existsSync(launcher)) {
+      log.warn?.(`读书后端连不上，启动脚本也不在：${launcher}`);
+      return;
+    }
+    try {
+      // detached + stdio ignore：脚本自己会等模拟器起来、点开关、体检（10~60 秒），别堵这里。
+      spawnImpl('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcher], {
+        detached: true, stdio: 'ignore', windowsHide: true,
+      }).unref?.();
+      log.info?.('读书后端没起来，正在自己拉（模拟器 / App / Web 服务）');
+    } catch (e) {
+      log.warn?.(`拉阅读器失败：${e.message}`);
+    }
+  }
+
+  /**
    * 她自己去读书：他很久没吭声、心情还行、今天读得不多 → 接上次那本往下读一章。
    * 读完只留一句感想（进 novel.json，注入成一「你自己在看什么」）；
    * 正文读完就丢——两千多字常驻不值得，也不该进历史。
@@ -823,7 +860,15 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     reading = true;
     try {
       const client = createNovel({ base: config.novel?.base || undefined, fetchImpl });
-      const shelf = await client.shelf();
+      let shelf;
+      try {
+        shelf = await client.shelf();
+      } catch (e) {
+        // 后端没起来（模拟器没跑 / App 没起 / Web service 开关是关的）。拉一次，这一轮跳过，
+        // 下一次心跳它会自己好——不该让「后端关了」变成「她再也不读书」。
+        wakeReader(t);
+        return novelStore.load();
+      }
       let books = st.books || {};
       // 读哪本：接着读 / 重读 / 换一本 / 追更等着。判据在 nextRead 里，宿主只管执行。
       const pick = nextRead({ shelf, books, state: st });
@@ -900,7 +945,9 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
             role: 'user',
             text: `《${book.name}》${title ? ` ${title}` : ''}\n\n【正文】\n${ch.text.slice(0, READ_MAX_CHARS)}\n\n你现在的状态：${moodWord}${recent ? `\n刚才的聊天：\n${recent}` : ''}${before ? `\n这本书前几章你的反应：\n${before}` : ''}`,
           }],
-          maxTokens: 200,
+          // 200 实测会把 `[读:…]` 标记切断（推理模型先吃掉预算）：宁可多给，也不能让她
+          // 写完了感想却没留下标签——那是「有感觉但记成无感」。
+          maxTokens: 400,
         }) || '').trim();
       } catch (e) {
         log.warn?.(`读后感没写出来：${e.message}`);
@@ -990,6 +1037,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       return `【你翻回去看的一段】《${book.name}》第 ${ch.index + 1} 章「${ch.title}」\n${body.text.slice(0, READ_MAX_CHARS)}`;
     } catch (e) {
       log.warn?.(`翻书没翻成：${e.message}`);
+      wakeReader(now());
       return '（你想翻书，但读书后端没连上。就说没翻到，别编。）';
     }
   }
@@ -1044,7 +1092,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
           role: 'user',
           text: `这两天你读到的：\n${recs}\n\n你现在的状态：${moodWord}${dropped.length ? `\n你弃过的书：\n${dropped.join('\n')}` : ''}`,
         }],
-        maxTokens: 200,
+        // 和读后感同一条账：推理模型先吃掉预算，200 会把 100 字的念头从中间切断。
+        maxTokens: 300,
       }) || '').replace(/\s+/g, ' ').trim();
 
       // 回「没有」也记下今天问过了：不被追问的东西才是她自己的。

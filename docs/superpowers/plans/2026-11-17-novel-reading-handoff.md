@@ -105,6 +105,17 @@ GET /getBookContent?url=<bookUrl>&index=N
 
 `C:\Users\19472\Desktop\启动全部.bat` → 调 `D:\大烧货\apkstart\启动阅读器.ps1`（7 步：DSH → SnowLuma → adb → 模拟器 → 拉起 Legado → 点开 Web 服务 → 体检）。都开着时会全部跳过，只体检。
 
+**她已经能自己拉这个脚本了**（2026-11-19）：`readNovelIfBored()` 连不上后端时调一次这个 ps1，
+`detached` 拉起、不堵心跳，然后把 `wakeAt` 落盘做 **30 分钟冷却**（配置坏了不能每十分钟拉一次）。
+配置在 `<数据目录>/config.json`：
+
+```json
+"novel": { "base": "http://127.0.0.1:1123", "launcher": "D:\大烧货\apkstart\启动阅读器.ps1", "cooldownMinutes": 30 }
+```
+
+`launcher` 留空 = 不自动拉（只记一条日志）。所以「她半夜想看书、模拟器没开」现在会自己开，
+下一次心跳（≤10 分钟）就能读。**注意它不会自己关模拟器**：常驻约 3 GB 内存。
+
 **四个坑**（前三个都实测踩过，别"优化"掉）：
 
 1. `.ps1` 必须带 **UTF-8 BOM**，否则 `powershell.exe`（5.1）按 ANSI 读，中文变乱码直接语法报错。注意：某些编辑器/补丁工具会**把 BOM 删掉**，改完要查前三字节是不是 `EF BB BF`。

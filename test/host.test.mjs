@@ -418,6 +418,60 @@ test('想一想：她回「没有」就不写念头，但当天也不追问了',
   assert.equal(ctx.calls.length, calls);
 });
 
+// ---- 2026-11-19：后端没起来时她自己拉一次（有冷却） ----
+
+function wakeSetup({ launcher = true } = {}) {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-wake-'));
+  const file = join(dataDir, '启动阅读器.ps1');
+  if (launcher) writeFileSync(file, '# 假的启动脚本\n');
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+    enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' },
+    novel: { base: 'http://127.0.0.1:1123', launcher: launcher ? file : '', cooldownMinutes: 30 },
+  }));
+  // 只有读书接口挂掉，别的请求（发消息那些）照常成功
+  const fetchImpl = async (url) => {
+    if (String(url).includes('getBookshelf')) throw new Error('ECONNREFUSED');
+    return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
+  };
+  let clock = new Date(2026, 0, 1, 9, 0, 0).getTime();
+  const ctx = fakeCtx({ replies: ['嗯'] });
+  const spawned = [];
+  const spawnImpl = (cmd, args, opts) => { spawned.push({ cmd, args, opts }); return { unref() {} }; };
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl, spawnImpl });
+  return { host, spawned, dataDir, tick: (ms) => { clock += ms; } };
+}
+
+test('读书后端没起来：她自己拉一次启动脚本，30 分钟内不重复拉', async () => {
+  const { host, spawned, dataDir, tick } = wakeSetup();
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(Date.now() / 1000) });
+  tick(3 * 3600e3);
+
+  const st = await host.novel.read();
+  assert.equal(spawned.length, 1, '连不上就该去拉');
+  assert.equal(spawned[0].cmd, 'powershell.exe');
+  assert.match(spawned[0].args.at(-1), /启动阅读器\.ps1/);
+  assert.equal(spawned[0].opts.detached, true, '不能堵住心跳');
+  assert.ok(st.wakeAt > 0, '拉过的时刻要落盘，不然重启就忘了冷却');
+
+  // 十分钟后又连不上：冷却中，不重复拉
+  tick(10 * 60e3);
+  await host.novel.read();
+  assert.equal(spawned.length, 1);
+
+  // 冷却过了还连不上：再拉一次
+  tick(31 * 60e3);
+  await host.novel.read();
+  assert.equal(spawned.length, 2);
+});
+
+test('读书后端没起来又没配启动脚本：只记日志，不瞎猜路径', async () => {
+  const { host, spawned, tick } = wakeSetup({ launcher: false });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(Date.now() / 1000) });
+  tick(3 * 3600e3);
+  await host.novel.read();
+  assert.equal(spawned.length, 0);
+});
+
 test('面板操作：忘记一条、置顶一条、再找回', async () => {
   const { ctx, host } = setup();
   await host.memory.block({ text: '他喜欢猫', userId: '42' });

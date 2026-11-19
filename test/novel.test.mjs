@@ -407,6 +407,20 @@ test('每轮只注入一条读书的内容：念头 > 对书态度 > 读到哪',
   assert.deepEqual(mindLine({}, NOON), { text: '', at: NOON, ttl: 12 * H });
 });
 
+test('反应解析：标记被 token 上限截断时，残片剥掉、不硬猜标签', () => {
+  const body = '他紧紧攥着那封信，等了整整一夜。';
+  const r = parseReaction('「那封信」那段看得我心里发闷，胸口闷闷的。 [读', body);
+  assert.equal(r.thought, '「那封信」那段看得我心里发闷，胸口闷闷的。', '感想里不能留残片');
+  assert.equal(r.label, '无感', '标签被切掉了就认输出来的——不猜');
+  assert.equal(r.anchored, true, '锚点还在');
+  assert.equal(reactionEmotion(r), null);
+  // 完整标记照旧能解析
+  const ok = parseReaction('「那封信」看得我发闷。 [读:闷 2 继续]', body);
+  assert.equal(ok.label, '闷');
+  assert.equal(ok.intensity, 2);
+  assert.equal(ok.thought, '「那封信」看得我发闷。');
+});
+
 test('最近几章的反应：新的在前、能按时间切、跨书汇总', () => {
   const st = {
     books: {

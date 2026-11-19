@@ -116,6 +116,9 @@ export const REACTIONS = {
 const INTENSITY = { 1: 0.3, 2: 0.5, 3: 0.75 };
 const RE_MARK = /\[读\s*[:：]\s*(爽|触动|酸|闷|尬|烦|无感)\s*([1-3])?\s*(继续|敷衍|想弃)?\s*\]/;
 const RE_ANY = /\[读[^\]]*\]/g;
+// 模型在 maxTokens 处被切断时，尾巴是「[读」这种没闭合的残片（实测见过）。
+// 它不是她的感想，剥掉——留在感想里，注入时就是一段看不懂的垃圾。
+const RE_CUT = /\[读[^\]]*$/;
 
 /** 去掉空白和标点再比：模型引原文时常顺手改标点。 */
 const norm = (s) => String(s ?? '').replace(/[\s\u3000「」『』“”"'.,，。!！?？:：;；…—\-]/g, '');
@@ -143,7 +146,7 @@ export function anchorOf(thought, chapterText = '') {
 export function parseReaction(reply, chapterText = '') {
   const raw = String(reply ?? '');
   const hit = RE_MARK.exec(raw);
-  const stripped = raw.replace(RE_ANY, '').replace(/\s+/g, ' ').trim();
+  const stripped = raw.replace(RE_ANY, '').replace(RE_CUT, '').replace(/\s+/g, ' ').trim();
   const anchor = anchorOf(stripped, chapterText);
   return {
     thought: stripped.slice(0, 120),
