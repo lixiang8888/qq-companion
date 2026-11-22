@@ -846,9 +846,11 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       return;
     }
     try {
-      // detached + stdio ignore：脚本自己会等模拟器起来、点开关、体检（10~60 秒），别堵这里。
+      // 不要 detached：Windows 上 detached=true 会给子进程加 DETACHED_PROCESS，
+      // powershell.exe 在这种无控制台环境里会立刻退出（exit 0，脚本一行都没跑）——
+      // 真机上连试两次都这样，脚本在、日志却没长一行。stdio ignore 已经不会堵心跳。
       spawnImpl('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcher], {
-        detached: true, stdio: 'ignore', windowsHide: true,
+        stdio: 'ignore', windowsHide: true,
       }).unref?.();
       log.info?.('读书后端没起来，正在自己拉（模拟器 / App / Web 服务）');
     } catch (e) {

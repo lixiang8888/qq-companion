@@ -450,7 +450,11 @@ test('读书后端没起来：她自己拉一次启动脚本，30 分钟内不�
   assert.equal(spawned.length, 1, '连不上就该去拉');
   assert.equal(spawned[0].cmd, 'powershell.exe');
   assert.match(spawned[0].args.at(-1), /启动阅读器\.ps1/);
-  assert.equal(spawned[0].opts.detached, true, '不能堵住心跳');
+  // 2026-11-22 真机踩过：detached=true 在 Windows 上给 DETACHED_PROCESS，
+  // powershell 在这种无控制台环境里立刻退出（exit 0，脚本一行都没跑，日志都不长）。
+  // 不能堵心跳靠的是 stdio ignore，不是 detached。
+  assert.notEqual(spawned[0].opts.detached, true, 'detached 会让 powershell 静默不执行');
+  assert.equal(spawned[0].opts.stdio, 'ignore', '不能把心跳堵在这一步');
   assert.ok(st.wakeAt > 0, '拉过的时刻要落盘，不然重启就忘了冷却');
 
   // 十分钟后又连不上：冷却中，不重复拉
