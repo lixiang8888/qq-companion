@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHost } from '../src/host.js';
+import { BUNDLED_LAUNCHER, createHost } from '../src/host.js';
 import { appendTranscript } from '../src/transcript.js';
 import { apply } from '../src/host.js';
 import { initState } from '../src/affect/core.js';
@@ -466,6 +466,29 @@ test('读书后端没起来：她自己拉一次启动脚本，30 分钟内不�
   tick(31 * 60e3);
   await host.novel.read();
   assert.equal(spawned.length, 2);
+});
+
+test('配置里的启动脚本被删了：用仓库里的副本兜底（真机丢过一次）', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-wake-fallback-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+    enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' },
+    novel: { base: 'http://127.0.0.1:1123', launcher: join(dataDir, '不在了.ps1'), cooldownMinutes: 30 },
+  }));
+  const fetchImpl = async (url) => {
+    if (String(url).includes('getBookshelf')) throw new Error('ECONNREFUSED');
+    return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
+  };
+  let clock = new Date(2026, 0, 1, 9, 0, 0).getTime();
+  const ctx = fakeCtx({ replies: ['嗯'] });
+  const spawned = [];
+  const spawnImpl = (cmd, args, opts) => { spawned.push({ cmd, args, opts }); return { unref() {} }; };
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl, spawnImpl });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(Date.now() / 1000) });
+  clock += 3 * 3600e3;
+  await host.novel.read();
+  assert.equal(spawned.length, 1, '配置里的脚本没了，也不能让她再也拉不起来');
+  assert.equal(spawned[0].args.at(-1), BUNDLED_LAUNCHER, '改跑仓库里的副本');
+  assert.equal(spawned[0].opts.stdio, 'ignore');
 });
 
 test('读书后端没起来又没配启动脚本：只记日志，不瞎猜路径', async () => {

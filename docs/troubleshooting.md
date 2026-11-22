@@ -62,3 +62,30 @@ node scripts/preflight.mjs --online      # OneBot 通不通（只读）
   那一句在 `createHost` 中段，抛了之后面板/主动搭话/启动诊断全不执行，而网关因为更早启动还在跑。
   现在 `inject = ['llm', 'webServer']` 已经写了；如果你改过清单，先查这里。
 - 空回复：模型返回空串时不发送、也不写历史，看起来像"没反应"。真出现请抓 `session.size` 有没有涨。
+
+## 读书后端起不来（她拉不起模拟器）
+
+她的读书后端在模拟器里（Legado），后端连不上时插件会自己去拉启动脚本。
+判断她到底试没试：看 
+ovel.json 的 wakeAt——有值就代表尝试过（30 分钟冷却，只写时刻不写结果）。
+
+排查顺序：
+
+1. **看脚本日志**：D:\大烧货\apkstart\launcher.log。每一步都写了时间戳，卡在哪一步一目了然。
+2. **配置里的脚本还在不在**：config.json 的 
+ovel.launcher。这个文件在仓库外，**真机上被删过一次**，
+   丢了以后 wakeAt 照样会写、模拟器永远起不来。
+   现在配置路径不存在时会自动改用仓库里的副本 scripts/启动阅读器.ps1（留这份就是为了这个）。
+3. **手动跑一遍**：
+   `powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File "D:\大烧货\apkstart\启动阅读器.ps1"
+   `
+   冷启约 40 秒；已经在跑且后端通时 0 秒返回。
+4. **体检**：Invoke-RestMethod http://127.0.0.1:1123/getBookshelf，能拿到书架就通了。
+
+两个踩过的坑（都已修）：
+
+- **启动脚本被删**：只打一行日志，什么都没发生。所以仓库里留了副本。
+- **spawn 用了 detached: true**：Windows 上会给子进程 DETACHED_PROCESS，
+  powershell.exe 在这种无控制台环境里**立刻退出（exit 0，脚本一行都没跑）**——
+  表现是日志里"正在自己拉"出现了、脚本日志却一行没长。不能堵心跳靠的是 stdio: 'ignore'，不是 detached。

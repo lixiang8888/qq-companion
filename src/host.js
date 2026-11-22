@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { createJsonStore } from './store.js';
 import { createOneBot, sendImage, sendText } from './onebot.js';
@@ -52,6 +53,12 @@ import { createPvz, findBrowser } from './pvz.js';
 import { choosePastime } from './pastime.js';
 
 export const name = 'qq-companion';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+// 读书自启脚本的仓库副本。真机上它放 D:\大烧货\apkstart\启动阅读器.ps1（配置里指过去），
+// 那边被删过一次，结果她再也拉不起模拟器——所以这里留一份，配置里的路径不在时用它兜底。
+export const BUNDLED_LAUNCHER = join(HERE, '..', 'scripts', '启动阅读器.ps1');
+
 // cordis 的 inject 是「必填服务」清单：只有列在这里的服务，访问时才不会抛，
 // 而且没就绪时插件不会 apply。面板要 webServer，所以必须写上——少写一个，
 // ctx.webServer 会抛 "cannot get property without inject"，createHost 从那一行起静默中断。
@@ -836,14 +843,21 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const wait = (Number(config.novel?.cooldownMinutes) || 30) * 60e3;
     if (t - (Number(st.wakeAt) || 0) < wait) return;
     novelStore.save({ ...st, wakeAt: t });
-    const launcher = String(config.novel?.launcher || '');
+    // launcher 留空 = 不想让插件自己开模拟器（明确的opt-out，不是缺配置）。
+    let launcher = String(config.novel?.launcher || '');
     if (!launcher) {
       log.warn?.('读书后端连不上，而且没配 novel.launcher：没法自己去拉阅读器');
       return;
     }
     if (!existsSync(launcher)) {
-      log.warn?.(`读书后端连不上，启动脚本也不在：${launcher}`);
-      return;
+      // 真机上这个脚本被删过一次，她从此再也拉不起模拟器。用仓库里的副本兜底。
+      const bundled = existsSync(BUNDLED_LAUNCHER) ? BUNDLED_LAUNCHER : '';
+      if (!bundled) {
+        log.warn?.(`读书后端连不上，启动脚本也不在：${launcher}`);
+        return;
+      }
+      log.warn?.(`启动脚本不在了（${launcher}），改用仓库里的副本：${bundled}`);
+      launcher = bundled;
     }
     try {
       // 不要 detached：Windows 上 detached=true 会给子进程加 DETACHED_PROCESS，
