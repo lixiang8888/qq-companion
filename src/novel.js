@@ -217,7 +217,7 @@ export function createNovel(opts) {
 
 // ---- 什么时候该看书，看完怎么记 ----
 
-export const BORED_QUIET_MS = 2 * 3600e3;   // 他安静这么久，她才开始无聊
+export const BORED_QUIET_MS = 30 * 60e3;    // 他安静这么久，她才开始无聊（2026-11-22 从 2 小时缩到半小时）
 export const READ_GAP_MS = 10 * 60e3;       // 两章之间至少隔一次心跳，别在一个 tick 里连读
 export const READS_PER_DAY = 80;            // 一天最多读这么多章（他定的）
 export const READ_MAX_CHARS = 3000;         // 喂给模型的正文上限

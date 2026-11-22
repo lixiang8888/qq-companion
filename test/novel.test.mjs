@@ -136,8 +136,9 @@ const NOON = new Date(2026, 0, 1, 12, 0, 0).getTime();
 test('无聊的判据：他安静够久、今天读得不多、心情还行', () => {
   const base = { now: NOON, lastUserAt: NOON - 3 * H, lastReadAt: NOON - 1 * H, readsToday: 0, mood: 0.6 };
   assert.equal(isBored(base), true);
-  // 他两小时前刚说过话：还不算无聊
-  assert.equal(isBored({ ...base, lastUserAt: NOON - 1 * H }), false);
+  // 他半小时才刚说过话：还在当场，不读。缩到 30 分钟是 2026-11-22 定的（原来要等 2 小时）
+  assert.equal(isBored({ ...base, lastUserAt: NOON - 20 * 60e3 }), false);
+  assert.equal(isBored({ ...base, lastUserAt: NOON - 40 * 60e3 }), true);
   // 十分钟内刚读过：不在同一个心跳里连读
   assert.equal(isBored({ ...base, lastReadAt: NOON - 5 * 60e3 }), false);
   // 今天读够了（上限 80 章）
