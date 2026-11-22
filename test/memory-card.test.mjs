@@ -223,3 +223,20 @@ test('系统里真发生过的事算有根', async () => {
   const card = remember(createCard(0), '今天他走了很久', { now: 1, source: 'seen' });
   assert.equal(isGrounded(card.records[0]), true);
 });
+
+// 真机上她说过「昨天」讲的是两天前的事。记忆标签原来按 24 小时算，
+// 00:10 看前天晚上 23:30 的事只有 1 天多，就被标成了「昨天」。
+test('记忆标签按日历日算：00:10 看前天晚上，是「前天」不是「昨天」', () => {
+  const at = new Date(2026, 5, 1, 23, 30).getTime(); // 6-01 23:30
+  const card = remember(createCard(0), '他说他小时候在河边长大，家里还养过一条狗', { now: at, owner: true });
+  assert.match(render(card, { now: at + 20 * 60e3 }), /\[今天\]/);
+  assert.match(render(card, { now: new Date(2026, 5, 3, 0, 10).getTime() }), /\[前天\]/);
+});
+
+test('记忆标签：过了午夜也还是「昨天」，不会变成「2 天前」', () => {
+  const card = remember(createCard(0), '他说他小时候在河边长大，家里还养过一条狗', {
+    now: new Date(2026, 4, 31, 8, 0).getTime(), // 5-31 早
+    owner: true,
+  });
+  assert.match(render(card, { now: new Date(2026, 5, 1, 23, 50).getTime() }), /\[昨天\]/);
+});

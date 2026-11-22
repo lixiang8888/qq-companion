@@ -62,7 +62,11 @@ const MEMORY_PROTOCOL = `【关于记忆的规矩】
 // 加这一条是因为她真的错过：前天晚上的抱怨，她第二天说成「刚还嫌我不理你」。
 const TIME_NOTE = `【关于时间】
 对话里某句前面带括号（比如「（昨天 21:44）」）的，那是那句话说的时刻；不带括号的就是紧接着上一句。
-说「刚刚」「今天」「昨天」之前先看那个括号——别把前天的事说成刚发生。`;
+说「刚刚」「今天」「昨天」之前先看那个括号——别把前天的事说成刚发生。
+摘要里如果写着「今天/昨天/前天」，那是当时那天写的，现在别照抄——要说时间就直接说几月几号。`;
+
+/** 压缩摘要时把「今天是几号」写进提示：日期不能让模型自己推。 */
+const monthDay = (t) => { const d = new Date(Number(t) || Date.now()); return `${d.getMonth() + 1}月${d.getDate()}日`; };
 
 // 尺度：她要会不好意思，而不是什么都接。
 // 这不是审查——一个没有边际的人撩起来没有推拉；她说得比他还露，话题到那儿就平了。
@@ -140,8 +144,9 @@ export function createLocalSession({
     try {
       // 不要传 temperature：有些推理模型会直接拒绝这个参数，而主对话（不传）是好的——
       // 结果就是「聊天正常、压缩每次都失败」，且失败被静默吞掉。
+      // 摘要里一律写具体日期：相对词（今天/昨天）在摘要里会冻住，过一天就是假话。
       next = await complete({
-        system: '把下面这段对话压成一段摘要，给之后的自己看：保留关系变化、约定、他在意的事、没说完的话题，以及每件事大概是什么时候（今天/昨天/几号）；不要评价、不要编。不超过 200 字。',
+        system: `${monthDay(now())}。把下面这段对话压成一段摘要，给之后的自己看：保留关系变化、约定、他在意的事、没说完的话题，以及每件事是哪天——写具体日期（比如「11月20日」），不许写今天/昨天/前天/N天前/昨晚/刚刚，那些过一天就错了。不要评价、不要编。不超过 200 字。`,
         messages: [{ role: 'user', text: transcript }],
         maxTokens: summaryMaxTokens,
       });
@@ -185,14 +190,27 @@ export function createLocalSession({
     if (text.length <= SUMMARY_MAX_CHARS) return text;
     try {
       const squeezed = await complete({
-        system: '把下面这段对话摘要再压一次，保留关系变化、约定、他在意的事、没说完的话题，以及每件事大概是什么时候；不要评价、不要编。不超过 400 字。',
+        system: `${monthDay(now())}。把下面这段对话摘要再压一次，保留关系变化、约定、他在意的事、没说完的话题，以及每件事是哪天——写具体日期，不许写今天/昨天/前天/N天前/昨晚。不要评价、不要编。不超过 400 字。`,
         messages: [{ role: 'user', text }],
         maxTokens: summaryMaxTokens,
       });
       const t = String(squeezed || '').trim();
-      if (t) return t.length > SUMMARY_MAX_CHARS ? t.slice(-SUMMARY_MAX_CHARS) : t;
+      if (t) return headCut(t);
     } catch { /* 压不动就走截断 */ }
-    return text.slice(-SUMMARY_MAX_CHARS);
+    return headCut(text);
+  }
+
+  /**
+   * 超长时保最新的，但从整段/整句的开头接上。
+   * 截在半个词上会留下「昨晚」这种没前文的尾巴，她照着说就会把时间说错。
+   */
+  function headCut(text) {
+    if (text.length <= SUMMARY_MAX_CHARS) return text;
+    const tail = text.slice(-SUMMARY_MAX_CHARS);
+    const para = tail.indexOf('\n');
+    if (para >= 0 && para < 120) return tail.slice(para + 1).trim();
+    const sentence = tail.search(/[。！？]/);
+    return sentence >= 0 && sentence < 120 ? tail.slice(sentence + 1).trim() : tail;
   }
 
   return {

@@ -675,7 +675,10 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   /** 她看得见「现在几点」。没有这一行，她只能猜，而猜出来的时间是假的。 */
   function clockText(t = now()) {
     const d = new Date(t);
-    return `${d.getMonth() + 1}月${d.getDate()}日 周${'日一二三四五六'[d.getDay()]} ${clockOf(t)}`;
+    const md = (x) => `${x.getMonth() + 1}月${x.getDate()}日`;
+    // 「昨天」「前天」直接算成日期给她：让她自己从今天减一天，真机上减错过——两天前的事她说成昨天。
+    const back = (n) => md(new Date(d.getFullYear(), d.getMonth(), d.getDate() - n));
+    return `${md(d)} 周${'日一二三四五六'[d.getDay()]} ${clockOf(t)}（昨天 ${back(1)}，前天 ${back(2)}）`;
   }
   const clockLine = (t) => `此时：${clockText(t)}`;
 

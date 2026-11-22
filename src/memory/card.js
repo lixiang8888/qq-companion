@@ -352,11 +352,14 @@ export function render(card, { now = 0, maxChars = 2200, query = '' } = {}) {
   const seen = new Set();
   const lines = [];
   let used = 0;
+  // 按日历日算，不按 24 小时算：00:10 看前天晚上的事，除以 24 小时只有 1 天多，会标成「昨天」。
+  const midnight = (t) => { const d = new Date(Number(t) || 0); d.setHours(0, 0, 0, 0); return d.getTime(); };
+  const today0 = midnight(now);
   for (const r of rankForPrompt(card, { now, query })) {
     if (seen.has(r.id)) continue;
     seen.add(r.id);
-    const days = Math.max(0, Math.round((now - r.lastSeenAt) / DAY_MS));
-    const when = days === 0 ? '今天' : days === 1 ? '昨天' : days < 7 ? `${days} 天前` : `${Math.floor(days / 7)} 周前`;
+    const days = Math.max(0, Math.round((today0 - midnight(r.lastSeenAt)) / DAY_MS));
+    const when = days === 0 ? '今天' : days === 1 ? '昨天' : days === 2 ? '前天' : days < 7 ? `${days} 天前` : `${Math.floor(days / 7)} 周前`;
     // 一条记忆带两样东西：它现在有多清楚，以及记下它时我的心情。
     const bits = [];
     if (r.clarity !== 'vivid') bits.push(CLARITY_LABEL[r.clarity]);

@@ -15,7 +15,7 @@ function fake({ reply = '嗯', summary = '早先聊过猫' } = {}) {
 
 test('压缩失败：留下原因，不丢历史（以前这里什么都没记）', async () => {
   const complete = async ({ system }) => {
-    if (/摘要/.test(system || '')) throw new Error('boom: 400');
+    if (/压成一段摘要/.test(system || '')) throw new Error('boom: 400');
     return '嗯';
   };
   const s = createLocalSession({ complete, system: 'x', compactAt: 4, keepRecent: 2 });
@@ -27,7 +27,7 @@ test('压缩失败：留下原因，不丢历史（以前这里什么都没记�
 
 test('压缩一直失败：到三倍阈值就丢最老的，并在摘要里说明', async () => {
   const complete = async ({ system }) => {
-    if (/摘要/.test(system || '')) throw new Error('boom');
+    if (/压成一段摘要/.test(system || '')) throw new Error('boom');
     return '嗯';
   };
   const s = createLocalSession({ complete, system: 'x', compactAt: 4, keepRecent: 2 });
@@ -309,7 +309,7 @@ test('压缩的入参也带时间，摘要才不会把旧事洗成永远新鲜',
   const summaryCall = calls.find((c) => /压成一段摘要/.test(c.system || ''));
   assert.ok(summaryCall, '应该触发压缩');
   assert.match(summaryCall.messages[0].text, /前天 21:44/);
-  assert.match(summaryCall.system, /什么时候/);
+  assert.match(summaryCall.system, /具体日期/, '摘要里写具体日期，不写会过期的「今天/昨天」');
 });
 
 // ---- 留多少原文：按时间，不按条数 ----
@@ -372,6 +372,39 @@ test('条数硬上限：一天之内也不会无限涨', async () => {
   for (let i = 0; i < 10; i += 1) { clock += 60e3; await s.prompt('p', `第${i}句`); }
   assert.ok(s.snapshot().compactions > 0, '到了硬上限还是要压');
   assert.ok(s.size <= 7, `一天之内的条数也得有闸，实际 ${s.size}`);
+});
+
+// 真机上出过的事：她把两天前的事说成「昨天」。根子在摘要——压缩时让模型写「今天/昨天」，
+// 那句话就冻在摘要里，过一天变成假话，而摘要每轮原样重放。
+test('压缩摘要里要写具体日期：日期由代码给，不许模型自己推', async () => {
+  const sys = [];
+  const complete = async ({ system }) => { sys.push(system); return /压成一段摘要/.test(system || '') ? '11月8日他去面试了。' : '嗯'; };
+  const s = createLocalSession({ complete, system: '', compactAt: 4, keepRecent: 2, now: () => NOW });
+  for (let i = 0; i < 4; i += 1) await s.prompt('p', `第${i}句`);
+  const prompt = sys.find((x) => /压成一段摘要/.test(x || ''));
+  assert.ok(prompt, '应该压缩过');
+  assert.match(prompt, /11月8日/, '「今天是几号」要写进提示');
+  assert.match(prompt, /写具体日期/);
+  assert.doesNotMatch(prompt, /今天\/昨天\/几号/, '旧提示词正是让大家写会过期的「今天/昨天」');
+});
+
+test('摘要里的旧时间词：告诉她那是当时写的，别照抄', async () => {
+  const f = fake();
+  const s = createLocalSession({ complete: f.complete, system: '', initial: { summary: '昨天他带我去吃了火锅。' } });
+  await s.prompt('p', '在吗');
+  const sys = f.calls[0].system;
+  assert.match(sys, /摘要里如果写着「今天\/昨天\/前天」/);
+  assert.match(sys, /别照抄/);
+});
+
+test('摘要超长截断：从整段开头接上，不留半句话', async () => {
+  const long = `${'a'.repeat(100)}\n${'b'.repeat(1100)}\n${'最新'.repeat(10)}`;
+  const complete = async ({ system }) => (/压成一段摘要|再压一次/.test(system || '') ? long : '嗯');
+  const s = createLocalSession({ complete, system: '', compactAt: 4, keepRecent: 2 });
+  for (let i = 0; i < 4; i += 1) await s.prompt('p', `第${i}句`);
+  const summary = s.snapshot().summary;
+  assert.ok(summary.length <= 1200, `摘要 ${summary.length} 字`);
+  assert.match(summary, /^b/, '从下一段开头接，不从半个词中间切');
 });
 
 test('尺度那句话进系统提示：她会不好意思，而且不主动升级', async () => {

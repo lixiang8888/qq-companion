@@ -68,6 +68,15 @@ test('时间旅行：一年后，所有「最近/此刻」的说法都不许留�
   assert.doesNotMatch(sys, /在翻旧聊天记录/, '一小时后就该结束的「此刻」不许还挂着');
 });
 
+test('此时：昨天和前天的日期由代码算好，不让她自己减一天', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-aging-clock-'));
+  seed(dataDir, T - 60e3);
+  const { calls, say } = hostAt(T, dataDir); // T = 2026-06-01 21:00
+  await say();
+  const sys = systemOf(calls[0]);
+  assert.match(sys, /此时：6月1日 周一 21:00（昨天 5月31日，前天 5月30日）/, '真机上她减错过：两天前的事说成昨天');
+});
+
 test('时间旅行：反方向也要成立——刚发生的事必须真的在上下文里', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'qqc-aging-fresh-'));
   seed(dataDir, T - 60e3); // 一分钟前生成的
