@@ -185,6 +185,16 @@ export function createPvz({
     })()`);
   }
 
+  /** 这一关打几波。改的是游戏自己的 maxWaves：过关由引擎判定，不是我们算的。 */
+  async function setWaves(n) {
+    return evaluate(`(() => {
+      if (typeof gameState === 'undefined') return 'no-game';
+      gameState.maxWaves = ${Math.max(1, Math.round(Number(n) || 20))};
+      if (typeof updateWaveDisplay === 'function') updateWaveDisplay();
+      return 'ok';
+    })()`);
+  }
+
   async function close() {
     closing = true;
     try { ws?.close(); } catch { /* 已经断了 */ }
@@ -205,5 +215,5 @@ export function createPvz({
     }
   }
 
-  return { open, close, snapshot, paused, collect, plant, evaluate, get port() { return port; } };
+  return { open, close, snapshot, paused, collect, plant, setWaves, evaluate, get port() { return port; } };
 }

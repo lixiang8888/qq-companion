@@ -47,7 +47,7 @@ import { SCREEN_TTL, readScreen, sanitize, screenLine } from './screen.js';
 import { canSearch, factLine, latestFact, materialLines, noteSearch, search } from './search.js';
 import { parseActions } from './actions.js';
 import { MAX_NAME, NAME_PROMPT, mergeFavorites, namesLine, needNames, parseFavorites, pickSticker } from './stickers.js';
-import { gameEmotion, gameEvents, gameLine, gameTurnPrompt, lawnText, noteGame, parseGameReaction, parseMove, resultText, shouldPlay } from './game.js';
+import { MAX_LEVEL, PLANTS, currentLevel, gameEmotion, gameEvents, gameLine, gameTurnPrompt, lawnText, levelInfo, moveAllowed, noteGame, parseGameReaction, parseMove, resultText, shouldPlay, unlockedPlants } from './game.js';
 import { createPvz, findBrowser } from './pvz.js';
 
 export const name = 'qq-companion';
@@ -1071,11 +1071,10 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
 
   const gameEnabled = () => config.game?.enabled === true;
 
-  /** 问她这一手。系统提示只给规则和价格，不替她想怎么打。 */
-  async function gameTurn(snap, minutesLeft) {
-    const best = gameStore.load().best || null;
+  /** 问她这一手。系统提示只给规则、价格和这一关能用的植物，不替她想怎么打。 */
+  async function gameTurn(snap, minutesLeft, state) {
     const text = await complete({
-      system: `${personaCore()}\n\n${gameTurnPrompt({ best, minutesLeft })}`,
+      system: `${personaCore()}\n\n${gameTurnPrompt({ state, minutesLeft })}`,
       messages: [{ role: 'user', text: `${lawnText(snap)}\n\n这一回合做什么？（大概还剩 ${Math.max(0, Math.round(minutesLeft))} 分钟）` }],
       // 推理模型会先吃掉预算：给宽一点，免得她只写了半句就被切断。
       maxTokens: 300,
@@ -1083,19 +1082,24 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     return String(text || '').trim();
   }
 
-  /** 跑一局。浏览器一定会被关掉；她中途想不出来就按当前战况把这局记下来。 */
+  /** 跑一局：打当前这一关。浏览器一定会被关掉；她中途想不出来就按当前战况把这局记下来。 */
   async function runGame(t0) {
     const cfg = config.game || {};
-    const stepMs = Math.max(1000, Number(cfg.stepMs) || 4000);
-    const maxDecisions = Math.max(10, Number(cfg.maxDecisions) || 120);
-    const maxMinutes = Math.max(2, Number(cfg.maxMinutes) || 25);
+    const stepMs = Math.max(1000, Number(cfg.stepMs) || 8000);
+    const maxDecisions = Math.max(10, Number(cfg.maxDecisions) || 160);
+    const maxMinutes = Math.max(2, Number(cfg.maxMinutes) || 30);
     const bin = String(cfg.edgePath || '') || findBrowser();
     const browser = pvzFactory({ edge: bin, log, now, sleep });
     const deadline = t0 + maxMinutes * 60e3;
+    const before = gameStore.load();
+    const lv = levelInfo(currentLevel(before));
     let snap = null;
     let decisions = 0;
+    let lockedNote = '';
     try {
       await browser.open();
+      // 波数是交给游戏自己的：引擎在第 N 波结束后判胜利，不是我们这边替她算过关。
+      await browser.setWaves(lv.waves);
       // 她想的这几秒不让她被啃：暂停 → 读战况 → 她决定 → 继续 → 种 → 跑一会 → 再暂停。
       await browser.paused(true);
       while (decisions < maxDecisions && now() < deadline) {
@@ -1105,7 +1109,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         if (snap.over || snap.victory) break;
         let reply = '';
         try {
-          reply = await gameTurn(snap, (deadline - now()) / 60e3);
+          reply = await gameTurn(snap, (deadline - now()) / 60e3, before);
         } catch (e) {
           log.warn?.(`打僵尸：这一手想不出来（${e.message}），按现在的战况收摊`);
           break;
@@ -1114,8 +1118,14 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         decisions += 1;
         await browser.paused(false);
         if (move?.kind === 'plant') {
-          const r = await browser.plant(move.plant, move.row, move.col);
-          if (r !== 'ok') log.info?.(`那一手没种上（${r}）：${move.plant} 第 ${move.row + 1} 行第 ${move.col + 1} 列`);
+          if (!moveAllowed(before, move)) {
+            // 没解锁的植物不许种：她这一关只有那几样。下一手提示里会说明。
+            lockedNote = `「${PLANTS[move.plant]?.name || move.plant}」要后面几关才有，这一关你只能用 ${unlockedPlants(before).map((k) => PLANTS[k].name).join('、')}。`;
+            log.info?.(`那一手不算：${lockedNote}`);
+          } else {
+            const r = await browser.plant(move.plant, move.row, move.col);
+            if (r !== 'ok') log.info?.(`那一手没种上（${r}）：${move.plant} 第 ${move.row + 1} 行第 ${move.col + 1} 列`);
+          }
         }
         await sleep(stepMs);
         await browser.paused(true);
@@ -1127,7 +1137,13 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
 
     const t = now();
     const minutes = Math.max(0, (t - t0) / 60e3);
-    const material = resultText(snap, minutes);
+    const material = resultText(snap, minutes, lv.n);
+    // 过了这关会解锁下一关的植物——这是真事，写进她的材料里，之后聊天她才能说。
+    const nextLv = lv.n < MAX_LEVEL ? levelInfo(lv.n + 1) : null;
+    const unlocked = nextLv ? nextLv.plants.filter((k) => !lv.plants.includes(k)).map((k) => PLANTS[k].name) : [];
+    const materialAll = snap.victory && nextLv && unlocked.length
+      ? `${material}，过了第 ${lv.n} 关，解锁了${unlocked.join('、')}`
+      : snap.victory ? `${material}，五关都过了` : material;
     // 局后感想：跟读书同一套锚点规矩——引不出这局里真实发生的事，就不算情绪。
     let text = '';
     const aff = settle(store.load(), t);
@@ -1137,7 +1153,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         system: [
           personaCore(),
           '',
-          '你刚自己打完一局《植物大战僵尸》。写两三句你自己的反应，总共不超过 80 字，按这个顺序：',
+          `你刚自己打完一局《植物大战僵尸》第 ${lv.n} 关。写两三句你自己的反应，总共不超过 80 字，按这个顺序：`,
           '1) 先用「」引这局里的一个具体东西——数字或者哪条道（记录在下面，引里面的字）；',
           '2) 再说这让你怎么想；',
           '3) 最后才是你此刻的滋味。',
@@ -1146,31 +1162,31 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
           '最后单独一行写：`[玩:标签 强度]`',
           '标签从 爽/触动/酸/闷/尬/烦/无感 里选一个；强度 1(轻) 2(中) 3(重)。',
         ].join('\n'),
-        messages: [{ role: 'user', text: `【这局的记录】${material}\n\n你现在的状态：${moodWord}` }],
+        messages: [{ role: 'user', text: `【这局的记录】${materialAll}${lockedNote ? `\n（${lockedNote}）` : ''}\n\n你现在的状态：${moodWord}` }],
         maxTokens: 400,
       }) || '').trim();
     } catch (e) {
       log.warn?.(`打僵尸：局后感想没写出来（${e.message}）`);
     }
     const reaction = text
-      ? parseGameReaction(text, material)
+      ? parseGameReaction(text, materialAll)
       : { thought: '', label: '', intensity: 0, anchor: '', anchored: false };
     const emo = gameEmotion(reaction);
     if (emo) store.save(pushEmotion(aff, emo, t));
     // 强感触进记忆：带热度、封顶 0.5——她自己的游戏不该和他说的话抢记忆权重。
     if (reaction.anchored && (reaction.intensity === 3 || (['爽', '触动', '酸'].includes(reaction.label) && reaction.intensity >= 2))) {
-      memoryStore.save(remember(memoryStore.load(), `打《植物大战僵尸》：${material}，你记住的是「${reaction.anchor}」`, {
+      memoryStore.save(remember(memoryStore.load(), `打《植物大战僵尸》${materialAll}，你记住的是「${reaction.anchor}」`, {
         now: t, source: 'seen', heat: Math.min(0.5, reaction.intensity / 4), mood: aff.emotion,
       }));
     }
     const prev = gameStore.load();
     const day = dayKeyOf(t0);
     const next = noteGame(prev, {
-      now: t, day, snap, minutes, reaction,
+      now: t, day, snap, minutes, reaction, level: lv.n,
       events: gameEvents(prev, snap),
     });
     gameStore.save(next);
-    log.info?.(`打僵尸：${material}${reaction.label ? ` · ${reaction.label}` : ' · 无感'}${emo ? `（情绪 +${emo.intensity.toFixed(2)}）` : ''} · ${decisions} 手`);
+    log.info?.(`打僵尸：第 ${lv.n} 关 · ${material}${reaction.label ? ` · ${reaction.label}` : ' · 无感'}${emo ? `（情绪 +${emo.intensity.toFixed(2)}）` : ''} · ${decisions} 手${next.cleared.length > (prev.cleared || []).length ? ` · 过了第 ${lv.n} 关，下一关是第 ${next.level} 关` : ''}`);
     return next;
   }
 

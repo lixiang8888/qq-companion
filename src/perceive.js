@@ -132,7 +132,7 @@ export function perceive(state = {}) {
   const gmAt = num(gm?.at);
   if (gmAt && gm?.wave && now - gmAt <= GAME_MS && gmAt !== seen.gameAt) {
     seen.gameAt = gmAt;
-    add('game', `你刚打完一局《植物大战僵尸》，打到第 ${gm.wave} 波${gm.victory ? '，过了' : ''}${gm.label ? `，${gm.label}` : ''}`);
+    add('game', `你刚打完一局《植物大战僵尸》第 ${Number(gm.level) || 1} 关，打到第 ${gm.wave}/${gm.maxWaves || 20} 波${gm.victory ? '，过了' : ''}${gm.label ? `，${gm.label}` : ''}`);
   }
 
   return { events: events.slice(0, MAX_EVENTS), seen };

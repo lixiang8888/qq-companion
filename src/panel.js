@@ -63,10 +63,11 @@ export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', 
   const novelText = novel?.bookName
     ? ` · 在读《${novel.bookName}》第 ${Number(novel.index) + 1} 章${attitudeText}${novel.label ? ` · 上次：${novel.label}` : ''}${novel.thought ? `（「${String(novel.thought).slice(0, 24)}」）` : ''}${novel.readsToday ? `，今天读了 ${novel.readsToday} 章` : ''}`
     : '';
-  // 她自己的游戏：上一局打到第几波、最远到哪。没打过就不说。
+  // 她自己的游戏：第几关、上一局打到哪、过了哪几关。没打过就不说。
   const gl = game?.last;
+  const gameCleared = Array.isArray(game?.cleared) ? game.cleared : [];
   const gameText = gl?.wave
-    ? ` · 打僵尸：上一局第 ${gl.wave} 波${gl.victory ? '（过了）' : ''}${gl.label ? ` · ${gl.label}` : ''}${Number(game?.best?.wave) > Number(gl.wave) ? `，最好第 ${game.best.wave} 波` : ''}`
+    ? ` · 打僵尸：第 ${gl.level || 1} 关第 ${gl.wave}/${gl.maxWaves || 20} 波${gl.victory ? '（过了）' : ''}${gl.label ? ` · ${gl.label}` : ''}${gameCleared.length ? `，过了第 ${gameCleared.join('、')} 关` : ''}`
     : '';
   const stickerGrid = stickerItems.length
     ? `<div class="stickers">${stickerItems.map((s) => `<div class="sticker">

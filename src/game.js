@@ -38,6 +38,58 @@ export const RECENT_KEEP = 5;
 // 一局最多记几行真实事件（给她的感想做锚点用）。
 const EVENT_KEEP = 12;
 
+/**
+ * 五关，照着原版的节奏来：先教学、再一点点解锁植物、波次慢慢加上去。
+ *
+ * 每关的波数是真的交给游戏引擎的（`maxWaves`），不是我们这边"算她赢"：
+ * 引擎自己在第 N 波结束后判胜利并加分，所以过关这件事是她真打出来的。
+ * 植物没解锁就种不了——这是我们的规矩（复刻版自己不管这个），她得先争到那一关。
+ */
+export const LEVELS = [
+  { n: 1, name: '第一关（教学）', waves: 2, plants: ['sunflower', 'peashooter'],
+    tip: '这是第一关，只有两波：先种向日葵攒阳光，再在前排种豌豆。' },
+  { n: 2, name: '第二关', waves: 4, plants: ['sunflower', 'peashooter', 'wallnut'],
+    tip: '僵尸会啃植物了，坚果挡在前面能多撑几秒。' },
+  { n: 3, name: '第三关', waves: 7, plants: ['sunflower', 'peashooter', 'wallnut', 'snowpea'],
+    tip: '铁桶僵尸很肉，寒冰能把它拖慢。' },
+  { n: 4, name: '第四关', waves: 12, plants: ['sunflower', 'peashooter', 'wallnut', 'snowpea', 'repeater', 'chomper'],
+    tip: '双发打得快，大嘴花能吃掉贴脸的僵尸。' },
+  { n: 5, name: '第五关', waves: 20, plants: Object.keys(PLANTS),
+    tip: '最后二十波，九种植物全给你了。撑过去就通关。' },
+];
+export const MAX_LEVEL = LEVELS.length;
+
+/** 第几关的配置。越界就夹到 1..5。 */
+export function levelInfo(n = 1) {
+  const i = Math.min(MAX_LEVEL, Math.max(1, Number(n) || 1)) - 1;
+  return LEVELS[i];
+}
+
+/** 她现在是第几关：过了几关就解锁下一关；五关都过了就继续刷第五关。 */
+export function currentLevel(state = {}) {
+  const cleared = Array.isArray(state?.cleared) ? state.cleared.map(Number) : [];
+  let n = 1;
+  while (cleared.includes(n) && n < MAX_LEVEL) n += 1;
+  return n;
+}
+
+/** 这一关她有的植物。没解锁的种不了——这条由 host 在落子前拦。 */
+export function unlockedPlants(state = {}) {
+  return levelInfo(currentLevel(state)).plants;
+}
+
+/** 这一手准不准种：没解锁的植物直接不算。 */
+export function moveAllowed(state = {}, move = {}) {
+  if (!move || move.kind !== 'plant') return true;
+  return unlockedPlants(state).includes(move.plant);
+}
+
+/** 某一关的最好成绩。每关分开记——拿第五关的成绩去压第一关没有意义。 */
+export function bestOf(state = {}, level = 1) {
+  const hit = state?.top?.[String(level)];
+  return hit && Number(hit.wave) > 0 ? hit : null;
+}
+
 /** 花草别名 → key。长的先匹配：不然「火豌豆」会被「豌豆」抢走。 */
 const ALIAS = new Map([
   ['向日葵', 'sunflower'], ['太阳花', 'sunflower'], ['葵花', 'sunflower'],
@@ -126,10 +178,11 @@ export function lawnText(snap = {}) {
 }
 
 /** 这局到底发生了什么——给她的感想当锚点，也进 memory 卡。只写真事。 */
-export function resultText(snap = {}, minutes = 0) {
+export function resultText(snap = {}, minutes = 0, level = null) {
   const wave = Number(snap.wave) || 1;
   const maxWaves = Number(snap.maxWaves) || 20;
-  const bits = [`打到第 ${wave}/${maxWaves} 波`];
+  const n = Number(level) || currentLevel({ cleared: [] });
+  const bits = [`第 ${n} 关（${maxWaves} 波）`, `打到第 ${wave}/${maxWaves} 波`];
   bits.push(snap.victory ? '把僵尸全挡回去了' : '没挡住');
   bits.push(`分数 ${Number(snap.score) || 0}`);
   bits.push(`打掉 ${Number(snap.defeated) || 0} 个僵尸`);
@@ -137,18 +190,24 @@ export function resultText(snap = {}, minutes = 0) {
   return bits.join('，');
 }
 
-/** 她的指令提示：只给规则、价格、战况。不替她想「该怎么打」。 */
-export function gameTurnPrompt({ best = null, minutesLeft = 0 } = {}) {
-  const cost = Object.values(PLANTS).map((p) => `${p.name}${p.cost}`).join(' ');
+/**
+ * 她的指令提示：只给规则、价格、战况。不替她想「该怎么打」——
+ * 只有第一关给一句教学，因为那是教学关，原版也教。
+ */
+export function gameTurnPrompt({ state = {}, minutesLeft = 0 } = {}) {
+  const lv = levelInfo(currentLevel(state));
+  const cost = lv.plants.map((k) => `${PLANTS[k].name}${PLANTS[k].cost}`).join(' ');
   const hp = Object.values(ZOMBIES).map((z) => `${z.name}${z.hp}`).join(' ');
+  const best = bestOf(state, lv.n);
   return [
-    '你在玩《植物大战僵尸》（一个开源复刻版，不是原版，数值不一样）。',
-    `草地 5 行 × 9 列（行从上到下 1-5，列从左到右 1-9）。僵尸从右边来，走到最左边你就输；撑过 20 波就赢。`,
-    '每波固定 30 秒，时间到就下一波，不等你清完；越往后一波更多、来得更密、咬得更重（第 20 波约 13 个、每秒一个、伤害 +38%）。',
-    `植物价格：${cost}。这只复刻里向日葵也会射击，坚果很肉。僵尸血量：${hp}。`,
+    `你在玩《植物大战僵尸》（一个开源复刻版，不是原版，数值不一样）。这一局是第 ${lv.n} 关，打 ${lv.waves} 波。`,
+    `草地 5 行 × 9 列（行从上到下 1-5，列从左到右 1-9）。僵尸从右边来，走到最左边你就输；撑过 ${lv.waves} 波就过关。`,
+    '每波固定 30 秒，时间到就下一波，不等你清完；越往后一波更多、来得更密、咬得更重。',
+    `这一关你能用的植物：${cost}。向日葵也会射击${lv.plants.includes('wallnut') ? '，坚果很肉' : ''}。僵尸血量：${hp}。`,
     '你这一回合只能做一件事：在某一格种一棵植物，或者先等一等（攒阳光、等冷却）。',
     '只回一行，不要解释：`[种:豌豆 3,2]` 或 `[等]`。',
-    best ? `你的最好成绩是第 ${best.wave || 0} 波。` : '你还没打过几局。',
+    lv.tip,
+    best ? `这一关你最好打到第 ${best.wave} 波。` : '这一关你还没打过。',
   ].filter(Boolean).join('\n');
 }
 
@@ -181,32 +240,42 @@ export function gameEmotion(reaction) {
 }
 
 /**
- * 记一局。best 按「波数 → 是否通关」比；recent 留最近 5 局（面板和注入用）。
+ * 记一局。每关最好成绩分开记（`top`），过关就写进 `cleared`，下一关自动解锁。
  * 没锚点的反应只存感想，标签清零——账不能记在演出来的情绪上。
  */
-export function noteGame(state = {}, { now = 0, day = '', snap = {}, minutes = 0, reaction = null } = {}) {
+export function noteGame(state = {}, { now = 0, day = '', snap = {}, minutes = 0, reaction = null, level = null } = {}) {
+  const n = Number(level) || currentLevel(state);
   const wave = Number(snap.wave) || 1;
+  const maxWaves = Number(snap.maxWaves) || levelInfo(n).waves;
   const victory = Boolean(snap.victory);
   const over = Boolean(snap.over);
   const score = Number(snap.score) || 0;
   const defeated = Number(snap.defeated) || 0;
   const trusted = reaction?.anchored ? reaction : { thought: String(reaction?.thought || ''), label: '', intensity: 0, anchor: '' };
   const entry = {
-    at: now, day, wave, maxWaves: Number(snap.maxWaves) || 20, victory, over, score, defeated,
+    at: now, day, level: n, wave, maxWaves, victory, over, score, defeated,
     minutes: Math.max(0, Math.round(Number(minutes) || 0)),
     thought: trusted.thought, label: trusted.label, intensity: trusted.intensity, anchor: trusted.anchor,
   };
-  const best = state.best && Number(state.best.wave) > 0 ? state.best : { wave: 0, victory: false, score: 0, at: 0 };
-  const better = wave > Number(best.wave)
-    || (wave === Number(best.wave) && victory && !best.victory)
-    || (victory && !best.victory);
+  const prevBest = bestOf(state, n) || { wave: 0, victory: false, score: 0, at: 0 };
+  const better = wave > Number(prevBest.wave)
+    || (wave === Number(prevBest.wave) && victory && !prevBest.victory)
+    || (victory && !prevBest.victory);
+  const top = { ...(state.top || {}) };
+  if (better) top[String(n)] = { wave, victory, score, at: now };
+  const cleared = Array.from(new Set([
+    ...(Array.isArray(state.cleared) ? state.cleared.map(Number) : []),
+    ...(victory ? [n] : []),
+  ])).sort((a, b) => a - b);
   return {
     ...state,
     at: now,
     day,
     plays: (Number(state.plays) || 0) + 1,
+    level: currentLevel({ cleared }),
+    cleared,
+    top,
     last: entry,
-    best: better ? { wave, victory, score, at: now } : best,
     recent: [entry, ...(state.recent || [])].slice(0, RECENT_KEEP),
     events: (state.events || []).slice(-EVENT_KEEP),
   };
@@ -230,12 +299,15 @@ export function gameLine(state = {}, now = 0) {
   const at = Number(last?.at) || 0;
   if (!at || !last?.wave) return { text: '', at: 0, ttl: 0 };
   if (now - at > GAME_TTL) return { text: '', at, ttl: GAME_TTL };
-  const best = state.best || {};
-  let text = `你最近在打《植物大战僵尸》：上一局打到第 ${last.wave}/${Number(last.maxWaves) || 20} 波，`
-    + (last.victory ? '把僵尸挡回去了' : '没挡住');
+  const lv = Number(last.level) || currentLevel(state);
+  const cleared = Array.isArray(state.cleared) ? state.cleared.map(Number) : [];
+  const maxWaves = Number(last.maxWaves) || levelInfo(lv).waves;
+  let text = `你最近在打《植物大战僵尸》第 ${lv} 关（${maxWaves} 波）：上一局打到第 ${last.wave}/${maxWaves} 波，`
+    + (last.victory ? '过了' : '没撑住');
   if (Number(last.score) > 0) text += `，分数 ${last.score}`;
   if (last.thought) text += `（你的原话：${last.thought}）`;
-  if (Number(best.wave) > Number(last.wave)) text += `；你最好的一次是第 ${best.wave} 波`;
+  if (cleared.length) text += `；已经过了第 ${cleared.join('、')} 关`;
+  if (cleared.length >= MAX_LEVEL) text += '（五关都过了）';
   return { text: `${text}。`, at, ttl: GAME_TTL };
 }
 
