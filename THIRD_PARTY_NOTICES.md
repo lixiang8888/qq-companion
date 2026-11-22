@@ -20,6 +20,14 @@
 
 `node_modules/` 不进仓库，换机器要重新 `npm install`。
 
+### Plants vs Zombies 复刻版（2026-11-22，她自己的小游戏）
+
+- 项目：plantsvszombiesjs/plantsvszombiesjs.github.io（https://github.com/plantsvszombiesjs/plantsvszombiesjs.github.io）
+- 许可：MIT，© 2025 Valentyn Kolesnikov；原文随文件放在 ssets/pvz/LICENSE
+- 用法：**整份单文件页面原样放进来**（ssets/pvz/index.html，81 KB，无依赖），由宿主用无头浏览器打开，
+  她那几手指令是通过页面自己暴露的 gameState / selectPlant / placePlant 执行的。没有改动其代码。
+- 没有采用 EA 原版《植物大战僵尸》的任何东西（素材、音乐、关卡数据都没有）；
+  这个复刻的数值和美术是它自己的，跟原版不一样，别混着说。
 ## 只调用接口、未复制代码的
 
 | 项目 | 许可 | 关系 |
@@ -93,4 +101,5 @@ astrbot_plugin_private_companion、internetsb/Maizone、dsh-soul-evolve。
 
 - **商标**：仓库名里带 `QQ`，人格卡自称「DeepSeek 小鲸鱼」。自用没问题，**发布或商用是另一回事**。
 - **账号风险**：用 OneBot / 第三方协议端登录个人 QQ 本身不符合 QQ 用户协议。代价不是版权纠纷，是封号。
+
 

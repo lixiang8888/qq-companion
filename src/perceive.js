@@ -18,6 +18,8 @@ export const PICTURE_MS = 24 * 3600e3;
 // 书是六小时内还在看才算「刚在看」；念头活得久一点（36 小时），和注入那边一致。
 export const NOVEL_MS = 6 * 3600e3;
 export const THOUGHT_MS = 36 * 3600e3;
+// 游戏这一局比书耐放：打完一局，六小时内都算「刚打完」，可以拿来开头。
+export const GAME_MS = 6 * 3600e3;
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const clip = (s, n) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
@@ -123,6 +125,14 @@ export function perceive(state = {}) {
   if (thought && num(thought.at) !== seen.thoughtAt) {
     seen.thoughtAt = num(thought.at);
     add('thought', `你这两天自己在想：「${clip(thought.text, 40)}」`);
+  }
+
+  // 她自己打的一局僵尸：跟书一样是她自己的生活，不是他给的话题。
+  const gm = state.game?.last;
+  const gmAt = num(gm?.at);
+  if (gmAt && gm?.wave && now - gmAt <= GAME_MS && gmAt !== seen.gameAt) {
+    seen.gameAt = gmAt;
+    add('game', `你刚打完一局《植物大战僵尸》，打到第 ${gm.wave} 波${gm.victory ? '，过了' : ''}${gm.label ? `，${gm.label}` : ''}`);
   }
 
   return { events: events.slice(0, MAX_EVENTS), seen };

@@ -47,6 +47,8 @@ import { SCREEN_TTL, readScreen, sanitize, screenLine } from './screen.js';
 import { canSearch, factLine, latestFact, materialLines, noteSearch, search } from './search.js';
 import { parseActions } from './actions.js';
 import { MAX_NAME, NAME_PROMPT, mergeFavorites, namesLine, needNames, parseFavorites, pickSticker } from './stickers.js';
+import { gameEmotion, gameEvents, gameLine, gameTurnPrompt, lawnText, noteGame, parseGameReaction, parseMove, resultText, shouldPlay } from './game.js';
+import { createPvz, findBrowser } from './pvz.js';
 
 export const name = 'qq-companion';
 // cordis 的 inject 是「必填服务」清单：只有列在这里的服务，访问时才不会抛，
@@ -147,6 +149,9 @@ const DEFAULT_CONFIG = {
   // 她读书的后端（安卓模拟器里的 Legado）。base 留空用 novel.js 的默认地址；
   // launcher 留空 = 后端挂了只记一条日志，不去拉（不想让插件自己开模拟器的人就这么配）。
   novel: { base: '', launcher: '', cooldownMinutes: 30 },
+  // 她自己的小游戏：真游戏在无头浏览器里跑（assets/pvz/），她只做决定。
+  // enabled 默认关：要开浏览器、要花调用，也给不想让她玩的人一个开关。
+  game: { enabled: false, edgePath: '', stepMs: 4000, maxDecisions: 120, maxMinutes: 25, maxPerDay: 1 },
   // 聊天原文归档（按月一个 jsonl）：压缩之后能翻回原话的唯一地方。
   transcript: { enabled: true },
 };
@@ -167,7 +172,7 @@ export function apply(ctx, config = {}) {
   }
 }
 
-export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, log = console, autoStart = true, fetchImpl = globalThis.fetch, spawnImpl = spawn, mergeWindowMs = DEFAULT_WINDOW_MS, later = (fn, ms) => setTimeout(fn, ms), clear = (h) => clearTimeout(h), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), screenReader = readScreen, maxPerceptionRecords = MAX_RECORDS } = {}) {
+export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, log = console, autoStart = true, fetchImpl = globalThis.fetch, spawnImpl = spawn, mergeWindowMs = DEFAULT_WINDOW_MS, later = (fn, ms) => setTimeout(fn, ms), clear = (h) => clearTimeout(h), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), screenReader = readScreen, maxPerceptionRecords = MAX_RECORDS, pvzFactory = createPvz } = {}) {
   if (!ctx || typeof ctx !== 'object') throw new Error('缺少 DSH 上下文（apply(ctx) 没拿到 ctx）');
   mkdirSync(dataDir, { recursive: true });
   const configFile = join(dataDir, 'config.json');
@@ -188,6 +193,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   const insightsStore = createJsonStore(join(dataDir, 'insights.json'), { defaults: () => createInsights(), log: (m) => log.warn?.(m) });
   // 她自己在看什么书：读到第几章、上一章的感想。正文不落盘——一章两千多字，读完就够。
   const novelStore = createJsonStore(join(dataDir, 'novel.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
+  // 她的游戏战绩：上一局打到哪、最好成绩、最近 5 局和她自己的原话。
+  const gameStore = createJsonStore(join(dataDir, 'game.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
   // 她「上次醒着」的时间戳：一路写下去，下次开机才知道中间空了多久。
   const aliveStore = createJsonStore(join(dataDir, 'alive.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
   // 空间：上次发了什么、为什么发、评论看到哪儿了。
@@ -768,6 +775,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       // 她自己看的书：念头 / 对书态度 / 读到哪，三选一——一轮塞三段读书内容，
       // 读起来像日志不像人。每条自带自己的有效期，过期就别提（「最近在看」过期就是谎话）。
       blk('novel', mind.text, mind.at, mind.ttl),
+      // 她自己的游戏：上一局打到哪、最好成绩。跟书一样有自己的有效期，过期就不许说「最近在打」。
+      (() => { const g = gameLine(gameStore.load(), t); return blk('game', g.text, g.at, g.ttl); })(),
     ], { now: t });
   }
 
@@ -1052,6 +1061,143 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     return lookBookSpec(books[0]);
   }
 
+  // ---- 她自己的小游戏：《植物大战僵尸》 ----
+  //
+  // 真游戏在无头浏览器里跑（src/pvz.js + assets/pvz/），她只做两种决定：种什么、种哪。
+  // 局中每一手都是一次单独的调用，不进聊天历史；局后写一句感想（锚点必须是这局真实发生的事），
+  // 战绩进 game.json，强感触进记忆卡。这样她说「我打到第 12 波」是真的，下次也真的记得。
+  let playingGame = false;
+
+  const gameEnabled = () => config.game?.enabled === true;
+
+  /** 问她这一手。系统提示只给规则和价格，不替她想怎么打。 */
+  async function gameTurn(snap, minutesLeft) {
+    const best = gameStore.load().best || null;
+    const text = await complete({
+      system: `${personaCore()}\n\n${gameTurnPrompt({ best, minutesLeft })}`,
+      messages: [{ role: 'user', text: `${lawnText(snap)}\n\n这一回合做什么？（大概还剩 ${Math.max(0, Math.round(minutesLeft))} 分钟）` }],
+      // 推理模型会先吃掉预算：给宽一点，免得她只写了半句就被切断。
+      maxTokens: 300,
+    });
+    return String(text || '').trim();
+  }
+
+  /** 跑一局。浏览器一定会被关掉；她中途想不出来就按当前战况把这局记下来。 */
+  async function runGame(t0) {
+    const cfg = config.game || {};
+    const stepMs = Math.max(1000, Number(cfg.stepMs) || 4000);
+    const maxDecisions = Math.max(10, Number(cfg.maxDecisions) || 120);
+    const maxMinutes = Math.max(2, Number(cfg.maxMinutes) || 25);
+    const bin = String(cfg.edgePath || '') || findBrowser();
+    const browser = pvzFactory({ edge: bin, log, now, sleep });
+    const deadline = t0 + maxMinutes * 60e3;
+    let snap = null;
+    let decisions = 0;
+    try {
+      await browser.open();
+      // 她想的这几秒不让她被啃：暂停 → 读战况 → 她决定 → 继续 → 种 → 跑一会 → 再暂停。
+      await browser.paused(true);
+      while (decisions < maxDecisions && now() < deadline) {
+        await browser.collect();
+        snap = await browser.snapshot();
+        if (!snap?.ready) throw new Error('游戏状态读不出来');
+        if (snap.over || snap.victory) break;
+        let reply = '';
+        try {
+          reply = await gameTurn(snap, (deadline - now()) / 60e3);
+        } catch (e) {
+          log.warn?.(`打僵尸：这一手想不出来（${e.message}），按现在的战况收摊`);
+          break;
+        }
+        const move = parseMove(reply);
+        decisions += 1;
+        await browser.paused(false);
+        if (move?.kind === 'plant') {
+          const r = await browser.plant(move.plant, move.row, move.col);
+          if (r !== 'ok') log.info?.(`那一手没种上（${r}）：${move.plant} 第 ${move.row + 1} 行第 ${move.col + 1} 列`);
+        }
+        await sleep(stepMs);
+        await browser.paused(true);
+      }
+      snap = await browser.snapshot();
+    } finally {
+      await browser.close();
+    }
+
+    const t = now();
+    const minutes = Math.max(0, (t - t0) / 60e3);
+    const material = resultText(snap, minutes);
+    // 局后感想：跟读书同一套锚点规矩——引不出这局里真实发生的事，就不算情绪。
+    let text = '';
+    const aff = settle(store.load(), t);
+    const moodWord = aff.mood.v >= 0.7 ? '心情不错' : aff.mood.v >= 0.4 ? '心情平常' : '心情有点低';
+    try {
+      text = String(await complete({
+        system: [
+          personaCore(),
+          '',
+          '你刚自己打完一局《植物大战僵尸》。写两三句你自己的反应，总共不超过 80 字，按这个顺序：',
+          '1) 先用「」引这局里的一个具体东西——数字或者哪条道（记录在下面，引里面的字）；',
+          '2) 再说这让你怎么想；',
+          '3) 最后才是你此刻的滋味。',
+          '别写成复盘，别夸游戏，别写旁白。引不出记录里的东西就别硬编。',
+          '',
+          '最后单独一行写：`[玩:标签 强度]`',
+          '标签从 爽/触动/酸/闷/尬/烦/无感 里选一个；强度 1(轻) 2(中) 3(重)。',
+        ].join('\n'),
+        messages: [{ role: 'user', text: `【这局的记录】${material}\n\n你现在的状态：${moodWord}` }],
+        maxTokens: 400,
+      }) || '').trim();
+    } catch (e) {
+      log.warn?.(`打僵尸：局后感想没写出来（${e.message}）`);
+    }
+    const reaction = text
+      ? parseGameReaction(text, material)
+      : { thought: '', label: '', intensity: 0, anchor: '', anchored: false };
+    const emo = gameEmotion(reaction);
+    if (emo) store.save(pushEmotion(aff, emo, t));
+    // 强感触进记忆：带热度、封顶 0.5——她自己的游戏不该和他说的话抢记忆权重。
+    if (reaction.anchored && (reaction.intensity === 3 || (['爽', '触动', '酸'].includes(reaction.label) && reaction.intensity >= 2))) {
+      memoryStore.save(remember(memoryStore.load(), `打《植物大战僵尸》：${material}，你记住的是「${reaction.anchor}」`, {
+        now: t, source: 'seen', heat: Math.min(0.5, reaction.intensity / 4), mood: aff.emotion,
+      }));
+    }
+    const prev = gameStore.load();
+    const day = dayKeyOf(t0);
+    const next = noteGame(prev, {
+      now: t, day, snap, minutes, reaction,
+      events: gameEvents(prev, snap),
+    });
+    gameStore.save(next);
+    log.info?.(`打僵尸：${material}${reaction.label ? ` · ${reaction.label}` : ' · 无感'}${emo ? `（情绪 +${emo.intensity.toFixed(2)}）` : ''} · ${decisions} 手`);
+    return next;
+  }
+
+  /**
+   * 她该不该自己开一局。闸门全是真事：他安静多久、今天玩过没有、心情。
+   * 后端（浏览器）不在就安静跳过，不当成错误。
+   */
+  async function playGameIfBored() {
+    if (!gameEnabled() || playingGame) return gameStore.load();
+    const t = now();
+    const st = gameStore.load();
+    const day = dayKeyOf(t);
+    const playsToday = (st.recent || []).filter((g) => g.day === day).length;
+    const hist = session.snapshot().history;
+    const lastUserAt = [...hist].reverse().find((m) => m.role === 'user')?.at || 0;
+    if (!shouldPlay({
+      now: t, lastUserAt, lastPlayAt: Number(st.last?.at) || 0, playsToday,
+      mood: companion.snapshot().mood.v, maxPerDay: Math.max(1, Number(config.game?.maxPerDay) || 1),
+    })) return st;
+    if (!(String(config.game?.edgePath || '') || findBrowser())) {
+      log.warn?.('游戏：没找到可用的浏览器（Edge/Chrome），这次不玩');
+      return st;
+    }
+    playingGame = true;
+    try { await runGame(t); } catch (e) { log.warn?.(`打僵尸出错：${e.message}`); } finally { playingGame = false; }
+    return gameStore.load();
+  }
+
   // 想一想：一天最多一次，和读书一样不排队列（一次模型调用十几秒），自带并发闸。
   let thinking = false;
   const THINK_PROMPT = [
@@ -1262,6 +1408,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       lastPictureAt: shots.reduce((m, r) => Math.max(m, Number(r.at) || 0), 0),
       // 她自己在看的书、她自己想出来的念头：也是「外面真的变了的事」，他安静时这是她的话题来源。
       novel: novelStore.load(),
+      // 她打的游戏：也是「外面真的变了的事」，可以拿来开头。
+      game: gameStore.load(),
       seen: state.seen,
     });
     const prompt = composePokePrompt({
@@ -1923,6 +2071,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     enqueue(refreshPerception).catch((e) => log.warn?.(`图片清理出错：${e.message}`));
     // 她无聊的时候自己看书。不排队列：一章十几秒，会把他刚发的消息堵住（函数内部自带并发闸）。
     readNovelIfBored().catch((e) => log.warn?.(`读书出错：${e.message}`));
+    // 她无聊的时候也会自己打一局僵尸（真浏览器、真游戏，她只做决定）。
+    playGameIfBored().catch((e) => log.warn?.(`打僵尸出错：${e.message}`));
     // 每天最多一次的「想一想」：从真反应里长出她自己的念头。同样不排队列。
     thinkIfBored().catch((e) => log.warn?.(`想一想出错：${e.message}`));
     // 他上一句说完就没了：给她一个很轻的「被晾」，只改语气，一天一次。
@@ -2012,6 +2162,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         facts: factsStore.load(),
         perception: statsOf(perceptionStore.load()),
         novel: novelStore.load(),
+        game: gameStore.load(),
         behavior: weekStats(readBehavior(dataDir, { from: now() - WEEK_MS, to: now() })),
         session: {
           size: session.size,
@@ -2119,6 +2270,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         facts: snap.facts,
         perception: snap.perception,
         behavior: snap.behavior,
+        novel: snap.novel,
+        game: snap.game,
         screen: screenStore.load(),
         stickers: (() => {
           const items = stickerStore.load().items || [];
@@ -2198,7 +2351,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     log.info?.(`qq-companion：面板 ${panelUrl}`);
   } catch { /* 诊断日志失败不影响启动 */ }
 
-  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, perception: { cleanup: () => enqueue(refreshPerception), stats: () => statsOf(perceptionStore.load()) }, novel: { state: () => novelStore.load(), read: () => readNovelIfBored(), think: () => thinkIfBored(), line: () => novelLine(novelStore.load(), now()), mind: () => mindLine(novelStore.load(), now()), look: (spec) => lookBookSpec(spec) }, get config() { return config; }, dataDir };
+  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, perception: { cleanup: () => enqueue(refreshPerception), stats: () => statsOf(perceptionStore.load()) }, novel: { state: () => novelStore.load(), read: () => readNovelIfBored(), think: () => thinkIfBored(), line: () => novelLine(novelStore.load(), now()), mind: () => mindLine(novelStore.load(), now()), look: (spec) => lookBookSpec(spec) }, game: { state: () => gameStore.load(), play: () => playGameIfBored(), line: () => gameLine(gameStore.load(), now()) }, get config() { return config; }, dataDir };
 }
 
 function loadConfig(file, log) {

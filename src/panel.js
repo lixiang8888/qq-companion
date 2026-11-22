@@ -39,7 +39,7 @@ function section(title, body) {
 /**
  * @param {{state: object, memory: object, gateway: string, session: object, persona: string, config: object, now: number}} o
  */
-export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', session = {}, history = [], checks = [], persona = '', config = {}, life = null, diaries = [], budget = null, alive = null, insights = null, qzone = null, proactive = null, weather = null, facts = null, screen = null, stickers = null, behavior = null, perception = null, novel = null, now = Date.now() } = {}) {
+export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', session = {}, history = [], checks = [], persona = '', config = {}, life = null, diaries = [], budget = null, alive = null, insights = null, qzone = null, proactive = null, weather = null, facts = null, screen = null, stickers = null, behavior = null, perception = null, novel = null, game = null, now = Date.now() } = {}) {
   const cfg = config || {};
   const conn = cfg.onebot || {};
   const screenText = !cfg.screen?.enabled
@@ -62,6 +62,11 @@ export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', 
     : ` · 对这本：${attitude >= 0.5 ? '挺喜欢' : attitude >= 0.2 ? '看得顺' : attitude <= -0.5 ? '快看不下去了' : '有点腻'}`;
   const novelText = novel?.bookName
     ? ` · 在读《${novel.bookName}》第 ${Number(novel.index) + 1} 章${attitudeText}${novel.label ? ` · 上次：${novel.label}` : ''}${novel.thought ? `（「${String(novel.thought).slice(0, 24)}」）` : ''}${novel.readsToday ? `，今天读了 ${novel.readsToday} 章` : ''}`
+    : '';
+  // 她自己的游戏：上一局打到第几波、最远到哪。没打过就不说。
+  const gl = game?.last;
+  const gameText = gl?.wave
+    ? ` · 打僵尸：上一局第 ${gl.wave} 波${gl.victory ? '（过了）' : ''}${gl.label ? ` · ${gl.label}` : ''}${Number(game?.best?.wave) > Number(gl.wave) ? `，最好第 ${game.best.wave} 波` : ''}`
     : '';
   const stickerGrid = stickerItems.length
     ? `<div class="stickers">${stickerItems.map((s) => `<div class="sticker">
@@ -224,7 +229,7 @@ ${section('记忆', `<p>共 ${mem.total} 条（清晰 ${mem.vivid || 0} / 清楚
 ${section('最近想起', recalls.length    ? `<ul>${recalls.map((r) => `<li><span class="tag">${escapeHtml(new Date(r.at).toLocaleTimeString())}</span>「${escapeHtml(r.query)}」→ ${r.picks.length ? r.picks.map((t) => escapeHtml(t)).join('、') : '<span class="dim">没想起什么</span>'}</li>`).join('')}</ul>`
     : '<p class="dim">还没有聊过</p>')}
 ${section('最近对话', chatText)}
-${section('运行', `<p>网关：${escapeHtml(gateway)} · 会话 ${session.size ?? 0} 条（最近 ${session.keepHours ?? 0} 小时内的原话一句不压）· 已压缩 ${session.compactions ?? 0} 次 · 人格 ${escapeHtml(persona || '未设置')}</p><p class="dim">他那边：${escapeHtml(screenText)} · 表情：${escapeHtml(stickerText)}${escapeHtml(shotText)}${escapeHtml(novelText)}</p>${session.lastError ? `<p class="dim">上次压缩失败：${escapeHtml(session.lastError.message)}</p>` : ''}`)}
+${section('运行', `<p>网关：${escapeHtml(gateway)} · 会话 ${session.size ?? 0} 条（最近 ${session.keepHours ?? 0} 小时内的原话一句不压）· 已压缩 ${session.compactions ?? 0} 次 · 人格 ${escapeHtml(persona || '未设置')}</p><p class="dim">他那边：${escapeHtml(screenText)} · 表情：${escapeHtml(stickerText)}${escapeHtml(shotText)}${escapeHtml(novelText)}${escapeHtml(gameText)}</p>${session.lastError ? `<p class="dim">上次压缩失败：${escapeHtml(session.lastError.message)}</p>` : ''}`)}
 ${section('表情', `${stickerGrid}${stickers?.note ? `<p class="dim">${escapeHtml(stickers.note)}</p>` : ''}<p class="dim">名字是随便起的，不对就直接改——她只会照着名字挑。</p>`)}
 ${section('钱包', moneyText)}
 ${section('设置', `<form method="post" action="config">

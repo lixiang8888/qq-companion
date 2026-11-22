@@ -1,0 +1,2275 @@
+<!DOCTYPE html>
+<!-- MIT License
+Copyright (c) 2025 Valentyn Kolesnikov <0009-0003-9608-3364@orcid.org>
+-->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="description" content="Plants vs Zombies">
+    <link rel="icon" type="image/x-icon" href="favicon.ico"/>
+    <title>Plants vs Zombies</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-touch-callout: none;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            overflow: hidden;
+            position: relative;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #gameContainer {
+            width: 100%;
+            max-width: 1200px;
+            height: 100vh;
+            max-height: 700px;
+            position: relative;
+            background: linear-gradient(to bottom, #87CEEB 0%, #87CEEB 40%, #90EE90 40%, #228B22 100%);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            border-radius: 15px;
+            overflow: hidden;
+        }
+
+        /* Fullscreen mode adjustments */
+        body:fullscreen #gameContainer,
+        body:-webkit-full-screen #gameContainer,
+        body:-moz-full-screen #gameContainer,
+        body:-ms-fullscreen #gameContainer {
+            max-width: 100%;
+            max-height: 100%;
+            border-radius: 0;
+        }
+
+        #gameBoard {
+            position: absolute;
+            top: 150px;
+            left: 100px;
+            right: 20px;
+            bottom: 50px;
+            display: grid;
+            grid-template-columns: repeat(9, 1fr);
+            grid-template-rows: repeat(5, 1fr);
+            gap: 2px;
+            background: rgba(0,0,0,0.1);
+            padding: 10px;
+            border-radius: 10px;
+        }
+
+        .cell {
+            background: linear-gradient(135deg, rgba(144, 238, 144, 0.3), rgba(34, 139, 34, 0.3));
+            border: 2px solid rgba(34, 139, 34, 0.5);
+            border-radius: 8px;
+            position: relative;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: visible;
+        }
+
+        .cell:hover {
+            background: rgba(144, 238, 144, 0.5);
+            transform: scale(1.05);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+
+        .plant {
+            font-size: 2.5em;
+            animation: plantGrow 0.5s ease;
+            filter: drop-shadow(2px 2px 4px rgba(0,0,0,0.3));
+            z-index: 2;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        .plant-health-bar {
+            position: absolute;
+            width: 40px;
+            height: 3px;
+            background: rgba(0,0,0,0.3);
+            bottom: -8px;
+            left: 50%;
+            transform: translateX(-50%);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .plant-health-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50, #8BC34A);
+            transition: width 0.3s ease;
+            box-shadow: 0 0 3px rgba(76,175,80,0.5);
+        }
+
+        .plant.shooting {
+            animation: shootAnimation 0.3s ease;
+        }
+
+        @keyframes shootAnimation {
+            0% { transform: translate(-50%, -50%) scale(1); }
+            50% { transform: translate(-50%, -50%) scale(1.2); }
+            100% { transform: translate(-50%, -50%) scale(1); }
+        }
+
+        @keyframes plantGrow {
+            0% { transform: translate(-50%, -50%) scale(0) rotate(0deg); }
+            50% { transform: translate(-50%, -50%) scale(1.2) rotate(10deg); }
+            100% { transform: translate(-50%, -50%) scale(1) rotate(0deg); }
+        }
+
+        .zombie {
+            position: absolute;
+            font-size: 2.5em;
+            z-index: 3;
+            filter: drop-shadow(2px 2px 4px rgba(0,0,0,0.5));
+            transition: filter 0.3s ease;
+            will-change: transform;
+            transform: scaleX(-1);
+        }
+
+        .zombie-health-bar {
+            position: absolute;
+            width: 40px;
+            height: 4px;
+            background: rgba(255,0,0,0.8);
+            top: -10px;
+            left: 50%;
+            transform: translateX(-50%);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .zombie-health-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #ff0000, #ff6600);
+            transition: width 0.3s ease;
+            box-shadow: 0 0 5px rgba(255,0,0,0.5);
+        }
+
+        .zombie.slowed {
+            filter: drop-shadow(2px 2px 4px rgba(0,0,0,0.5)) hue-rotate(200deg) brightness(1.5);
+        }
+
+        .zombie.eating {
+            animation: zombieEat 0.5s infinite;
+        }
+
+        @keyframes zombieEat {
+            0%, 100% { transform: scaleX(-1) translateY(0); }
+            50% { transform: scaleX(-1) translateY(-5px); }
+        }
+
+        .projectile {
+            position: absolute;
+            font-size: 1.5em;
+            z-index: 4;
+            filter: drop-shadow(0 0 5px rgba(255,255,0,0.8));
+            will-change: transform;
+        }
+
+        .projectile.fire {
+            filter: drop-shadow(0 0 10px rgba(255,100,0,1));
+            animation: fireGlow 0.3s infinite alternate;
+        }
+
+        @keyframes fireGlow {
+            from { transform: scale(1); }
+            to { transform: scale(1.2); }
+        }
+
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            right: 10px;
+            height: 130px;
+            background: linear-gradient(135deg, rgba(255,255,255,0.95), rgba(240,240,240,0.95));
+            border-radius: 15px;
+            padding: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            backdrop-filter: blur(10px);
+            z-index: 10;
+        }
+
+        #leftPanel {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-width: 140px;
+        }
+
+        #plantSelection {
+            display: flex;
+            gap: 8px;
+            flex: 1;
+            align-items: center;
+            overflow-x: auto;
+            overflow-y: hidden;
+            padding: 5px;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(0,0,0,0.2) transparent;
+        }
+
+        #plantSelection::-webkit-scrollbar {
+            height: 6px;
+        }
+
+        #plantSelection::-webkit-scrollbar-track {
+            background: rgba(0,0,0,0.1);
+            border-radius: 3px;
+        }
+
+        #plantSelection::-webkit-scrollbar-thumb {
+            background: rgba(0,0,0,0.3);
+            border-radius: 3px;
+        }
+
+        .plantCard {
+            min-width: 70px;
+            width: 70px;
+            height: 95px;
+            background: linear-gradient(135deg, #fff, #f0f0f0);
+            border: 3px solid #4CAF50;
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            position: relative;
+            overflow: hidden;
+            flex-shrink: 0;
+        }
+
+        .plantCard::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg, transparent, rgba(255,255,255,0.3), transparent);
+            transform: rotate(45deg);
+            transition: all 0.5s ease;
+            opacity: 0;
+        }
+
+        .plantCard:hover::before {
+            animation: shine 0.5s ease;
+        }
+
+        @keyframes shine {
+            0% { transform: translateX(-100%) translateY(-100%) rotate(45deg); opacity: 0; }
+            50% { opacity: 1; }
+            100% { transform: translateX(100%) translateY(100%) rotate(45deg); opacity: 0; }
+        }
+
+        .plantCard:hover {
+            transform: translateY(-5px) scale(1.05);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+            border-color: #45a049;
+        }
+
+        .plantCard.selected {
+            background: linear-gradient(135deg, #4CAF50, #45a049);
+            transform: scale(1.1);
+            box-shadow: 0 0 20px rgba(76, 175, 80, 0.5);
+        }
+
+        .plantCard.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            filter: grayscale(50%);
+        }
+
+        .plantCard .emoji {
+            font-size: 1.6em;
+            margin-bottom: 2px;
+        }
+
+        .plantCard .cost {
+            font-size: 0.75em;
+            font-weight: bold;
+            color: #FFD700;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
+        }
+
+        .plantCard .name {
+            font-size: 0.55em;
+            color: #333;
+            text-align: center;
+        }
+
+        #sunCounter, #scoreCounter {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 1.1em;
+            font-weight: bold;
+            padding: 8px 15px;
+            border-radius: 20px;
+            box-shadow: 0 5px 15px rgba(255, 215, 0, 0.3);
+            color: white;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+            white-space: nowrap;
+        }
+
+        #sunCounter {
+            background: linear-gradient(135deg, #FFD700, #FFA500);
+        }
+
+        #scoreCounter {
+            background: linear-gradient(135deg, #9C27B0, #E91E63);
+        }
+
+        #controlButtons {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            min-width: 140px;
+        }
+
+        .controlRow {
+            display: flex;
+            gap: 5px;
+        }
+
+        .controlBtn {
+            padding: 8px 12px;
+            font-size: 1em;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.2);
+            white-space: nowrap;
+            flex: 1;
+        }
+
+        .controlBtn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        }
+
+        .controlBtn.active {
+            background: linear-gradient(135deg, #4CAF50, #45a049);
+        }
+
+        .sun {
+            position: absolute;
+            font-size: 2em;
+            cursor: pointer;
+            animation: sunFall 10s linear;
+            z-index: 5;
+            filter: drop-shadow(0 0 10px rgba(255, 215, 0, 0.8));
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .sun-value {
+            font-size: 0.6em;
+            font-weight: bold;
+            color: #FFD700;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+        }
+
+        .sun:hover {
+            transform: scale(1.2);
+            filter: drop-shadow(0 0 20px rgba(255, 215, 0, 1));
+        }
+
+        @keyframes sunFall {
+            from { top: -50px; }
+            to { top: 90%; }
+        }
+
+        .points-popup {
+            position: absolute;
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #FFD700;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+            z-index: 10;
+            pointer-events: none;
+            animation: pointsFloat 1.5s ease-out forwards;
+        }
+
+        @keyframes pointsFloat {
+            0% { 
+                transform: translateY(0) scale(1);
+                opacity: 1;
+            }
+            100% { 
+                transform: translateY(-50px) scale(1.5);
+                opacity: 0;
+            }
+        }
+
+        #gameOver, #pauseMenu, #leaderboard, #victoryScreen {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: linear-gradient(135deg, rgba(255,255,255,0.98), rgba(240,240,240,0.98));
+            padding: 30px;
+            border-radius: 20px;
+            text-align: center;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            backdrop-filter: blur(10px);
+            display: none;
+            max-width: 500px;
+            width: 90%;
+        }
+
+        /* Make leaderboard highest z-index */
+        #leaderboard {
+            z-index: 1000;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        #gameOver, #pauseMenu, #victoryScreen {
+            z-index: 100;
+        }
+
+        #gameOver h2, #pauseMenu h2, #leaderboard h2, #victoryScreen h2 {
+            font-size: 2.2em;
+            margin-bottom: 20px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        #victoryScreen h2 {
+            background: linear-gradient(135deg, #FFD700, #FFA500);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .leaderboard-entry {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 15px;
+            margin: 5px 0;
+            background: linear-gradient(135deg, rgba(255,255,255,0.8), rgba(240,240,240,0.8));
+            border-radius: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .leaderboard-entry:hover {
+            transform: translateX(5px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+        }
+
+        .leaderboard-entry.gold {
+            background: linear-gradient(135deg, #FFD700, #FFA500);
+            color: white;
+            font-weight: bold;
+        }
+
+        .leaderboard-entry.silver {
+            background: linear-gradient(135deg, #C0C0C0, #A0A0A0);
+            color: white;
+            font-weight: bold;
+        }
+
+        .leaderboard-entry.bronze {
+            background: linear-gradient(135deg, #CD7F32, #B87333);
+            color: white;
+            font-weight: bold;
+        }
+
+        .leaderboard-rank {
+            font-size: 1.2em;
+            font-weight: bold;
+            min-width: 30px;
+        }
+
+        .leaderboard-datetime {
+            flex: 1;
+            text-align: left;
+            margin: 0 15px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .leaderboard-date {
+            font-size: 0.9em;
+        }
+
+        .leaderboard-time {
+            font-size: 0.75em;
+            opacity: 0.8;
+        }
+
+        .leaderboard-score {
+            font-weight: bold;
+            color: #764ba2;
+        }
+
+        .leaderboard-entry.gold .leaderboard-score,
+        .leaderboard-entry.silver .leaderboard-score,
+        .leaderboard-entry.bronze .leaderboard-score {
+            color: rgba(255,255,255,0.9);
+        }
+
+        .stats {
+            margin: 20px 0;
+            font-size: 1.1em;
+            color: #333;
+        }
+
+        .btn {
+            padding: 12px 25px;
+            margin: 8px;
+            font-size: 1em;
+            background: linear-gradient(135deg, #4CAF50, #45a049);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+
+        .btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.3);
+        }
+
+        .btn.secondary {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+        }
+
+        .btn.gold {
+            background: linear-gradient(135deg, #FFD700, #FFA500);
+        }
+
+        #wave {
+            position: absolute;
+            top: 150px;
+            right: 20px;
+            font-size: 1.2em;
+            font-weight: bold;
+            color: white;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+            background: linear-gradient(135deg, #FF6B6B, #FF8E53);
+            padding: 10px 20px;
+            border-radius: 20px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+            z-index: 9;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #wave .damage-bonus {
+            font-size: 0.7em;
+            margin-top: 3px;
+            opacity: 0.9;
+            display: none;
+        }
+
+        #wave.final-wave {
+            background: linear-gradient(135deg, #FFD700, #FFA500);
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+
+        .damage-effect {
+            animation: damage 0.3s ease;
+        }
+
+        @keyframes damage {
+            0%, 100% { transform: scaleX(-1); filter: brightness(1); }
+            50% { transform: scaleX(-1) scale(0.9); filter: brightness(1.5) hue-rotate(180deg); }
+        }
+
+        .plant-damage-effect {
+            animation: plantDamage 0.3s ease;
+        }
+
+        @keyframes plantDamage {
+            0%, 100% { transform: translate(-50%, -50%) scale(1); filter: brightness(1); }
+            50% { transform: translate(-50%, -50%) scale(0.9); filter: brightness(1.5) hue-rotate(90deg); }
+        }
+
+        .collect-effect {
+            animation: collect 0.5s ease;
+        }
+
+        @keyframes collect {
+            0% { transform: scale(1) rotate(0deg); }
+            100% { transform: scale(0) rotate(360deg); opacity: 0; }
+        }
+
+        /* Landscape mode optimizations */
+        @media (orientation: landscape) and (max-height: 600px) {
+            #ui {
+                height: 100px;
+            }
+            
+            #gameBoard {
+                top: 110px;
+                bottom: 20px;
+            }
+            
+            #wave {
+                top: 110px;
+            }
+            
+            .plantCard {
+                min-width: 55px;
+                width: 55px;
+                height: 75px;
+            }
+            
+            .plantCard .emoji {
+                font-size: 1.3em;
+            }
+            
+            .controlBtn {
+                padding: 5px 8px;
+                font-size: 0.85em;
+            }
+            
+            #sunCounter, #scoreCounter {
+                font-size: 0.95em;
+                padding: 6px 12px;
+            }
+        }
+
+        @media (max-width: 768px) {
+            #gameBoard {
+                left: 10px;
+                right: 10px;
+                top: 140px;
+            }
+            
+            #wave {
+                top: 140px;
+                right: 10px;
+                font-size: 1em;
+                padding: 8px 15px;
+            }
+            
+            .plantCard {
+                min-width: 60px;
+                width: 60px;
+                height: 80px;
+            }
+            
+            .plantCard .emoji {
+                font-size: 1.4em;
+            }
+            
+            .plant, .zombie {
+                font-size: 2em;
+            }
+
+            #ui {
+                padding: 8px;
+                gap: 8px;
+            }
+
+            #leftPanel, #controlButtons {
+                min-width: 120px;
+            }
+
+            .controlBtn {
+                font-size: 0.9em;
+                padding: 6px 10px;
+            }
+        }
+
+        .particle {
+            position: absolute;
+            pointer-events: none;
+            animation: particle 1s ease-out forwards;
+            font-size: 1.5em;
+            z-index: 10;
+        }
+
+        @keyframes particle {
+            0% { transform: translate(0, 0) scale(1); opacity: 1; }
+            100% { transform: translate(var(--x), var(--y)) scale(0); opacity: 0; }
+        }
+
+        #debugInfo {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: white;
+            font-size: 0.8em;
+            background: rgba(0,0,0,0.5);
+            padding: 5px;
+            border-radius: 5px;
+            display: none;
+        }
+
+        /* Force landscape message */
+        #landscapeMessage {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            text-align: center;
+            padding: 20px;
+        }
+
+        #landscapeMessage h2 {
+            font-size: 2em;
+            margin-bottom: 20px;
+        }
+
+        #landscapeMessage p {
+            font-size: 1.2em;
+            margin-bottom: 30px;
+        }
+
+        @media (orientation: portrait) and (max-width: 768px) {
+            #landscapeMessage {
+                display: flex;
+            }
+            
+            #gameContainer {
+                display: none;
+            }
+        }
+
+        .save-notification {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: linear-gradient(135deg, #4CAF50, #45a049);
+            color: white;
+            padding: 20px 40px;
+            border-radius: 15px;
+            font-size: 1.2em;
+            font-weight: bold;
+            z-index: 200;
+            animation: saveNotification 2s ease forwards;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+
+        @keyframes saveNotification {
+            0% { opacity: 0; transform: translate(-50%, -50%) scale(0.5); }
+            20% { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
+            40% { transform: translate(-50%, -50%) scale(1); }
+            80% { opacity: 1; }
+            100% { opacity: 0; }
+        }
+    </style>
+</head>
+<body>
+    <div id="landscapeMessage">
+        <h2>📱 Rotate Your Device</h2>
+        <p>Please rotate your device to landscape mode for the best gaming experience!</p>
+        <div style="font-size: 4em;">↻</div>
+    </div>
+
+    <div id="gameContainer">
+        <div id="ui">
+            <div id="leftPanel">
+                <div id="sunCounter">☀️ <span id="sunCount">200</span></div>
+                <div id="scoreCounter">⭐ <span id="scoreCount">0</span></div>
+            </div>
+            
+            <div id="plantSelection">
+                <div class="plantCard" data-plant="sunflower" data-cost="50">
+                    <div class="emoji">🌻</div>
+                    <div class="cost">50</div>
+                    <div class="name">Sunflower</div>
+                </div>
+                <div class="plantCard" data-plant="peashooter" data-cost="100">
+                    <div class="emoji">🌱</div>
+                    <div class="cost">100</div>
+                    <div class="name">Peashooter</div>
+                </div>
+                <div class="plantCard" data-plant="repeater" data-cost="200">
+                    <div class="emoji">🌾</div>
+                    <div class="cost">200</div>
+                    <div class="name">Repeater</div>
+                </div>
+                <div class="plantCard" data-plant="snowpea" data-cost="175">
+                    <div class="emoji">❄️</div>
+                    <div class="cost">175</div>
+                    <div class="name">Snow Pea</div>
+                </div>
+                <div class="plantCard" data-plant="wallnut" data-cost="50">
+                    <div class="emoji">🥥</div>
+                    <div class="cost">50</div>
+                    <div class="name">Wall-nut</div>
+                </div>
+                <div class="plantCard" data-plant="chomper" data-cost="150">
+                    <div class="emoji">🌿</div>
+                    <div class="cost">150</div>
+                    <div class="name">Chomper</div>
+                </div>
+                <div class="plantCard" data-plant="threepeater" data-cost="325">
+                    <div class="emoji">🎋</div>
+                    <div class="cost">325</div>
+                    <div class="name">Threepeater</div>
+                </div>
+                <div class="plantCard" data-plant="firepea" data-cost="250">
+                    <div class="emoji">🔥</div>
+                    <div class="cost">250</div>
+                    <div class="name">Fire Pea</div>
+                </div>
+                <div class="plantCard" data-plant="cactus" data-cost="125">
+                    <div class="emoji">🌵</div>
+                    <div class="cost">125</div>
+                    <div class="name">Cactus</div>
+                </div>
+            </div>
+            
+            <div id="controlButtons">
+                <div class="controlRow">
+                    <button class="controlBtn" id="pauseBtn">⏸️ Pause</button>
+                    <button class="controlBtn" id="speedBtn">⚡ x1</button>
+                </div>
+                <div class="controlRow">
+                    <button class="controlBtn" id="leaderBtn">🏆 Top 10</button>
+                    <button class="controlBtn" id="fullscreenBtn">🔳 Full</button>
+                </div>
+            </div>
+        </div>
+        
+        <div id="wave">
+            <div>Wave: <span id="waveCount">1</span>/20</div>
+            <div class="damage-bonus">DMG: +<span id="damageBonus">0</span>%</div>
+        </div>
+        
+        <div id="gameBoard"></div>
+        
+        <div id="debugInfo"></div>
+        
+        <div id="pauseMenu">
+            <h2>Game Paused</h2>
+            <button class="btn" onclick="resumeGame()">Resume</button>
+            <button class="btn secondary" onclick="showLeaderboard()">Top 10 Scores</button>
+            <button class="btn" onclick="restartGame()">Restart</button>
+        </div>
+        
+        <div id="leaderboard">
+            <h2>🏆 Top 10 Scores</h2>
+            <div id="leaderboardList"></div>
+            <button class="btn" onclick="closeLeaderboard()">Close</button>
+        </div>
+        
+        <div id="gameOver">
+            <h2>Game Over!</h2>
+            <div class="stats">
+                <p>Final Score: <span id="finalScore">0</span></p>
+                <p>Waves Survived: <span id="finalWave">0</span></p>
+                <p>Zombies Defeated: <span id="finalZombies">0</span></p>
+            </div>
+            <div>
+                <button class="btn secondary" onclick="showLeaderboard()">View Top 10</button>
+                <button class="btn" onclick="restartGame()">Play Again</button>
+            </div>
+        </div>
+
+        <div id="victoryScreen">
+            <h2>🎉 Victory! 🎉</h2>
+            <div class="stats">
+                <p style="font-size: 1.3em; color: #FFD700;">You survived all 20 waves!</p>
+                <p>Final Score: <span id="victoryScore" style="font-size: 1.5em; color: #764ba2;">0</span></p>
+                <p>Zombies Defeated: <span id="victoryZombies">0</span></p>
+                <p style="margin-top: 15px; color: #4CAF50;">Your score has been saved!</p>
+            </div>
+            <div>
+                <button class="btn gold" onclick="showLeaderboard()">View Top 10</button>
+                <button class="btn" onclick="restartGame()">Play Again</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Game State
+        let gameState = {
+            sun: 200,
+            score: 0,
+            selectedPlant: null,
+            plants: [],
+            zombies: [],
+            projectiles: [],
+            suns: [],
+            wave: 1,
+            maxWaves: 20,
+            zombiesDefeated: 0,
+            isPaused: false,
+            isGameOver: false,
+            isVictory: false,
+            cellSize: { width: 0, height: 0 },
+            boardRect: null,
+            gameSpeed: 1,
+            lastUpdate: Date.now(),
+            zombieDamageMultiplier: 1.0,
+            waveTimer: null,
+            waveStartTime: Date.now(),
+            waveTimeElapsed: 0,
+            waveDuration: 30000,
+            pauseTime: null,
+            wasFullscreen: false,
+            sunInterval: null,
+            gameLoopId: null
+        };
+
+        // Enhanced Plant Types - SUNFLOWER SUN REDUCED TO 80%
+        const plantTypes = {
+            sunflower: { 
+                emoji: '🌻', 
+                health: 3.6,
+                maxHealth: 3.6,
+                produces: 'sun', 
+                sunAmount: 40,
+                interval: 15000,
+                shoots: false,
+                damage: 0.5,
+                shootInterval: 2500,
+                projectile: '☀️',
+                description: 'Produces sun and shoots'
+            },
+            peashooter: { 
+                emoji: '🌱', 
+                health: 3.6,
+                maxHealth: 3.6,
+                shoots: true, 
+                damage: 1, 
+                shootInterval: 1500,
+                projectile: '🟢',
+                description: 'Basic shooter'
+            },
+            wallnut: { 
+                emoji: '🥥', 
+                health: 24,
+                maxHealth: 24,
+                shoots: false,
+                damage: 0.3,
+                shootInterval: 3000,
+                projectile: '🟤',
+                description: 'Defensive wall that shoots'
+            },
+            snowpea: { 
+                emoji: '❄️', 
+                health: 3.6,
+                maxHealth: 3.6,
+                shoots: true, 
+                damage: 1, 
+                slow: true, 
+                shootInterval: 2000,
+                projectile: '❄️',
+                description: 'Slows zombies'
+            },
+            chomper: { 
+                emoji: '🌿', 
+                health: 4.88,
+                maxHealth: 4.88,
+                melee: false, 
+                damage: 3, 
+                interval: 3000,
+                shoots: true,
+                shootDamage: 2,
+                shootInterval: 2500,
+                projectile: '🍃',
+                description: 'Eats zombies and shoots'
+            },
+            repeater: { 
+                emoji: '🌾', 
+                health: 3.6,
+                maxHealth: 3.6,
+                shoots: true, 
+                damage: 1, 
+                double: true, 
+                shootInterval: 1500,
+                projectile: '🟢',
+                description: 'Shoots twice'
+            },
+            threepeater: {
+                emoji: '🎋',
+                health: 3.6,
+                maxHealth: 3.6,
+                shoots: true,
+                damage: 1,
+                triple: true,
+                shootInterval: 1500,
+                projectile: '🟢',
+                description: 'Shoots 3 lanes'
+            },
+            firepea: {
+                emoji: '🔥',
+                health: 3.6,
+                maxHealth: 3.6,
+                shoots: true,
+                damage: 2,
+                fire: true,
+                shootInterval: 1500,
+                projectile: '🔥',
+                description: 'Fire damage'
+            },
+            cactus: {
+                emoji: '🌵',
+                health: 4.8,
+                maxHealth: 4.8,
+                shoots: true,
+                damage: 1,
+                pierce: true,
+                shootInterval: 1800,
+                projectile: '📍',
+                description: 'Piercing shots'
+            }
+        };
+
+        // Enhanced Zombie Types
+        const zombieTypes = {
+            normal: { emoji: '🧟', health: 10, maxHealth: 10, speed: 10, damage: 1, points: 100 },
+            cone: { emoji: '🧟‍♂️', health: 20, maxHealth: 20, speed: 10, damage: 1, points: 200 },
+            bucket: { emoji: '🧟‍♀️', health: 40, maxHealth: 40, speed: 8, damage: 1, points: 400 },
+            fast: { emoji: '💀', health: 6, maxHealth: 6, speed: 20, damage: 1, points: 150 },
+            strong: { emoji: '👹', health: 60, maxHealth: 60, speed: 6, damage: 2, points: 600 }
+        };
+
+        // Reset game state to initial values
+        function resetGame() {
+            // Clear any existing timers
+            if (gameState.waveTimer) {
+                clearTimeout(gameState.waveTimer);
+            }
+            if (gameState.sunInterval) {
+                clearInterval(gameState.sunInterval);
+            }
+            
+            // Clear all DOM elements
+            clearAllGameElements();
+            
+            // Reset game state
+            gameState = {
+                sun: 200,
+                score: 0,
+                selectedPlant: null,
+                plants: [],
+                zombies: [],
+                projectiles: [],
+                suns: [],
+                wave: 1,
+                maxWaves: 20,
+                zombiesDefeated: 0,
+                isPaused: false,
+                isGameOver: false,
+                isVictory: false,
+                cellSize: { width: 0, height: 0 },
+                boardRect: null,
+                gameSpeed: 1,
+                lastUpdate: Date.now(),
+                zombieDamageMultiplier: 1.0,
+                waveTimer: null,
+                waveStartTime: Date.now(),
+                waveTimeElapsed: 0,
+                waveDuration: 30000,
+                pauseTime: null,
+                wasFullscreen: document.fullscreenElement !== null,
+                sunInterval: null,
+                gameLoopId: gameState.gameLoopId // Keep the game loop running
+            };
+            
+            // Reset UI
+            document.getElementById('sunCount').textContent = '200';
+            document.getElementById('scoreCount').textContent = '0';
+            document.getElementById('waveCount').textContent = '1';
+            document.getElementById('damageBonus').textContent = '0';
+            document.getElementById('speedBtn').textContent = '⚡ x1';
+            document.getElementById('speedBtn').classList.remove('active');
+            document.getElementById('pauseBtn').textContent = '⏸️ Pause';
+            
+            // Hide all menus
+            document.getElementById('gameOver').style.display = 'none';
+            document.getElementById('pauseMenu').style.display = 'none';
+            document.getElementById('leaderboard').style.display = 'none';
+            document.getElementById('victoryScreen').style.display = 'none';
+            
+            // Reset plant selection
+            document.querySelectorAll('.plantCard').forEach(card => {
+                card.classList.remove('selected');
+            });
+            
+            // Update displays
+            updateSunDisplay();
+            updateDamageDisplay();
+            updateWaveDisplay();
+            updateBoardDimensions();
+            
+            // Restart sun spawning
+            spawnSunPeriodically();
+            
+            // Start first wave after delay
+            setTimeout(() => spawnZombieWave(), 5000);
+        }
+
+        // Clear all game elements from DOM
+        function clearAllGameElements() {
+            // Remove all zombies
+            document.querySelectorAll('.zombie').forEach(el => el.remove());
+            
+            // Remove all projectiles
+            document.querySelectorAll('.projectile').forEach(el => el.remove());
+            
+            // Remove all suns
+            document.querySelectorAll('.sun').forEach(el => el.remove());
+            
+            // Remove all plants from cells
+            document.querySelectorAll('.cell .plant').forEach(el => el.remove());
+            
+            // Remove any floating particles or popups
+            document.querySelectorAll('.particle, .points-popup').forEach(el => el.remove());
+        }
+
+        // Calculate zombie damage with wave multiplier
+        function getZombieDamage(baseZombieDamage) {
+            return baseZombieDamage * gameState.zombieDamageMultiplier;
+        }
+
+        // Update damage multiplier display
+        function updateDamageDisplay() {
+            const bonusPercent = Math.round((gameState.zombieDamageMultiplier - 1) * 100);
+            document.getElementById('damageBonus').textContent = bonusPercent;
+        }
+
+        // Update wave display
+        function updateWaveDisplay() {
+            document.getElementById('waveCount').textContent = gameState.wave;
+            const waveElement = document.getElementById('wave');
+            if (gameState.wave === gameState.maxWaves) {
+                waveElement.classList.add('final-wave');
+            } else {
+                waveElement.classList.remove('final-wave');
+            }
+        }
+
+        // Format date and time for display
+        function formatDateTime(dateString) {
+            const date = new Date(dateString);
+            const now = new Date();
+            const diffTime = Math.abs(now - date);
+            const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+            
+            const timeStr = date.toLocaleTimeString('en-US', { 
+                hour: '2-digit', 
+                minute: '2-digit',
+                hour12: true 
+            });
+            
+            let dateStr;
+            if (diffDays === 0) {
+                dateStr = 'Today';
+            } else if (diffDays === 1) {
+                dateStr = 'Yesterday';
+            } else if (diffDays < 7) {
+                dateStr = `${diffDays} days ago`;
+            } else {
+                dateStr = date.toLocaleDateString('en-US', { 
+                    month: 'short', 
+                    day: 'numeric',
+                    year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined
+                });
+            }
+            
+            return { date: dateStr, time: timeStr };
+        }
+
+        // Show save notification
+        function showSaveNotification() {
+            const notification = document.createElement('div');
+            notification.className = 'save-notification';
+            notification.textContent = '✅ Score Saved to Top 10!';
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                notification.remove();
+            }, 2000);
+        }
+
+        // Leaderboard Functions
+        function getLeaderboard() {
+            const saved = localStorage.getItem('pvz_leaderboard');
+            return saved ? JSON.parse(saved) : [];
+        }
+
+        function saveToLeaderboard(score, wave, zombies) {
+            let leaderboard = getLeaderboard();
+            
+            leaderboard.push({
+                score: score,
+                wave: wave,
+                zombies: zombies,
+                datetime: new Date().toISOString(),
+                victory: gameState.isVictory
+            });
+            
+            // Sort by score and keep top 10
+            leaderboard.sort((a, b) => b.score - a.score);
+            leaderboard = leaderboard.slice(0, 10);
+            
+            localStorage.setItem('pvz_leaderboard', JSON.stringify(leaderboard));
+            
+            // Show notification if score made it to top 10
+            if (leaderboard.some(entry => entry.score === score && entry.datetime === leaderboard[leaderboard.length - 1].datetime)) {
+                showSaveNotification();
+            }
+            
+            return leaderboard;
+        }
+
+        function displayLeaderboard() {
+            const leaderboard = getLeaderboard();
+            const listElement = document.getElementById('leaderboardList');
+            listElement.innerHTML = '';
+            
+            if (leaderboard.length === 0) {
+                listElement.innerHTML = '<p style="color: #666;">No scores yet. Be the first!</p>';
+                return;
+            }
+            
+            leaderboard.forEach((entry, index) => {
+                const entryDiv = document.createElement('div');
+                entryDiv.className = 'leaderboard-entry';
+                
+                if (index === 0) entryDiv.classList.add('gold');
+                else if (index === 1) entryDiv.classList.add('silver');
+                else if (index === 2) entryDiv.classList.add('bronze');
+                
+                const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`;
+                const { date, time } = formatDateTime(entry.datetime);
+                const victoryBadge = entry.victory ? ' 👑' : '';
+                
+                entryDiv.innerHTML = `
+                    <span class="leaderboard-rank">${medal}</span>
+                    <div class="leaderboard-datetime">
+                        <span class="leaderboard-date">${date}${victoryBadge}</span>
+                        <span class="leaderboard-time">${time}</span>
+                    </div>
+                    <span class="leaderboard-score">${entry.score.toLocaleString()}</span>
+                `;
+                
+                listElement.appendChild(entryDiv);
+            });
+        }
+
+        function showLeaderboard() {
+            displayLeaderboard();
+            document.getElementById('leaderboard').style.display = 'block';
+        }
+
+        function closeLeaderboard() {
+            document.getElementById('leaderboard').style.display = 'none';
+        }
+
+        // Initialize Game
+        function init() {
+            createBoard();
+            loadGameState();
+            setupEventListeners();
+            startGameLoop();
+            spawnSunPeriodically();
+            updateDamageDisplay();
+            updateWaveDisplay();
+            
+            // Auto-enable fullscreen on mobile
+            if (isMobile()) {
+                setTimeout(() => {
+                    enterFullscreen();
+                }, 500);
+            }
+            
+            setTimeout(() => spawnZombieWave(), 5000);
+        }
+
+        // Check if mobile device
+        function isMobile() {
+            return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+                   (window.innerWidth <= 768);
+        }
+
+        // Enter fullscreen
+        function enterFullscreen() {
+            const elem = document.documentElement;
+            
+            const requestFS = elem.requestFullscreen || 
+                             elem.webkitRequestFullscreen || 
+                             elem.mozRequestFullScreen || 
+                             elem.msRequestFullscreen;
+            
+            if (requestFS && !document.fullscreenElement) {
+                requestFS.call(elem).then(() => {
+                    gameState.wasFullscreen = true;
+                    localStorage.setItem('pvz_fullscreen', 'true');
+                    if (window.screen && window.screen.orientation && window.screen.orientation.lock) {
+                        window.screen.orientation.lock('landscape').catch(err => {
+                            console.log('Orientation lock not supported:', err);
+                        });
+                    }
+                    setTimeout(updateBoardDimensions, 100);
+                }).catch(err => {
+                    console.log('Fullscreen error:', err);
+                });
+            }
+        }
+
+        // Create Game Board
+        function createBoard() {
+            const board = document.getElementById('gameBoard');
+            board.innerHTML = '';
+            
+            for (let row = 0; row < 5; row++) {
+                for (let col = 0; col < 9; col++) {
+                    const cell = document.createElement('div');
+                    cell.className = 'cell';
+                    cell.dataset.row = row;
+                    cell.dataset.col = col;
+                    board.appendChild(cell);
+                }
+            }
+            
+            setTimeout(updateBoardDimensions, 100);
+        }
+
+        // Update board dimensions
+        function updateBoardDimensions() {
+            const board = document.getElementById('gameBoard');
+            gameState.boardRect = board.getBoundingClientRect();
+            const cells = board.getElementsByClassName('cell');
+            if (cells.length > 0) {
+                const cellRect = cells[0].getBoundingClientRect();
+                gameState.cellSize = {
+                    width: cellRect.width,
+                    height: cellRect.height
+                };
+            }
+            
+            // Update existing zombie and projectile positions
+            gameState.zombies.forEach(zombie => {
+                if (zombie.element) {
+                    const yPosition = gameState.boardRect.top + zombie.row * gameState.cellSize.height + gameState.cellSize.height / 2 - 20;
+                    zombie.element.style.top = yPosition + 'px';
+                }
+            });
+        }
+
+        // Setup Event Listeners
+        function setupEventListeners() {
+            document.querySelectorAll('.plantCard').forEach(card => {
+                card.addEventListener('click', () => selectPlant(card));
+                card.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    selectPlant(card);
+                });
+            });
+
+            document.querySelectorAll('.cell').forEach(cell => {
+                cell.addEventListener('click', () => placePlant(cell));
+                cell.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    placePlant(cell);
+                });
+            });
+
+            document.getElementById('pauseBtn').addEventListener('click', togglePause);
+
+            document.getElementById('speedBtn').addEventListener('click', () => {
+                gameState.gameSpeed = gameState.gameSpeed === 1 ? 2 : gameState.gameSpeed === 2 ? 3 : 1;
+                const btn = document.getElementById('speedBtn');
+                btn.textContent = `⚡ x${gameState.gameSpeed}`;
+                btn.classList.toggle('active', gameState.gameSpeed > 1);
+            });
+
+            document.getElementById('leaderBtn').addEventListener('click', showLeaderboard);
+
+            document.getElementById('fullscreenBtn').addEventListener('click', toggleFullscreen);
+
+            window.addEventListener('resize', updateBoardDimensions);
+            
+            document.addEventListener('fullscreenchange', () => {
+                setTimeout(updateBoardDimensions, 100);
+            });
+            
+            document.addEventListener('webkitfullscreenchange', () => {
+                setTimeout(updateBoardDimensions, 100);
+            });
+        }
+
+        // Select Plant
+        function selectPlant(card) {
+            const cost = parseInt(card.dataset.cost);
+            if (gameState.sun >= cost && !gameState.isPaused) {
+                document.querySelectorAll('.plantCard').forEach(c => c.classList.remove('selected'));
+                card.classList.add('selected');
+                gameState.selectedPlant = {
+                    type: card.dataset.plant,
+                    cost: cost
+                };
+            }
+        }
+
+        // Place Plant with Health Bar
+        function placePlant(cell) {
+            if (!gameState.selectedPlant || gameState.isPaused) return;
+            
+            const row = parseInt(cell.dataset.row);
+            const col = parseInt(cell.dataset.col);
+            
+            const existingPlant = gameState.plants.find(p => p.row === row && p.col === col && p.element);
+            if (existingPlant) return;
+            
+            if (gameState.sun >= gameState.selectedPlant.cost) {
+                gameState.sun -= gameState.selectedPlant.cost;
+                updateSunDisplay();
+                
+                const plantType = plantTypes[gameState.selectedPlant.type];
+                const plant = {
+                    type: gameState.selectedPlant.type,
+                    row: row,
+                    col: col,
+                    health: plantType.health,
+                    maxHealth: plantType.maxHealth,
+                    element: null,
+                    healthBar: null,
+                    healthFill: null,
+                    lastShot: 0,
+                    lastProduction: 0
+                };
+                
+                const plantElement = document.createElement('div');
+                plantElement.className = 'plant';
+                plantElement.textContent = plantType.emoji;
+                
+                const healthBar = document.createElement('div');
+                healthBar.className = 'plant-health-bar';
+                const healthFill = document.createElement('div');
+                healthFill.className = 'plant-health-fill';
+                healthFill.style.width = '100%';
+                healthBar.appendChild(healthFill);
+                plantElement.appendChild(healthBar);
+                
+                cell.appendChild(plantElement);
+                plant.element = plantElement;
+                plant.healthBar = healthBar;
+                plant.healthFill = healthFill;
+                
+                gameState.plants.push(plant);
+                
+                gameState.selectedPlant = null;
+                document.querySelectorAll('.plantCard').forEach(c => c.classList.remove('selected'));
+                
+                createParticleEffect(cell, '✨');
+                
+                addScore(25);
+            }
+        }
+
+        // Update Plant Health
+        function updatePlantHealth(plant) {
+            if (!plant.element || !plant.healthFill) return;
+            
+            const healthPercent = Math.max(0, plant.health / plant.maxHealth);
+            plant.healthFill.style.width = (healthPercent * 100) + '%';
+            
+            if (healthPercent < 0.3) {
+                plant.healthFill.style.background = 'linear-gradient(90deg, #ff0000, #ff6600)';
+            } else if (healthPercent < 0.6) {
+                plant.healthFill.style.background = 'linear-gradient(90deg, #FFA500, #FFD700)';
+            }
+        }
+
+        // Produce Sun - REDUCED TO 80%
+        function produceSun(plant) {
+            if (!plant.element || !plant.element.parentElement) return;
+            
+            const cell = plant.element.parentElement;
+            const rect = cell.getBoundingClientRect();
+            const plantType = plantTypes[plant.type];
+            const sunValue = plantType.sunAmount || 40;  // Default to 40 (80% of 50)
+            
+            const sun = document.createElement('div');
+            sun.className = 'sun';
+            
+            const sunEmoji = document.createElement('span');
+            sunEmoji.textContent = '☀️';
+            sun.appendChild(sunEmoji);
+            
+            const sunValueElement = document.createElement('span');
+            sunValueElement.className = 'sun-value';
+            sunValueElement.textContent = sunValue;
+            sun.appendChild(sunValueElement);
+            
+            sun.style.left = rect.left + rect.width / 2 - 15 + 'px';
+            sun.style.top = rect.top + 'px';
+            sun.style.animation = 'none';
+            sun.style.position = 'fixed';
+            
+            document.getElementById('gameContainer').appendChild(sun);
+            
+            sun.addEventListener('click', () => collectSun(sun, sunValue));
+            sun.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                collectSun(sun, sunValue);
+            });
+            
+            setTimeout(() => {
+                if (sun.parentElement) {
+                    sun.remove();
+                }
+            }, 5000);
+        }
+
+        // Shoot Projectile
+        function shoot(plant) {
+            if (!plant.element || !plant.element.parentElement) return;
+            
+            const now = Date.now();
+            const plantType = plantTypes[plant.type];
+            
+            if (!plantType.shoots) return;
+            
+            const shootInterval = plantType.shootInterval || 1500;
+            
+            if (now - plant.lastShot < shootInterval / gameState.gameSpeed) return;
+            
+            let targetRows = [plant.row];
+            if (plantType.triple) {
+                targetRows = [plant.row - 1, plant.row, plant.row + 1].filter(r => r >= 0 && r < 5);
+            }
+            
+            const hasTarget = targetRows.some(row => 
+                gameState.zombies.some(z => z.row === row && z.element && z.x > plant.col * gameState.cellSize.width)
+            );
+            
+            if (!hasTarget) return;
+            
+            plant.lastShot = now;
+            plant.element.classList.add('shooting');
+            setTimeout(() => {
+                if (plant.element) plant.element.classList.remove('shooting');
+            }, 300);
+            
+            const cell = plant.element.parentElement;
+            const rect = cell.getBoundingClientRect();
+            
+            const createProjectileForRow = (targetRow) => {
+                const projectile = document.createElement('div');
+                projectile.className = 'projectile';
+                if (plantType.fire) projectile.classList.add('fire');
+                projectile.textContent = plantType.projectile || '🟢';
+                
+                const rowY = gameState.boardRect.top + targetRow * gameState.cellSize.height + gameState.cellSize.height / 2 - 10;
+                
+                projectile.style.left = (rect.left + rect.width) + 'px';
+                projectile.style.top = rowY + 'px';
+                projectile.style.position = 'fixed';
+                
+                document.getElementById('gameContainer').appendChild(projectile);
+                
+                let projectileDamage = plantType.damage;
+                if (plant.type === 'chomper' && plantType.shootDamage) {
+                    projectileDamage = plantType.shootDamage;
+                }
+                
+                const proj = {
+                    element: projectile,
+                    row: targetRow,
+                    damage: projectileDamage,
+                    slow: plantType.slow,
+                    fire: plantType.fire,
+                    pierce: plantType.pierce,
+                    x: rect.left + rect.width - gameState.boardRect.left,
+                    speed: 200 * gameState.gameSpeed,
+                    hitZombies: []
+                };
+                
+                gameState.projectiles.push(proj);
+            };
+            
+            targetRows.forEach(row => {
+                if (gameState.zombies.some(z => z.row === row && z.element)) {
+                    createProjectileForRow(row);
+                }
+            });
+            
+            if (plantType.double) {
+                setTimeout(() => {
+                    targetRows.forEach(row => {
+                        if (gameState.zombies.some(z => z.row === row && z.element)) {
+                            createProjectileForRow(row);
+                        }
+                    });
+                }, 200);
+            }
+        }
+
+        // Move Projectiles
+        function moveProjectiles(deltaTime) {
+            gameState.projectiles = gameState.projectiles.filter(proj => {
+                if (!proj.element || !proj.element.parentElement) return false;
+                
+                proj.x += proj.speed * deltaTime / 1000;
+                proj.element.style.left = (gameState.boardRect.left + proj.x) + 'px';
+                
+                const rowY = gameState.boardRect.top + proj.row * gameState.cellSize.height + gameState.cellSize.height / 2 - 10;
+                proj.element.style.top = rowY + 'px';
+                
+                const projRect = proj.element.getBoundingClientRect();
+                let hit = false;
+                
+                gameState.zombies.forEach(zombie => {
+                    if (!zombie.element || zombie.row !== proj.row) return;
+                    if (proj.hitZombies.includes(zombie)) return;
+                    
+                    const zombieRect = zombie.element.getBoundingClientRect();
+                    
+                    if (projRect.left < zombieRect.right && projRect.right > zombieRect.left) {
+                        zombie.health -= proj.damage;
+                        updateZombieHealth(zombie);
+                        zombie.element.classList.add('damage-effect');
+                        
+                        if (proj.slow) {
+                            zombie.slowed = true;
+                            zombie.slowedUntil = Date.now() + 3000;
+                            zombie.element.classList.add('slowed');
+                        }
+                        
+                        if (proj.fire && zombie.element) {
+                            createParticleEffect(zombie.element, '🔥');
+                        }
+                        
+                        setTimeout(() => {
+                            if (zombie.element) {
+                                zombie.element.classList.remove('damage-effect');
+                            }
+                        }, 300);
+                        
+                        if (zombie.health <= 0) {
+                            if (zombie.element) {
+                                const points = zombieTypes[zombie.type].points;
+                                showPointsPopup(zombie.element, points);
+                                addScore(points);
+                                createParticleEffect(zombie.element, '💀');
+                                zombie.element.remove();
+                                zombie.element = null;
+                            }
+                            gameState.zombiesDefeated++;
+                        }
+                        
+                        if (!proj.pierce) {
+                            hit = true;
+                        } else {
+                            proj.hitZombies.push(zombie);
+                        }
+                    }
+                });
+                
+                if (hit || proj.x > window.innerWidth) {
+                    proj.element.remove();
+                    return false;
+                }
+                
+                return true;
+            });
+        }
+
+        // Update Zombie Health Bar
+        function updateZombieHealth(zombie) {
+            if (!zombie.element || !zombie.healthBar) return;
+            
+            const healthPercent = Math.max(0, zombie.health / zombieTypes[zombie.type].maxHealth);
+            zombie.healthFill.style.width = (healthPercent * 100) + '%';
+        }
+
+        // Move Zombies
+        function moveZombies(deltaTime) {
+            gameState.zombies = gameState.zombies.filter(zombie => {
+                if (!zombie.element) return false;
+                
+                if (zombie.slowed && Date.now() > zombie.slowedUntil) {
+                    zombie.slowed = false;
+                    zombie.element.classList.remove('slowed');
+                }
+                
+                const baseSpeed = zombieTypes[zombie.type].speed;
+                const currentSpeed = zombie.slowed ? baseSpeed * 0.5 : baseSpeed;
+                
+                if (!zombie.attacking) {
+                    zombie.x -= currentSpeed * deltaTime / 1000 * gameState.gameSpeed;
+                    zombie.element.style.left = (gameState.boardRect.left + zombie.x) + 'px';
+                    
+                    const yPosition = gameState.boardRect.top + zombie.row * gameState.cellSize.height + gameState.cellSize.height / 2 - 20;
+                    zombie.element.style.top = yPosition + 'px';
+                }
+                
+                zombie.attacking = false;
+                const zombieCol = Math.floor(zombie.x / gameState.cellSize.width);
+                
+                gameState.plants.forEach(plant => {
+                    if (!plant.element || plant.row !== zombie.row) return;
+                    
+                    if (plant.col === zombieCol) {
+                        zombie.attacking = true;
+                        zombie.element.classList.add('eating');
+                        
+                        if (plantTypes[plant.type].melee && Date.now() - zombie.lastChomped > 1000) {
+                            zombie.lastChomped = Date.now();
+                            const points = zombieTypes[zombie.type].points * 2;
+                            showPointsPopup(zombie.element, points);
+                            addScore(points);
+                            createParticleEffect(zombie.element, '💀');
+                            zombie.element.remove();
+                            zombie.element = null;
+                            gameState.zombiesDefeated++;
+                            return;
+                        }
+                        
+                        if (Date.now() - zombie.lastAttack > 1000) {
+                            zombie.lastAttack = Date.now();
+                            const damage = getZombieDamage(zombieTypes[zombie.type].damage);
+                            plant.health -= damage;
+                            updatePlantHealth(plant);
+                            plant.element.classList.add('plant-damage-effect');
+                            
+                            setTimeout(() => {
+                                if (plant.element) {
+                                    plant.element.classList.remove('plant-damage-effect');
+                                }
+                            }, 300);
+                            
+                            if (plant.health <= 0) {
+                                createParticleEffect(plant.element, '💥');
+                                plant.element.remove();
+                                plant.element = null;
+                            }
+                        }
+                    }
+                });
+                
+                if (!zombie.attacking) {
+                    zombie.element.classList.remove('eating');
+                }
+                
+                if (zombie.x <= -gameState.cellSize.width) {
+                    gameOver();
+                }
+                
+                return zombie.element !== null;
+            });
+        }
+
+        // Spawn Zombie with Health Bar
+        function spawnZombie() {
+            const row = Math.floor(Math.random() * 5);
+            const zombieTypeKeys = Object.keys(zombieTypes);
+            
+            let typeIndex = 0;
+            const rand = Math.random();
+            if (gameState.wave > 7 && rand > 0.8) {
+                typeIndex = 4;
+            } else if (gameState.wave > 5 && rand > 0.6) {
+                typeIndex = 3;
+            } else if (gameState.wave > 3 && rand > 0.5) {
+                typeIndex = 2;
+            } else if (gameState.wave > 1 && rand > 0.3) {
+                typeIndex = 1;
+            }
+            
+            const zombieType = zombieTypes[zombieTypeKeys[typeIndex]];
+            
+            const zombie = document.createElement('div');
+            zombie.className = 'zombie';
+            zombie.textContent = zombieType.emoji;
+            
+            const healthBar = document.createElement('div');
+            healthBar.className = 'zombie-health-bar';
+            const healthFill = document.createElement('div');
+            healthFill.className = 'zombie-health-fill';
+            healthFill.style.width = '100%';
+            healthBar.appendChild(healthFill);
+            zombie.appendChild(healthBar);
+            
+            const startX = gameState.boardRect.width;
+            const yPosition = gameState.boardRect.top + row * gameState.cellSize.height + gameState.cellSize.height / 2 - 20;
+            
+            zombie.style.position = 'fixed';
+            zombie.style.left = (gameState.boardRect.left + startX) + 'px';
+            zombie.style.top = yPosition + 'px';
+            
+            document.getElementById('gameContainer').appendChild(zombie);
+            
+            const zombieObj = {
+                element: zombie,
+                healthBar: healthBar,
+                healthFill: healthFill,
+                row: row,
+                health: zombieType.health,
+                type: zombieTypeKeys[typeIndex],
+                x: startX,
+                attacking: false,
+                lastAttack: 0,
+                slowed: false,
+                slowedUntil: 0,
+                lastChomped: 0
+            };
+            
+            gameState.zombies.push(zombieObj);
+        }
+
+        // Show Points Popup
+        function showPointsPopup(element, points) {
+            const rect = element.getBoundingClientRect();
+            const popup = document.createElement('div');
+            popup.className = 'points-popup';
+            popup.textContent = `+${points}`;
+            popup.style.left = rect.left + 'px';
+            popup.style.top = rect.top + 'px';
+            popup.style.position = 'fixed';
+            
+            document.body.appendChild(popup);
+            
+            setTimeout(() => popup.remove(), 1500);
+        }
+
+        // Add Score
+        function addScore(points) {
+            gameState.score += points;
+            document.getElementById('scoreCount').textContent = gameState.score.toLocaleString();
+            
+            if (gameState.score % 1000 < points) {
+                gameState.sun += 50;
+                updateSunDisplay();
+                showPointsPopup(document.getElementById('sunCounter'), '+50 ☀️');
+            }
+        }
+
+        // Spawn Zombie Wave - FIXED WITH PROPER TIMING
+        function spawnZombieWave() {
+            if (gameState.isGameOver || gameState.isVictory) return;
+            
+            const zombieCount = Math.min(3 + Math.floor(gameState.wave / 2), 15);
+            const spawnDelay = Math.max(3000 - gameState.wave * 100, 1000);
+            
+            let spawnedCount = 0;
+            const spawnInterval = setInterval(() => {
+                if (gameState.isPaused) {
+                    // Don't spawn while paused
+                    return;
+                }
+                
+                if (!gameState.isGameOver && !gameState.isVictory) {
+                    spawnZombie();
+                    spawnedCount++;
+                    
+                    if (spawnedCount >= zombieCount) {
+                        clearInterval(spawnInterval);
+                    }
+                }
+            }, spawnDelay);
+            
+            // Reset wave timing
+            gameState.waveStartTime = Date.now();
+            gameState.waveTimeElapsed = 0;
+            
+            // Schedule next wave
+            scheduleNextWave();
+        }
+
+        // Schedule next wave with proper pause handling - FIXED
+        function scheduleNextWave() {
+            if (gameState.waveTimer) {
+                clearTimeout(gameState.waveTimer);
+            }
+            
+            function checkWaveProgress() {
+                if (gameState.isGameOver || gameState.isVictory) return;
+                
+                if (gameState.isPaused) {
+                    // Store elapsed time when paused
+                    gameState.waveTimeElapsed = Date.now() - gameState.waveStartTime;
+                    // Check again in 100ms if paused
+                    gameState.waveTimer = setTimeout(checkWaveProgress, 100);
+                    return;
+                }
+                
+                // Calculate remaining time accounting for pause
+                const currentTime = Date.now();
+                const timeSinceStart = currentTime - gameState.waveStartTime;
+                const remaining = gameState.waveDuration - timeSinceStart;
+                
+                if (remaining <= 0) {
+                    // Time to spawn next wave
+                    if (gameState.wave < gameState.maxWaves) {
+                        gameState.wave++;
+                        gameState.zombieDamageMultiplier = 1 + (gameState.wave - 1) * 0.02;
+                        updateWaveDisplay();
+                        updateDamageDisplay();
+                        addScore(100 * gameState.wave);
+                        saveGameState();
+                        spawnZombieWave();
+                    } else {
+                        // Victory - survived all 20 waves!
+                        victory();
+                    }
+                } else {
+                    // Check again later
+                    gameState.waveTimer = setTimeout(checkWaveProgress, Math.min(remaining, 1000));
+                }
+            }
+            
+            gameState.waveTimer = setTimeout(checkWaveProgress, 1000);
+        }
+
+        // Victory function
+        function victory() {
+            gameState.isVictory = true;
+            gameState.isGameOver = true;
+            
+            // Clear all remaining zombies
+            gameState.zombies.forEach(zombie => {
+                if (zombie.element) {
+                    zombie.element.remove();
+                }
+            });
+            gameState.zombies = [];
+            
+            // Add victory bonus
+            const victoryBonus = 5000;
+            gameState.score += victoryBonus;
+            
+            // Auto-save score
+            saveToLeaderboard(gameState.score, gameState.wave, gameState.zombiesDefeated);
+            
+            // Show victory screen
+            document.getElementById('victoryScore').textContent = gameState.score.toLocaleString();
+            document.getElementById('victoryZombies').textContent = gameState.zombiesDefeated;
+            document.getElementById('victoryScreen').style.display = 'block';
+        }
+
+        // Spawn Sun Periodically
+        function spawnSunPeriodically() {
+            if (gameState.sunInterval) {
+                clearInterval(gameState.sunInterval);
+            }
+            
+            gameState.sunInterval = setInterval(() => {
+                if (!gameState.isPaused && !gameState.isGameOver) {
+                    spawnFallingSun();
+                }
+            }, 8000);
+        }
+
+        // Spawn Falling Sun
+        function spawnFallingSun() {
+            const sun = document.createElement('div');
+            sun.className = 'sun';
+            
+            const sunEmoji = document.createElement('span');
+            sunEmoji.textContent = '☀️';
+            sun.appendChild(sunEmoji);
+            
+            const sunValue = document.createElement('span');
+            sunValue.className = 'sun-value';
+            sunValue.textContent = '50';
+            sun.appendChild(sunValue);
+            
+            sun.style.left = Math.random() * (window.innerWidth - 50) + 'px';
+            
+            document.getElementById('gameContainer').appendChild(sun);
+            
+            sun.addEventListener('click', () => collectSun(sun, 50));
+            sun.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                collectSun(sun, 50);
+            });
+            
+            setTimeout(() => {
+                if (sun.parentElement) {
+                    sun.remove();
+                }
+            }, 10000);
+        }
+
+        // Collect Sun
+        function collectSun(sunElement, value) {
+            if (!sunElement.parentElement) return;
+            
+            sunElement.classList.add('collect-effect');
+            gameState.sun += value;
+            updateSunDisplay();
+            
+            addScore(10);
+            createParticleEffect(sunElement, '+' + value);
+            
+            setTimeout(() => {
+                if (sunElement.parentElement) {
+                    sunElement.remove();
+                }
+            }, 500);
+        }
+
+        // Update Sun Display
+        function updateSunDisplay() {
+            document.getElementById('sunCount').textContent = gameState.sun;
+            
+            document.querySelectorAll('.plantCard').forEach(card => {
+                const cost = parseInt(card.dataset.cost);
+                if (gameState.sun < cost) {
+                    card.classList.add('disabled');
+                } else {
+                    card.classList.remove('disabled');
+                }
+            });
+            
+            saveGameState();
+        }
+
+        // Create Particle Effect
+        function createParticleEffect(element, emoji) {
+            const rect = element.getBoundingClientRect ? 
+                element.getBoundingClientRect() : 
+                { left: element.offsetLeft, top: element.offsetTop };
+            
+            for (let i = 0; i < 3; i++) {
+                const particle = document.createElement('div');
+                particle.className = 'particle';
+                particle.textContent = emoji;
+                particle.style.left = rect.left + 'px';
+                particle.style.top = rect.top + 'px';
+                particle.style.setProperty('--x', (Math.random() - 0.5) * 100 + 'px');
+                particle.style.setProperty('--y', (Math.random() - 0.5) * 100 + 'px');
+                
+                document.body.appendChild(particle);
+                
+                setTimeout(() => particle.remove(), 1000);
+            }
+        }
+
+        // Game Loop
+        function startGameLoop() {
+            function gameLoop() {
+                const now = Date.now();
+                const deltaTime = now - gameState.lastUpdate;
+                gameState.lastUpdate = now;
+                
+                if (!gameState.isPaused && !gameState.isGameOver) {
+                    moveZombies(deltaTime);
+                    moveProjectiles(deltaTime);
+                    
+                    gameState.plants.forEach(plant => {
+                        if (!plant.element) return;
+                        const plantType = plantTypes[plant.type];
+                        
+                        if (plantType.produces === 'sun') {
+                            if (!plant.lastProduction || now - plant.lastProduction > plantType.interval / gameState.gameSpeed) {
+                                plant.lastProduction = now;
+                                produceSun(plant);
+                            }
+                        }
+                        
+                        if (plantType.shoots) {
+                            shoot(plant);
+                        }
+                    });
+                    
+                    gameState.plants = gameState.plants.filter(p => p.element);
+                    
+                    const debugInfo = document.getElementById('debugInfo');
+                    if (debugInfo.style.display === 'block') {
+                        debugInfo.innerHTML = `
+                            Zombies: ${gameState.zombies.length}<br>
+                            Plants: ${gameState.plants.length}<br>
+                            Projectiles: ${gameState.projectiles.length}<br>
+                            Score: ${gameState.score}<br>
+                            Wave: ${gameState.wave}/${gameState.maxWaves}<br>
+                            Damage Mult: ${gameState.zombieDamageMultiplier.toFixed(2)}x<br>
+                            FPS: ${Math.round(1000 / deltaTime)}
+                        `;
+                    }
+                }
+                
+                gameState.gameLoopId = requestAnimationFrame(gameLoop);
+            }
+            
+            gameState.gameLoopId = requestAnimationFrame(gameLoop);
+        }
+
+        // Toggle Pause - FIXED WITH PROPER TIMING
+        function togglePause() {
+            gameState.isPaused = !gameState.isPaused;
+            document.getElementById('pauseMenu').style.display = 
+                gameState.isPaused ? 'block' : 'none';
+            document.getElementById('pauseBtn').textContent = gameState.isPaused ? '▶️ Play' : '⏸️ Pause';
+            
+            if (gameState.isPaused) {
+                // Store pause time
+                gameState.pauseTime = Date.now();
+            } else {
+                // Resume: adjust wave start time to account for pause duration
+                if (gameState.pauseTime) {
+                    const pauseDuration = Date.now() - gameState.pauseTime;
+                    gameState.waveStartTime += pauseDuration;
+                    gameState.pauseTime = null;
+                }
+                // Reset timing when unpausing
+                gameState.lastUpdate = Date.now();
+            }
+        }
+
+        // Resume Game
+        function resumeGame() {
+            if (gameState.isPaused) {
+                // Resume: adjust wave start time to account for pause duration
+                if (gameState.pauseTime) {
+                    const pauseDuration = Date.now() - gameState.pauseTime;
+                    gameState.waveStartTime += pauseDuration;
+                    gameState.pauseTime = null;
+                }
+            }
+            
+            gameState.isPaused = false;
+            document.getElementById('pauseMenu').style.display = 'none';
+            document.getElementById('pauseBtn').textContent = '⏸️ Pause';
+            gameState.lastUpdate = Date.now();
+        }
+
+        // Game Over - AUTO SAVE SCORE
+        function gameOver() {
+            if (gameState.isGameOver) return;
+            
+            gameState.isGameOver = true;
+            
+            // Auto-save score
+            saveToLeaderboard(gameState.score, gameState.wave, gameState.zombiesDefeated);
+            
+            document.getElementById('gameOver').style.display = 'block';
+            document.getElementById('finalScore').textContent = gameState.score.toLocaleString();
+            document.getElementById('finalWave').textContent = gameState.wave;
+            document.getElementById('finalZombies').textContent = gameState.zombiesDefeated;
+        }
+
+        // Restart Game - REPLACED WITH RESET
+        function restartGame() {
+            // Maintain fullscreen state
+            const wasFullscreen = document.fullscreenElement !== null;
+            
+            // Reset the game
+            resetGame();
+            
+            // Restore fullscreen if it was active
+            if (wasFullscreen) {
+                enterFullscreen();
+            }
+        }
+
+        // Toggle Fullscreen
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                enterFullscreen();
+            } else {
+                const exitFS = document.exitFullscreen || 
+                              document.webkitExitFullscreen || 
+                              document.mozCancelFullScreen || 
+                              document.msExitFullscreen;
+                
+                if (exitFS) {
+                    exitFS.call(document).then(() => {
+                        gameState.wasFullscreen = false;
+                        localStorage.removeItem('pvz_fullscreen');
+                        setTimeout(updateBoardDimensions, 100);
+                    });
+                }
+            }
+        }
+
+        // Save Game State
+        function saveGameState() {
+            const saveData = {
+                sun: gameState.sun,
+                score: gameState.score,
+                wave: gameState.wave,
+                zombiesDefeated: gameState.zombiesDefeated,
+                zombieDamageMultiplier: gameState.zombieDamageMultiplier
+            };
+            localStorage.setItem('pvz_gameState', JSON.stringify(saveData));
+        }
+
+        // Load Game State
+        function loadGameState() {
+            // Check if should restore fullscreen
+            const shouldBeFullscreen = localStorage.getItem('pvz_fullscreen') === 'true';
+            if (shouldBeFullscreen) {
+                setTimeout(() => {
+                    enterFullscreen();
+                }, 100);
+            }
+            
+            updateSunDisplay();
+        }
+
+        // Initialize game when page loads
+        window.addEventListener('load', init);
+        
+        // Handle visibility change
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && !gameState.isPaused && !gameState.isGameOver) {
+                togglePause();
+            } else if (!document.hidden && !gameState.isPaused) {
+                gameState.lastUpdate = Date.now();
+            }
+        });
+
+        // Debug mode toggle with 'D' key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'd' || e.key === 'D') {
+                const debugInfo = document.getElementById('debugInfo');
+                debugInfo.style.display = debugInfo.style.display === 'none' ? 'block' : 'none';
+            }
+        });
+    </script>
+</body>
+</html>
