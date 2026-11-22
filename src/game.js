@@ -243,7 +243,7 @@ export function gameEmotion(reaction) {
  * 记一局。每关最好成绩分开记（`top`），过关就写进 `cleared`，下一关自动解锁。
  * 没锚点的反应只存感想，标签清零——账不能记在演出来的情绪上。
  */
-export function noteGame(state = {}, { now = 0, day = '', snap = {}, minutes = 0, reaction = null, level = null } = {}) {
+export function noteGame(state = {}, { now = 0, day = '', snap = {}, minutes = 0, reaction = null, level = null, events = null } = {}) {
   const n = Number(level) || currentLevel(state);
   const wave = Number(snap.wave) || 1;
   const maxWaves = Number(snap.maxWaves) || levelInfo(n).waves;
@@ -277,15 +277,15 @@ export function noteGame(state = {}, { now = 0, day = '', snap = {}, minutes = 0
     top,
     last: entry,
     recent: [entry, ...(state.recent || [])].slice(0, RECENT_KEEP),
-    events: (state.events || []).slice(-EVENT_KEEP),
+    events: [...(state.events || []), ...(Array.isArray(events) ? events : [])].slice(-EVENT_KEEP),
   };
 }
 
-/** 这一局新发生的真事（用来做锚点和记日志）。 */
+/** 这一局新发生的真事（用来做锚点和记日志）。波数用这一关自己的，不是写死 20。 */
 export function gameEvents(prev = {}, snap = {}) {
   const list = [];
-  if (!prev.last) list.push(`开局，第 ${Number(snap.wave) || 1} 波`);
-  if (snap.victory) list.push('把 20 波全挡回去了');
+  const maxWaves = Number(snap.maxWaves) || 20;
+  if (snap.victory) list.push(`把 ${maxWaves} 波全挡回去了`);
   else if (snap.over) list.push(`第 ${Number(snap.wave) || 1} 波被突破，输了`);
   return list;
 }

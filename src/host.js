@@ -1076,8 +1076,9 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const text = await complete({
       system: `${personaCore()}\n\n${gameTurnPrompt({ state, minutesLeft })}`,
       messages: [{ role: 'user', text: `${lawnText(snap)}\n\n这一回合做什么？（大概还剩 ${Math.max(0, Math.round(minutesLeft))} 分钟）` }],
-      // 推理模型会先吃掉预算：给宽一点，免得她只写了半句就被切断。
-      maxTokens: 300,
+      // 300 实测会被推理模型的思考吃掉（真跑里两回合返回了空和半句「[种:」）：
+      // 一手就二十来个字，但预算得给够——800 偶尔还会被截断，给到 1500。
+      maxTokens: 1500,
     });
     return String(text || '').trim();
   }
@@ -1110,6 +1111,10 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         let reply = '';
         try {
           reply = await gameTurn(snap, (deadline - now()) / 60e3, before);
+          // 空回复也见过（推理模型把预算吃光）：再问一次，别白丢一回合。
+          if (!reply && decisions < maxDecisions - 1 && now() < deadline) {
+            reply = await gameTurn(snap, (deadline - now()) / 60e3, before);
+          }
         } catch (e) {
           log.warn?.(`打僵尸：这一手想不出来（${e.message}），按现在的战况收摊`);
           break;
@@ -1160,7 +1165,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
           '别写成复盘，别夸游戏，别写旁白。引不出记录里的东西就别硬编。',
           '',
           '最后单独一行写：`[玩:标签 强度]`',
-          '标签从 爽/触动/酸/闷/尬/烦/无感 里选一个；强度 1(轻) 2(中) 3(重)。',
+          '标签从 爽/触动/酸/闷/尬/烦/无感 里选一个；强度 1(轻) 2(中) 3(重)。哪怕是「无感」也要写这一行。',
         ].join('\n'),
         messages: [{ role: 'user', text: `【这局的记录】${materialAll}${lockedNote ? `\n（${lockedNote}）` : ''}\n\n你现在的状态：${moodWord}` }],
         maxTokens: 400,
