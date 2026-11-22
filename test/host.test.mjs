@@ -1242,6 +1242,23 @@ test('开着：她知道你在哪个窗口，五分钟内不重复去读', async
   assert.equal(reads, 2, '过了时限才重新读');
 });
 
+test('这一轮才读到的窗口不能自己丢掉：读花了几百毫秒，也照样说得出来', async () => {
+  // 真事（2026-11-22）：他问「你现在能看到我电脑上在做什么吗」→ 这一轮才去读 →
+  // 读完之后 now() 已经比开头抓的 t 晚了几百毫秒 → 旧代码把这块当过期丢掉 → 她只回「看不到」。
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-screen-race-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42', screen: { enabled: true } }));
+  let clock = NOON;
+  const ctx = fakeCtx({ replies: ['嗯'] });
+  const host = createHost(ctx, {
+    dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0,
+    // 读窗口要 spawn 一次 PowerShell：这一步是真花时间。这里让它把时钟往前推 400ms。
+    screenReader: async () => { clock += 400; return { app: 'WindowsTerminal', title: 'C:\\WINDOWS\\system32\\cmd.exe' }; },
+  });
+  await host.handleEvent(say('在吗'));
+  assert.match(systemOf(ctx.calls[0]), /WindowsTerminal/, '这一轮就读到了，必须进上下文');
+  assert.match(systemOf(ctx.calls[0]), /刚刚看到的/);
+});
+
 test('读到了密码管理器：她什么都没看见', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'qqc-screen2-'));
   writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42', screen: { enabled: true } }));
