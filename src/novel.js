@@ -296,7 +296,9 @@ export function novelLine(state, now = 0) {
   const thought = String(state.thought || '').trim();
   // 只有 40 分钟内的才算「这会儿还带着的滋味」；过了就只剩「当时想的是」。
   const feel = now - at < 40 * 60e3 ? READ_WORD[state.label] : '';
-  return `你${when}自己在看《${name}》，读到${where}${feel ? `，${feel}` : ''}${thought ? `，当时想的是：「${thought}」` : ''}。`;
+  // 她写感想时常常整句引原文（开头就是「…」）；再套一层就变成「「…」」。
+  const said = thought ? `，当时想的是：${thought.startsWith('「') ? thought : `「${thought}」`}` : '';
+  return `你${when}自己在看《${name}》，读到${where}${feel ? `，${feel}` : ''}${said}。`;
 }
 
 // ---- P2：对一本书的态度会累积，并且有后果（弃书 / 追更 / 重读） ----

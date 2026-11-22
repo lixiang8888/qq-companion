@@ -270,6 +270,9 @@ test('注入那一行：刚读完的滋味在，过了 40 分钟就只剩「当�
   const later = novelLine(s, NOON + 2 * H);
   assert.doesNotMatch(later, /闷/);
   assert.match(later, /有点替他不值/);
+  // 她自己引原文时开头就是「…」，别再套一层变成「「…」」（真跑时出现过）
+  const quoted = noteRead({}, { now: NOON, book: { bookUrl: 'http://x/1', name: '斗破苍穹' }, index: 0, thought: '「她在等待死亡」这几个字看得我一激灵', label: '闷' });
+  assert.doesNotMatch(novelLine(quoted, NOON), /「「/);
 });
 
 test('[书:] 想看什么：目录 / 第 N 章都认，看不懂就不动', () => {
