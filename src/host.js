@@ -151,7 +151,8 @@ const DEFAULT_CONFIG = {
   novel: { base: '', launcher: '', cooldownMinutes: 30 },
   // 她自己的小游戏：真游戏在无头浏览器里跑（assets/pvz/），她只做决定。
   // enabled 默认关：要开浏览器、要花调用，也给不想让她玩的人一个开关。
-  game: { enabled: false, edgePath: '', stepMs: 4000, maxDecisions: 120, maxMinutes: 25, maxPerDay: 1 },
+  // stepMs 是「每个决定之间让游戏跑多久」：真游戏一波 30 秒，8 秒算正好四手一波、20 波约 75 手。
+  game: { enabled: false, edgePath: '', stepMs: 8000, maxDecisions: 160, maxMinutes: 30, maxPerDay: 1 },
   // 聊天原文归档（按月一个 jsonl）：压缩之后能翻回原话的唯一地方。
   transcript: { enabled: true },
 };

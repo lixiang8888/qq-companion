@@ -85,6 +85,19 @@ export function parseMove(reply) {
   return null;
 }
 
+/**
+ * 这一波会来多少、多密——直接照复刻版的 spawnZombieWave 算（不是猜的）：
+ *   count = min(3 + floor(wave/2), 15)，间隔 = max(3000 - wave*100, 1000) 毫秒。
+ * 每波固定 30 秒，时间到就下一波（不等你清完）。她该知道难度在涨。
+ */
+export function waveInfo(wave = 1) {
+  const w = Math.max(1, Number(wave) || 1);
+  return {
+    count: Math.min(3 + Math.floor(w / 2), 15),
+    gapSec: Math.max(3000 - w * 100, 1000) / 1000,
+  };
+}
+
 const shortName = (key) => (PLANTS[key]?.name || String(key || '?')).slice(0, 2);
 
 /** 她把草坪看成什么样：5 行 × 9 列，`·` 是空地。 */
@@ -103,10 +116,12 @@ export function lawnText(snap = {}) {
     .map((z) => `第${Number(z.row) + 1}行 ${ZOMBIES[z.type].name}@第${Math.max(1, Math.ceil(Number(z.col) || 1))}列 血${Math.round(Number(z.health) || 0)}`);
   const sun = Number(snap.sun) || 0;
   const afford = Object.entries(PLANTS).filter(([, v]) => v.cost <= sun).map(([, v]) => v.name).join('/') || '什么都种不起';
+  const wave = Number(snap.wave) || 1;
+  const info = waveInfo(wave);
   return [
     lines.join('\n'),
     zs.length ? `僵尸：${zs.join('；')}` : '僵尸：这一眼没有',
-    `阳光 ${sun}（买得起：${afford}）；第 ${Number(snap.wave) || 1}/${Number(snap.maxWaves) || 20} 波；分数 ${Number(snap.score) || 0}；打掉 ${Number(snap.defeated) || 0} 个。`,
+    `阳光 ${sun}（买得起：${afford}）；第 ${wave}/${Number(snap.maxWaves) || 20} 波（这一波约 ${info.count} 个，每 ${info.gapSec} 秒一个）；分数 ${Number(snap.score) || 0}；打掉 ${Number(snap.defeated) || 0} 个。`,
   ].join('\n');
 }
 
@@ -129,6 +144,7 @@ export function gameTurnPrompt({ best = null, minutesLeft = 0 } = {}) {
   return [
     '你在玩《植物大战僵尸》（一个开源复刻版，不是原版，数值不一样）。',
     `草地 5 行 × 9 列（行从上到下 1-5，列从左到右 1-9）。僵尸从右边来，走到最左边你就输；撑过 20 波就赢。`,
+    '每波固定 30 秒，时间到就下一波，不等你清完；越往后一波更多、来得更密、咬得更重（第 20 波约 13 个、每秒一个、伤害 +38%）。',
     `植物价格：${cost}。这只复刻里向日葵也会射击，坚果很肉。僵尸血量：${hp}。`,
     '你这一回合只能做一件事：在某一格种一棵植物，或者先等一等（攒阳光、等冷却）。',
     '只回一行，不要解释：`[种:豌豆 3,2]` 或 `[等]`。',

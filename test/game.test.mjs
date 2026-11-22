@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   GAME_TTL, PLANTS, gameEmotion, gameLine, gameTurnPrompt, lawnText, noteGame, parseGameReaction,
-  parseMove, plantIn, resultText, shouldPlay,
+  parseMove, plantIn, resultText, shouldPlay, waveInfo,
 } from '../src/game.js';
 
 const H = 3600e3;
@@ -119,6 +119,13 @@ test('闸门：他安静够久、今天没玩过、心情还行才开一局', ()
   assert.equal(shouldPlay({ ...base, mood: 0.1 }), false, '心情太差');
   assert.equal(shouldPlay({ ...base, lastUserAt: 0 }), false, '从没说过话');
   assert.equal(shouldPlay({ ...base, lastPlayAt: NOW - 10 * 60e3 }), false, '刚玩完');
+});
+
+test('波次难度：照引擎公式算——越往后越多越密，封顶 15 个/1 秒', () => {
+  assert.deepEqual(waveInfo(1), { count: 3, gapSec: 2.9 });
+  assert.deepEqual(waveInfo(10), { count: 8, gapSec: 2 });
+  assert.deepEqual(waveInfo(20), { count: 13, gapSec: 1 });
+  assert.deepEqual(waveInfo(99), { count: 15, gapSec: 1 });
 });
 
 test('回合提示：给价格和僵尸血量，但不替她拿主意', () => {
