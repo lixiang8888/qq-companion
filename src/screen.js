@@ -80,7 +80,10 @@ export function screenLine(state, now = 0, { ttl = SCREEN_TTL } = {}) {
   const app = clean(state?.app, MAX_APP);
   if (!at || !app) return '';
   const gap = Number(now) - at;
-  if (!(gap >= 0) || gap >= ttl) return '';
+  // 读是在这一轮中途才发生的：调用方手里的 now 抓得比 at 早一点点。
+  // 那是「刚刚」，不是过期——以前这里把 gap < 0 也当过期，于是「他刚开口问」这一轮
+  // 永远是空的（读到的新鲜数据被自己丢掉），她只能回「看不到」。
+  if (!(gap >= -60e3) || gap >= ttl) return '';
   const mins = Math.floor(gap / 60e3);
   const ago = mins < 1 ? '刚刚' : `${mins} 分钟前`;
   const title = clean(state?.title, MAX_TITLE);

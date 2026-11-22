@@ -55,3 +55,14 @@ test('五分钟外的不说——那不是「此刻」', () => {
   assert.equal(screenLine({ at: T, app: '', title: '' }, T), '', '没读到就什么都不说');
   assert.equal(screenLine(null, T), '');
 });
+
+test('这一轮才读到的屏幕不能自己丢掉：at 比调用方手里的 now 晚一点也算「刚刚」', () => {
+  // 真事：他问「你能看到我电脑在做什么吗」→ 这一轮才去读 → at 比 t 晚几十毫秒 →
+  // 以前 gap < 0 被当成过期，整块被丢，她只能回「看不到」。读完就该说得出。
+  const fresh = { at: T + 300, app: 'WindowsTerminal', title: 'C:\\WINDOWS\\system32\\cmd.exe' };
+  const line = screenLine(fresh, T);
+  assert.match(line, /WindowsTerminal/);
+  assert.match(line, /刚刚看到的/);
+  // 差得离谱（时钟错乱一小时）才当异常，宁可不说是哪个窗口
+  assert.equal(screenLine({ at: T + 3600e3, app: 'Code', title: 'x' }, T), '');
+});

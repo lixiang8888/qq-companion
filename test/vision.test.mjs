@@ -130,3 +130,30 @@ test('动图抽帧：多帧时每帧缩成 jpeg，且取单帧必须带 pages:1'
   assert.ok(seen.some((o) => o?.page !== undefined && o?.pages === 1), '取单帧必须带 pages:1');
   assert.ok(seen.every((o) => o?.pages === undefined || o?.pages === 1), '只有 metadata 那次可以不限页数');
 });
+
+test('看图预算被思考吃掉：finish_reason=length 就加预算重试，真空的不重试', async () => {
+  // 真事（2026-11-22，4 帧动图）：max_tokens=800 全被 reasoning 吃掉、content 空、finish_reason=length，
+  // 她只拿到「看不到」。给第二次更大的预算就能拿到描述。
+  const calls = [];
+  const lengthThenOk = async (url, opts) => {
+    calls.push(JSON.parse(opts.body).max_tokens);
+    if (calls.length === 1) {
+      return { ok: true, json: async () => ({ choices: [{ finish_reason: 'length', message: { content: '' } }] }) };
+    }
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: '一个粉发女孩在喝饮料' } }], usage: { total_tokens: 99 } }) };
+  };
+  const r = await describeImage({ dataUrl: 'data:x', key: 'k', fetchImpl: lengthThenOk });
+  assert.equal(r.ok, true);
+  assert.match(r.text, /粉发女孩/);
+  assert.deepEqual(calls, [2000, 4000], '重试要给更大的预算');
+
+  // 真空回复（finish_reason=stop）：不重试，直接报没描述
+  const emptyCalls = [];
+  const empty = async (url, opts) => {
+    emptyCalls.push(1);
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: '  ' } }] }) };
+  };
+  const e = await describeImage({ dataUrl: 'data:x', key: 'k', fetchImpl: empty });
+  assert.equal(e.ok, false);
+  assert.equal(emptyCalls.length, 1);
+});

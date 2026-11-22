@@ -76,37 +76,44 @@ export function dataUrlOf(bytes, mime = 'image/jpeg') {
 /**
  * 让模型描述一张图。失败一律返回 {ok:false}，绝不抛——看图失败不该让她哑掉。
  */
-export async function describeImage({ dataUrl, dataUrls, key, prompt = '', fetchImpl = globalThis.fetch, model = VISION_MODEL, baseUrl = VISION_BASE, timeoutMs = 30000 } = {}) {
+export async function describeImage({ dataUrl, dataUrls, key, prompt = '', fetchImpl = globalThis.fetch, model = VISION_MODEL, baseUrl = VISION_BASE, timeoutMs = 30000, maxTokens = 2000 } = {}) {
   const list = (Array.isArray(dataUrls) && dataUrls.length ? dataUrls : [dataUrl]).filter(Boolean);
   if (!list.length) return { ok: false, reason: '没有图' };
   if (!key) return { ok: false, reason: '没有可用的 key' };
   try {
-    const res = await fetchImpl(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-      body: JSON.stringify({
-        model,
-        max_tokens: 800, // 推理模型会先用掉一截 token，给少了正文就是空的
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'text', text: prompt || '用一两句话描述这张图里有什么：画的是什么、有没有文字（有就照抄）、什么气氛。只描述，不评价、不猜测背景。' },
-            ...list.map((url) => ({ type: 'image_url', image_url: { url } })),
-          ],
-        }],
-      }),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    // 400 的正文里通常写着到底哪不对（格式、大小、内容），只报状态码等于什么都没说。
-    if (!res.ok) {
-      const raw = await res.text().catch(() => '');
-      const why = raw.replace(/\s+/g, ' ').trim().slice(0, 120);
-      return { ok: false, reason: `HTTP ${res.status}${why ? `：${why}` : ''}` };
+    // 800 实测不够：4 帧动图那次 finish_reason=length、reasoning_tokens 把 800 全吃掉、content 空，
+    // 于是她只拿到「看不到」。预算不够时再给一次更大的（只在 length 时重试，真空的就认了）。
+    for (const cap of [maxTokens, maxTokens * 2]) {
+      const res = await fetchImpl(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+        body: JSON.stringify({
+          model,
+          max_tokens: cap,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt || '用一两句话描述这张图里有什么：画的是什么、有没有文字（有就照抄）、什么气氛。只描述，不评价、不猜测背景。' },
+              ...list.map((url) => ({ type: 'image_url', image_url: { url } })),
+            ],
+          }],
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      // 400 的正文里通常写着到底哪不对（格式、大小、内容），只报状态码等于什么都没说。
+      if (!res.ok) {
+        const raw = await res.text().catch(() => '');
+        const why = raw.replace(/\s+/g, ' ').trim().slice(0, 120);
+        return { ok: false, reason: `HTTP ${res.status}${why ? `：${why}` : ''}` };
+      }
+      const body = await res.json().catch(() => null);
+      const choice = body?.choices?.[0];
+      const text = String(choice?.message?.content ?? '').trim();
+      if (text) return { ok: true, text, usage: body?.usage ?? null };
+      if (choice?.finish_reason === 'length') continue;
+      return { ok: false, reason: '模型没给描述' };
     }
-    const body = await res.json().catch(() => null);
-    const text = String(body?.choices?.[0]?.message?.content ?? '').trim();
-    if (!text) return { ok: false, reason: '模型没给描述' };
-    return { ok: true, text, usage: body?.usage ?? null };
+    return { ok: false, reason: '模型把预算全花在思考上（finish_reason=length）' };
   } catch (e) {
     return { ok: false, reason: String(e?.message || e) };
   }
