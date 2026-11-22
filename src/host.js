@@ -11,7 +11,7 @@ import { join, dirname } from 'node:path';
 import { createJsonStore } from './store.js';
 import { createOneBot, sendImage, sendText } from './onebot.js';
 import { forwardIdOf, normalizeMessage, quoteLine, renderForward, replyIdOf, setEmojiNames, setFaceNames, splitReply } from './message.js';
-import { ANIMATION_PROMPT, MAX_IMAGE_BYTES, MAX_LOCAL_BYTES, dataUrlOf, describeImage, extractGifFrames, imageSegmentsOf, imageSourceOf, mimeOf, shrinkImage, sniffMime, videoSegmentsOf, withImageText } from './vision.js';
+import { ANIMATION_PROMPT, MAX_IMAGE_BYTES, MAX_LOCAL_BYTES, dataUrlOf, describeImage, extractGifFrames, framesPerImage, imageSegmentsOf, imageSourceOf, mimeOf, shrinkImage, sniffMime, videoSegmentsOf, withImageText } from './vision.js';
 import { MAX_VIDEO_BYTES, VIDEO_PROMPT, findFfmpeg, videoSheet, withVideoText } from './video.js';
 import { extractQuestions, leftoverQuestions, pendingLine } from './topics.js';
 import { createLlmComplete } from './llm.js';
@@ -1460,7 +1460,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         const pic = parsePerception(r.ok ? r.text : '');
         seen.push({ ...r, text: r.ok ? pic.desc : '', frames: anim.frames.length, pages: anim.pages, bytes: bytes.length, mime });
         if (r.ok) pendingPerceptions.push({ ...pic, bytes, mime, frames: Number(anim.pages) || anim.frames.length, at: now() });
-        shown.push(...anim.frames.slice(0, MAX_TURN_IMAGES));
+        // 一张动图可以给两帧看动作；但他连发两张图时每张只占一个名额，别让第二帧挤掉后面那张。
+        shown.push(...anim.frames.slice(0, framesPerImage(segs.length, anim.frames.length, MAX_TURN_IMAGES)));
       } else {
         // 静态大图：先缩小再发。以前这里直接判「太大」跳过，于是十几兆的原图永远看不到。
         let out = bytes;
@@ -1492,7 +1493,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     } catch { /* 调试文件写不了也不能影响回话 */ }
     return {
       ...msg,
-      text: withImageText(msg.text, seen, names) + more,
+      text: withImageText(msg.text, seen, names, { shown: shown.length }) + more,
       images: shown,
       looked: seen,
     };

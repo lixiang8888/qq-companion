@@ -119,16 +119,28 @@ export async function describeImage({ dataUrl, dataUrls, key, prompt = '', fetch
   }
 }
 
+/** 每张图给几个画面名额（最多 2 张）。只有一张图时动图给两帧看动作；多张图时每张只占一个，别互相挤掉。 */
+export function framesPerImage(segmentCount, frameCount, max = 2) {
+  if (!(frameCount > 1)) return 1;
+  return segmentCount <= 1 ? Math.min(frameCount, max) : 1;
+}
+
 /**
  * 把描述塞回正文，替换掉那个占位的 [图片]。
  * 看不到的时候，如果 QQ 自己带了表情名（summary，例如「[哈哈]」），就把这个名字说出来——
  * 名字是腾讯给的，不是她猜的。
+ * `shown` 是这一轮真的贴给她看的画面张数：贴了图却说「你看不到」，模型会照文字走，
+ * 然后回一句「看不到」——手里有画布就不许说瞎话。
  */
-export function withImageText(text, descriptions = [], names = []) {  const usable = descriptions.filter((d) => d?.ok && d.text);
+export function withImageText(text, descriptions = [], names = [], { shown = 0 } = {}) {
+  const usable = descriptions.filter((d) => d?.ok && d.text);
   if (!usable.length) {
     const known = (names || []).filter(Boolean);
     const hint = known.length ? `他发的表情叫「${known[0]}」` : '他发了一张图';
-    return `${text}（${hint}，你看不到内容——别猜，就说你看不到）`.trim();
+    const tail = shown > 0
+      ? '画面你看到了，但你没认出来是什么——别编，说看不太懂就行'
+      : '你看不到内容——别猜，就说你看不到';
+    return `${text}（${hint}，${tail}）`.trim();
   }
   // 说成「你看到了什么」，而不是「有人给了你一段图注」——
   // 后者会让她把图注念一遍（真机上每次都「看到了，……」）。

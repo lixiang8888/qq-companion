@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { MAX_IMAGE_BYTES, dataUrlOf, describeImage, imageSegmentsOf, imageSourceOf, mimeOf, withImageText } from '../src/vision.js';
+import { MAX_IMAGE_BYTES, dataUrlOf, describeImage, framesPerImage, imageSegmentsOf, imageSourceOf, mimeOf, withImageText } from '../src/vision.js';
 
 test('从消息段里挑图片', () => {
   const segs = [{ type: 'text' }, { type: 'image' }, { type: 'image' }];
@@ -156,4 +156,24 @@ test('看图预算被思考吃掉：finish_reason=length 就加预算重试，�
   const e = await describeImage({ dataUrl: 'data:x', key: 'k', fetchImpl: empty });
   assert.equal(e.ok, false);
   assert.equal(emptyCalls.length, 1);
+});
+
+test('图贴过去了但没认出来：不许说「你看不到」，因为画布就在她手里', () => {
+  // 真事（2026-11-22）：描述失败（token 被思考吃光），但像素其实已经贴给她了，
+  // 正文却写「你看不到内容」→ 她照着回「看不到」。手里有画面就不许说瞎话。
+  const out = withImageText('你看这个', [{ ok: false, reason: '模型没给描述' }], ['[动画表情]'], { shown: 1 });
+  assert.match(out, /画面你看到了/);
+  assert.match(out, /没认出来/);
+  assert.doesNotMatch(out, /你看不到内容/);
+  assert.match(out, /^你看这个（/, '他原话在最前面，图注接在后面');
+  // 真的一张都没贴（没 key / 下载失败）：照旧说看不到
+  const blind = withImageText('你看这个', [], [], { shown: 0 });
+  assert.match(blind, /你看不到内容/);
+});
+
+test('每张图占几个画面名额：单张动图给两帧，多张图各占一个', () => {
+  assert.equal(framesPerImage(1, 12), 2, '只有一张动图：给两帧看动作');
+  assert.equal(framesPerImage(2, 12), 1, '他连发两张：动图只占一个名额，别挤掉后面那张');
+  assert.equal(framesPerImage(1, 1), 1, '静态图就是一帧');
+  assert.equal(framesPerImage(1, 12, 4), 4, '名额上限由调用方传进来');
 });

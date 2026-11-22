@@ -1945,3 +1945,20 @@ test('分数不够高就只提一句，不贴图（省 token）', async () => {
   const last = ctx.calls[0].messages.at(-1);
   assert.equal(Array.isArray(last.images) ? last.images.length : 0, 0, '分数不够就别贴');
 });
+
+test('描述没拿到但图已经贴过去了：正文不许说「你看不到」', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-perc-blind-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ownerQQ: '42' }));
+  const sent = [];
+  const ctx = visionCtx();
+  const fetchImpl = perceptionFetch(sent, ''); // 视觉模型回空（真事：预算被思考吃光）
+  const host = createHost(ctx, { dataDir, now: () => NOON, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent(imageEvent('你看这张'));
+  const last = ctx.calls[0].messages.filter((m) => m.role === 'user').at(-1);
+  const pics = (last.content || []).filter((c) => c.type === 'image_url');
+  const text = (last.content || []).find((c) => c.type === 'text')?.text || '';
+  assert.equal(pics.length, 1, '像素确实贴给她了');
+  assert.match(text, /画面你看到了/, '手里有画面就不许说看不到');
+  assert.doesNotMatch(text, /你看不到内容/);
+});
