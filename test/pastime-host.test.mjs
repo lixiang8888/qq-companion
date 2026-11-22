@@ -37,7 +37,7 @@ function fakeCtx() {
 
 const BODY = '　　他紧握手掌，尖锐的指甲深深的刺进了掌心之中，带来一阵阵钻心的疼痛。'.repeat(6);
 
-function setup({ seedNovel = null } = {}) {
+function setup({ seedNovel = null, novelDown = false } = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), 'qqc-pastime-'));
   writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
     enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' },
@@ -47,6 +47,9 @@ function setup({ seedNovel = null } = {}) {
   if (seedNovel) writeFileSync(join(dataDir, 'novel.json'), JSON.stringify(seedNovel));
   const fetchImpl = async (url) => {
     const u = new URL(String(url));
+    if (novelDown && /^\/get(Bookshelf|ChapterList|BookContent)$/.test(u.pathname)) {
+      throw new Error('connect ECONNREFUSED 127.0.0.1:1123');
+    }
     if (u.pathname === '/getBookshelf') {
       return { ok: true, status: 200, json: async () => ({ data: [{ name: '斗破苍穹', bookUrl: 'http://x/1', totalChapterNum: 10, originName: '顶点小说' }] }) };
     }
@@ -84,6 +87,15 @@ test('两边都能做时她只做一件：先去看书，游戏这轮不开', as
   assert.ok(existsSync(join(dataDir, 'novel.json')));
   assert.match(readFileSync(join(dataDir, 'novel.json'), 'utf8'), /斗破苍穹/);
   assert.ok(!existsSync(join(dataDir, 'game.json')) || !/last/.test(readFileSync(join(dataDir, 'game.json'), 'utf8')), '这一轮不该有游戏战绩');
+});
+
+test('书读不成（后端挂着）就换游戏：不让她每轮"选看书"然后干坐着', async () => {
+  const { host, calls, tick } = setup({ novelDown: true });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '我去忙了', time: Math.floor(T / 1000) });
+  tick(40 * 60e3);
+  const pick = await host.pastime();
+  assert.equal(pick, 'game', '本来选看书，书翻不开就换游戏');
+  assert.equal(calls.open, 1, '真去打了');
 });
 
 test('小说读到腻了：这轮换成打游戏，不看书', async () => {

@@ -1256,8 +1256,19 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     if (pick === 'none') return 'none';
     choosingPastime = true;
     try {
-      if (pick === 'read') await readNovelIfBored();
-      else await playGameIfBored();
+      if (pick === 'read') {
+        const before = Number(novelStore.load().at) || 0;
+        await readNovelIfBored();
+        // 书没读成（后端没起、书都读完了）就换游戏：人也会这样，书翻不开就去打把僵尸。
+        // 不这样做的话，后端挂着的半天里她每轮都"选看书"，然后什么都没干。
+        if ((Number(novelStore.load().at) || 0) === before && canPlay) {
+          log.info?.('书没读成，换成打一局僵尸');
+          await playGameIfBored();
+          return 'game';
+        }
+      } else {
+        await playGameIfBored();
+      }
     } catch (e) {
       log.warn?.(`${pick === 'read' ? '读书' : '打僵尸'}出错：${e.message}`);
     } finally {
