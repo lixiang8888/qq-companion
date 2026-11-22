@@ -49,6 +49,7 @@ import { parseActions } from './actions.js';
 import { MAX_NAME, NAME_PROMPT, mergeFavorites, namesLine, needNames, parseFavorites, pickSticker } from './stickers.js';
 import { MAX_LEVEL, PLANTS, currentLevel, gameEmotion, gameEvents, gameLine, gameTurnPrompt, lawnText, levelInfo, moveAllowed, noteGame, parseGameReaction, parseMove, resultText, shouldPlay, unlockedPlants } from './game.js';
 import { createPvz, findBrowser } from './pvz.js';
+import { choosePastime } from './pastime.js';
 
 export const name = 'qq-companion';
 // cordis 的 inject 是「必填服务」清单：只有列在这里的服务，访问时才不会抛，
@@ -1220,6 +1221,51 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     return gameStore.load();
   }
 
+  /**
+   * 她自己的时间：看书还是打僵尸。同一次心跳只做一件——
+   * 以前是两条独立任务，能撞在同一分钟里（一边看小说一边打游戏）。
+   * 选哪个由 choosePastime 按真事算：上一件做的什么、这本读到什么态度、上一局输赢。
+   */
+  let choosingPastime = false;
+  async function pastimeIfBored() {
+    if (reading || playingGame || choosingPastime) return 'busy';
+    const t = now();
+    const nv = novelStore.load();
+    const gs = gameStore.load();
+    const hist = session.snapshot().history;
+    const lastUserAt = [...hist].reverse().find((m) => m.role === 'user')?.at || 0;
+    const mood = companion.snapshot().mood.v;
+    const day = dayKeyOf(t);
+    const readsToday = nv.readsDay === day ? Number(nv.readsToday) || 0 : 0;
+    const canRead = isBored({ now: t, lastUserAt, lastReadAt: Number(nv.at) || 0, readsToday, mood });
+    const playsToday = (gs.recent || []).filter((g) => g.day === day).length;
+    const canPlay = gameEnabled()
+      && shouldPlay({
+        now: t, lastUserAt, lastPlayAt: Number(gs.last?.at) || 0, playsToday, mood,
+        maxPerDay: Math.max(1, Number(config.game?.maxPerDay) || 1),
+      })
+      && Boolean(String(config.game?.edgePath || '') || findBrowser());
+    const pick = choosePastime({
+      canRead, canPlay,
+      bookAttitude: Number(nv.books?.[nv.bookUrl]?.attitude) || 0,
+      lastReadAt: Number(nv.at) || 0,
+      lastGameAt: Number(gs.last?.at) || 0,
+      lastGame: gs.last || null,
+      now: t,
+    });
+    if (pick === 'none') return 'none';
+    choosingPastime = true;
+    try {
+      if (pick === 'read') await readNovelIfBored();
+      else await playGameIfBored();
+    } catch (e) {
+      log.warn?.(`${pick === 'read' ? '读书' : '打僵尸'}出错：${e.message}`);
+    } finally {
+      choosingPastime = false;
+    }
+    return pick;
+  }
+
   // 想一想：一天最多一次，和读书一样不排队列（一次模型调用十几秒），自带并发闸。
   let thinking = false;
   const THINK_PROMPT = [
@@ -2091,10 +2137,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     enqueue(refreshInsights).catch((e) => log.warn?.(`周自述出错：${e.message}`));
     enqueue(refreshBalance).catch((e) => log.warn?.(`查余额出错：${e.message}`));
     enqueue(refreshPerception).catch((e) => log.warn?.(`图片清理出错：${e.message}`));
-    // 她无聊的时候自己看书。不排队列：一章十几秒，会把他刚发的消息堵住（函数内部自带并发闸）。
-    readNovelIfBored().catch((e) => log.warn?.(`读书出错：${e.message}`));
-    // 她无聊的时候也会自己打一局僵尸（真浏览器、真游戏，她只做决定）。
-    playGameIfBored().catch((e) => log.warn?.(`打僵尸出错：${e.message}`));
+    // 她自己的时间：看书还是打僵尸，一次只做一件（以前两条任务会撞在同一分钟）。
+    pastimeIfBored().catch((e) => log.warn?.(`她的空闲时间出错：${e.message}`));
     // 每天最多一次的「想一想」：从真反应里长出她自己的念头。同样不排队列。
     thinkIfBored().catch((e) => log.warn?.(`想一想出错：${e.message}`));
     // 他上一句说完就没了：给她一个很轻的「被晾」，只改语气，一天一次。
@@ -2373,7 +2417,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     log.info?.(`qq-companion：面板 ${panelUrl}`);
   } catch { /* 诊断日志失败不影响启动 */ }
 
-  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, perception: { cleanup: () => enqueue(refreshPerception), stats: () => statsOf(perceptionStore.load()) }, novel: { state: () => novelStore.load(), read: () => readNovelIfBored(), think: () => thinkIfBored(), line: () => novelLine(novelStore.load(), now()), mind: () => mindLine(novelStore.load(), now()), look: (spec) => lookBookSpec(spec) }, game: { state: () => gameStore.load(), play: () => playGameIfBored(), line: () => gameLine(gameStore.load(), now()) }, get config() { return config; }, dataDir };
+  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, perception: { cleanup: () => enqueue(refreshPerception), stats: () => statsOf(perceptionStore.load()) }, novel: { state: () => novelStore.load(), read: () => readNovelIfBored(), think: () => thinkIfBored(), line: () => novelLine(novelStore.load(), now()), mind: () => mindLine(novelStore.load(), now()), look: (spec) => lookBookSpec(spec) }, game: { state: () => gameStore.load(), play: () => playGameIfBored(), line: () => gameLine(gameStore.load(), now()) }, pastime: () => pastimeIfBored(), get config() { return config; }, dataDir };
 }
 
 function loadConfig(file, log) {
