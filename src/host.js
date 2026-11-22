@@ -18,7 +18,7 @@ import { createLlmComplete } from './llm.js';
 import { createLocalSession, MAX_TURN_IMAGES, stampOf } from './session.js';
 import { createCompanion } from './companion.js';
 import { dayKeyOf, initState, pushEmotion, settle } from './affect/core.js';
-import { stateLine } from './affect/inject.js';
+import { moodLabel, stateLine } from './affect/inject.js';
 import { createCard, forget, maintain, rankForPrompt, remember, render, restore, stats as memoryStats } from './memory/card.js';
 import { sanitizeSecrets } from './memory/sanitize.js';
 import { search as memorySearch } from './memory/search.js';
@@ -39,7 +39,7 @@ import { HOUR, MINUTE, assemble, blk } from './fresh.js';
 import { renderPanel } from './panel.js';
 import { rollbackTraits } from './affect/personality.js';
 import { replyPlan } from './affect/behavior.js';
-import { DEFAULTS as PROACTIVE_DEFAULTS, composePokePrompt, notePoked, noteSaidByUser, noteTick, noteTurn, noteWait, parsePokeReply, pokeGate } from './proactive.js';
+import { DEFAULTS as PROACTIVE_DEFAULTS, composePokePrompt, isPresent, notePoked, noteSaidByUser, noteTick, noteTurn, noteWait, parsePokeReply, pokeGate } from './proactive.js';
 import { perceive } from './perceive.js';
 import { BORED_QUIET_MS, createNovel, isBored, mindLine, nextRead, noteRead, noteThought, novelLine, parseBookLookup, parseReaction, planRead, PREFERRED_SOURCE, reactionEmotion, READ_MAX_CHARS, recentReactions, READ_SKIP_TRIES, READING_EMOTION_DAY_MAX, REREAD_MIN_ATTITUDE, shouldDrop, updateBook } from './novel.js';
 import { fetchWeather, isStale, placeOf, weatherLine } from './weather.js';
@@ -1230,7 +1230,9 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const lastUserAt = [...hist].reverse().find((m) => m.role === 'user')?.at || 0;
     const st = companion.snapshot();
     const state = pokeStore.load();
-    const g = pokeGate({ now: t, cfg, lastUserAt, state, mood: st.mood.v });
+    // 聊天还在进行中吗：在场就按分钟惦记（最多插一句），不在场才按小时。
+    const present = isPresent({ now: t, lastUserAt, history: hist, cfg });
+    const g = pokeGate({ now: t, cfg, lastUserAt, state, mood: st.mood.v, present, emotion: st.emotion });
     if (!g.ok) return { poked: false, reason: g.reason };
 
     const lastLine = [...hist].reverse().find((m) => m.role === 'user')?.text || '';
@@ -1255,16 +1257,23 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       lowBalance: Number(config.budget?.lowBalance ?? LOW_BALANCE_CNY),
       life: advance(lifeStore.load(), t),
       lastPictureAt: shots.reduce((m, r) => Math.max(m, Number(r.at) || 0), 0),
+      // 她自己在看的书、她自己想出来的念头：也是「外面真的变了的事」，他安静时这是她的话题来源。
+      novel: novelStore.load(),
       seen: state.seen,
     });
     const prompt = composePokePrompt({
       clock: clockText(t),
-      idle: `他已经 ${g.idleHours} 小时没跟你说话了`,
+      // 在场时不能说「他已经 N 小时没跟你说话了」：他刚才还在，只是话停在半句上。
+      idle: g.active
+        ? `他 ${g.idleMinutes} 分钟前还在跟你说话，说到一半停了`
+        : `他已经 ${g.idleHours} 小时没跟你说话了`,
       lastLine,
       hint,
       inner: state.lastThought?.text || '',
       doing: await lifeBlock(),
       events: perceived.events,
+      // 情绪占主导：要不要开口、说得多急，得带着此刻的心情，不是只看时钟。
+      feel: `心情${moodLabel(st.mood.v)}${st.emotion.label ? ` · ${st.emotion.label}` : ''}`,
     });
 
     // 这是一次独立调用，不碰主历史：写进去，她就真会以为自己听过那句系统提醒。
@@ -1317,7 +1326,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     }
 
     if (!decided.send) {
-      pokeStore.save(noteWait({ state: withThought, now: t, minutes: decided.waitMinutes, cfg }));
+      pokeStore.save(noteWait({ state: withThought, now: t, minutes: decided.waitMinutes, cfg, present: Boolean(g.active) }));
       return { poked: false, reason: decided.reason || '想过了，先不说', waitMinutes: decided.waitMinutes, search: decided.search || '', looked };
     }
 
@@ -1329,7 +1338,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       try { await sleep(plan.delayMs); await sendText(onebot, msg, part); sent += 1; }
       catch (e) { log.warn?.(`主动搭话发送失败：${e.message}`); break; }
     }
-    pokeStore.save(notePoked({ state: withThought, now: t }));
+    pokeStore.save(notePoked({ state: withThought, now: t, active: Boolean(g.active), night: g.night === true }));
     // 她确实说了这句话。不记进历史，他下一句接上来时她不知道自己刚问过什么。
     if (sent) session.note(decided.message, { at: t });
     return { poked: true, sent, message: decided.message, search: decided.search || '', looked };
@@ -1359,12 +1368,16 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   function pokeNow() {    const t = now();
     const hist = session.snapshot().history;
     const lastUserAt = [...hist].reverse().find((m) => m.role === 'user')?.at || 0;
+    const cfg = { ...PROACTIVE_DEFAULTS, ...(config.proactive || {}) };
+    const st = companion.snapshot();
     return pokeGate({
       now: t,
-      cfg: { ...PROACTIVE_DEFAULTS, ...(config.proactive || {}) },
+      cfg,
       lastUserAt,
       state: pokeStore.load(),
-      mood: companion.snapshot().mood.v,
+      mood: st.mood.v,
+      present: isPresent({ now: t, lastUserAt, history: hist, cfg }),
+      emotion: st.emotion,
     });
   }
 
@@ -1655,12 +1668,17 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     pendingQuestions = leftoverQuestions(asked);
     // 这一轮说完了：按「他平时多久会回」重算期待点。到了那个点他还没吭声，她才会想起他。
     const turnEnd = now();
+    const turnCfg = { ...PROACTIVE_DEFAULTS, ...(config.proactive || {}) };
+    const turnHist = session.snapshot().history;
+    // 他刚刚还在说话 = 在场：期待点按分钟算（5~20 分钟），不再按「他平时多久回」（几小时）。
+    const stillHere = isPresent({ now: turnEnd, lastUserAt: Number(msg.at) || turnEnd, history: turnHist, cfg: turnCfg });
     pokeStore.save(noteTurn({
       now: turnEnd,
       state: pokeStore.load(),
       lastUserAt: Number(msg.at) || turnEnd,
-      history: session.snapshot().history,
-      cfg: { ...PROACTIVE_DEFAULTS, ...(config.proactive || {}) },
+      history: turnHist,
+      cfg: turnCfg,
+      present: stillHere,
     }));
     recallLines = ''; // 原话只活这一轮：下一轮要么重新翻，要么没有
     pendingImages.length = 0; // 贴回去的图也只活这一轮
@@ -1861,6 +1879,30 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   }
 
   /**
+   * 他上一句说完、她回了、人没了——这是真事，不是编的，所以可以进情绪。
+   * 轻到只改语气（强度 0.2，30 分钟半衰期就散），一天最多一次，不写记忆卡。
+   * 吵完架静下来不叫被晾，那叫冷处理：情绪是「被凶」或心情太低就不算。
+   */
+  function noteLeftOnRead(t) {
+    const cfg = { ...PROACTIVE_DEFAULTS, ...(config.proactive || {}) };
+    const hist = session.snapshot().history;
+    const last = hist[hist.length - 1];
+    if (!last || last.role !== 'assistant') return false;    // 最后一句不是她说的：没被晾
+    const lastUserAt = [...hist].reverse().find((m) => m.role === 'user')?.at || 0;
+    const gap = t - Number(lastUserAt || 0);
+    if (!lastUserAt || gap < cfg.leftOnReadMinutes * 60e3 || gap > 6 * 3600e3) return false;
+    const poke = pokeStore.load();
+    const day = dayKeyOf(t);
+    if (poke.leftOnRead?.day === day) return false;          // 一天只委屈一次
+    const st = settle(store.load(), t);
+    if (st.mood.v < 0.35 || st.emotion.label === '被凶') return false;
+    store.save(pushEmotion(st, { v: 0.42, a: 0.32, d: 0.4, intensity: Number(cfg.leftOnReadIntensity) || 0.2, label: '被晾' }, t));
+    pokeStore.save({ ...poke, leftOnRead: { day, at: t } });
+    log.info?.(`被晾：他 ${Math.round(gap / 60e3)} 分钟没接话`);
+    return true;
+  }
+
+  /**
    * 十分钟一次的心跳。顺手测出另一件事：两次心跳之间如果隔了很久，
    * 不是她不再，是机器睡了——那段时间她也是不存在的（进程被冻住，不是她在发呆）。
    */
@@ -1880,6 +1922,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     readNovelIfBored().catch((e) => log.warn?.(`读书出错：${e.message}`));
     // 每天最多一次的「想一想」：从真反应里长出她自己的念头。同样不排队列。
     thinkIfBored().catch((e) => log.warn?.(`想一想出错：${e.message}`));
+    // 他上一句说完就没了：给她一个很轻的「被晾」，只改语气，一天一次。
+    try { noteLeftOnRead(t); } catch (e) { log.warn?.(`记被晾失败：${e.message}`); }
     enqueue(evaluatePost).catch((e) => log.warn?.(`空间判定出错：${e.message}`));
     enqueue(refreshQzoneComments).catch((e) => log.warn?.(`查评论出错：${e.message}`));
     if (weatherOn()) enqueue(refreshWeather).catch((e) => log.warn?.(`查天气出错：${e.message}`));

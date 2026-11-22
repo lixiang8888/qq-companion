@@ -148,3 +148,30 @@ test('时长说成人话', () => {
   assert.equal(gapWords(25 * 60e3), '25 分钟');
   assert.equal(gapWords(0), '1 分钟');
 });
+
+// ---- 2026-11-22：她自己的书和念头，也是她主动开口的话题来源 ----
+
+test('书：六小时内看过就报一条，报过的不重复报', () => {
+  const novel = { bookName: '放开那个女巫', title: '第四章 火焰', label: '闷', anchor: '她在等待死亡', at: NOON - 2 * HOUR };
+  const base = { now: NOON, screenOn: false, weatherOn: false, lastUserAt: NOON - 10 * 60e3, pending: [], memory: { records: [] }, balance: null, life: { doing: '', until: 0 }, lastPictureAt: 0 };
+  const r = perceive({ ...base, novel });
+  assert.deepEqual(kinds(r), ['novel']);
+  assert.match(r.events[0].text, /放开那个女巫/);
+  assert.match(r.events[0].text, /第四章 火焰/);
+  assert.match(r.events[0].text, /闷/);
+  // 同一次阅读不重复报
+  assert.deepEqual(kinds(perceive({ ...base, novel, seen: r.seen })), []);
+  // 太久了就不算「刚在看」
+  assert.deepEqual(kinds(perceive({ ...base, novel: { ...novel, at: NOON - 7 * HOUR } })), []);
+});
+
+test('念头：36 小时内想过的事可以拿来开头，同一句不重复报', () => {
+  const base = { now: NOON, screenOn: false, weatherOn: false, lastUserAt: NOON - 10 * 60e3, pending: [], memory: { records: [] }, balance: null, life: { doing: '', until: 0 }, lastPictureAt: 0 };
+  const novel = { thoughts: [{ text: '他为什么总是不说呢', at: NOON - 20 * HOUR }] };
+  const r = perceive({ ...base, novel });
+  assert.deepEqual(kinds(r), ['thought']);
+  assert.match(r.events[0].text, /他为什么总是不说呢/);
+  assert.deepEqual(kinds(perceive({ ...base, novel, seen: r.seen })), []);
+  // 超过 36 小时：过期，不提
+  assert.deepEqual(kinds(perceive({ ...base, novel: { thoughts: [{ text: '旧念头', at: NOON - 40 * HOUR }] } })), []);
+});

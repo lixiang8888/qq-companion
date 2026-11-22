@@ -1962,3 +1962,64 @@ test('描述没拿到但图已经贴过去了：正文不许说「你看不到�
   assert.match(text, /画面你看到了/, '手里有画面就不许说看不到');
   assert.doesNotMatch(text, /你看不到内容/);
 });
+
+// ---- 2026-11-22：聊天中途消失（在场追问 / 被晾）、她自己的书当话题 ----
+
+test('聊到一半他没了：几分钟后她会追问一句，追完就等（不会一直聊下去）', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-active-'));
+  const sent = [];
+  const fetchImpl = async (url, init) => {
+    sent.push({ url, body: init?.body });
+    return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
+  };
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+    enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' },
+    proactive: { enabled: true, quietFrom: 0, quietTo: 0, minGapMinutes: 120 },
+  }));
+  let clock = new Date(2026, 0, 1, 14, 0, 0).getTime();
+  const ctx = fakeCtx({ replies: ['嗯', '{"send":true,"message":"人呢"}', '{"send":true,"message":"人呢人呢"}'] });
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '洗完是不', time: Math.floor(clock / 1000) });
+  // 刚聊完：不在期待点上
+  clock += 2 * 60e3;
+  assert.equal((await host.proactive.tick()).poked, false);
+
+  // 二十一分钟他还没接：在场（30 分钟内）→ 追问（minGap 120 分钟不能挡住）
+  clock += 21 * 60e3;
+  const r = await host.proactive.tick();
+  assert.equal(r.poked, true, '聊天中途的沉默按分钟算');
+  const pokePrompt = ctx.calls.at(-1).messages.filter((m) => m.role === 'user').at(-1).content.map((x) => x.text || '').join('');
+  assert.match(pokePrompt, /说到一半停了/, '提示词要说他在场，不能说他几小时没说话');
+  assert.doesNotMatch(pokePrompt, /小时没跟你说话/);
+
+  // 追问过一句就等：十分钟后再 tick 不再发
+  clock += 10 * 60e3;
+  assert.equal((await host.proactive.tick()).poked, false);
+  const poke = host.proactive.state();
+  assert.ok(poke.active?.n >= 1, '这次算「在场追问」，单独计数');
+});
+
+test('他上一句说完人就没了：她会有一点「被晾」，一天只委屈一次', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-left-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' }, proactive: { enabled: true, quietFrom: 0, quietTo: 0 } }));
+  let clock = new Date(2026, 0, 1, 15, 0, 0).getTime();
+  const ctx = fakeCtx({ replies: ['你倒是说完啊'] });
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) }) });
+
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '洗完是不', time: Math.floor(clock / 1000) });
+  assert.notEqual(host.companion.snapshot().emotion.label, '被晾', '刚聊完不算被晾');
+
+  clock += 25 * 60e3; // 25 分钟没接话
+  await host.tick();
+  const emo = host.companion.snapshot().emotion;
+  assert.equal(emo.label, '被晾');
+  assert.ok(emo.intensity > 0 && emo.intensity <= 0.3, '很轻：只改语气');
+
+  assert.ok(host.proactive.state().leftOnRead?.day, '记下今天委屈过了');
+  // 一天只委屈一次：心跳再跑也不会重推（强度只会衰减，不会涨回去）
+  const before = host.companion.snapshot().emotion.intensity;
+  clock += 10 * 60e3;
+  await host.tick();
+  assert.ok(host.companion.snapshot().emotion.intensity <= before, '不会反复加');
+});

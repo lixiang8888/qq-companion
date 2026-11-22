@@ -15,6 +15,9 @@ export const WEATHER_STALE_MS = 12 * 3600e3;
 export const WEATHER_HOURS = [6, 10];
 // 图超过一天就不算「刚才」。
 export const PICTURE_MS = 24 * 3600e3;
+// 书是六小时内还在看才算「刚在看」；念头活得久一点（36 小时），和注入那边一致。
+export const NOVEL_MS = 6 * 3600e3;
+export const THOUGHT_MS = 36 * 3600e3;
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const clip = (s, n) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
@@ -104,6 +107,22 @@ export function perceive(state = {}) {
   if (picAt && now - picAt <= PICTURE_MS && picAt !== seen.pictureAt) {
     seen.pictureAt = picAt;
     add('picture', `${gapWords(now - picAt)}前他给你发过一张图`);
+  }
+
+  // 她自己看的书：这是她的生活，不是他给的话题——他安静的时候她有权利说「我刚在看…」。
+  const nv = state.novel || {};
+  const nvAt = num(nv.at);
+  if (nvAt && nv.bookName && now - nvAt <= NOVEL_MS && nvAt !== seen.novelAt) {
+    seen.novelAt = nvAt;
+    const label = clip(nv.label, 4);
+    const title = clip(nv.title, 20);
+    add('novel', `你刚在看《${clip(nv.bookName, 20)}》${title ? ` ${title}` : ''}${label ? `，${label}` : ''}`);
+  }
+  // 这两天她自己想出来的那句话：也是真事（她想的，不是他说的），可以拿来开头。
+  const thought = (nv.thoughts || []).filter((x) => num(x?.at) >= now - THOUGHT_MS).pop();
+  if (thought && num(thought.at) !== seen.thoughtAt) {
+    seen.thoughtAt = num(thought.at);
+    add('thought', `你这两天自己在想：「${clip(thought.text, 40)}」`);
   }
 
   return { events: events.slice(0, MAX_EVENTS), seen };

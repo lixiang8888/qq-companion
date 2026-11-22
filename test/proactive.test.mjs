@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  DEFAULTS, composePokePrompt, expectAt, inQuietHours, notePoked, noteSaidByUser, noteTick, noteTurn, noteWait,
+  DEFAULTS, composePokePrompt, expectAt, inQuietHours, isPresent, notePoked, noteSaidByUser, noteTick, noteTurn, noteWait,
   parsePokeReply, pokeGate, typicalGap,
 } from '../src/proactive.js';
 import { dayKeyOf } from '../src/affect/core.js';
@@ -195,4 +195,70 @@ test('等待时间按配置的安静时段算，不用默认那份', () => {
   const s = noteWait({ state: {}, now: day, minutes: 45, cfg });
   const hour = new Date(s.expect.at).getHours();
   assert.equal(hour, 9, '该挪到 9 点起床，而不是默认的 8 点');
+});
+// ---- 2026-11-22：在场状态（聊天中途消失）与深夜例外 ----
+
+test('在场：他刚说过话、最后一条是她回的 = 还在聊；超时或最后一条是他的 = 不在场', () => {
+  const hist = [
+    { role: 'user', text: '洗完是不', at: at(9, 30) },
+    { role: 'assistant', text: '你倒是说完啊', at: at(9, 31) },
+  ];
+  assert.equal(isPresent({ now: at(9, 40), lastUserAt: at(9, 30), history: hist, cfg: ON }), true, '五分钟前还在聊');
+  assert.equal(isPresent({ now: at(10, 20), lastUserAt: at(9, 30), history: hist, cfg: ON }), false, '五十分钟前：不在场了');
+  assert.equal(isPresent({ now: at(9, 40), lastUserAt: 0, history: hist, cfg: ON }), false, '没聊过');
+  assert.equal(isPresent({ now: at(9, 40), lastUserAt: at(9, 30), history: [{ role: 'user', at: at(9, 30) }], cfg: ON }), false, '最后一条是他说的：还没轮到她等');
+});
+
+test('期待点：在场按分钟（5~20），不在场才按小时', () => {
+  const hist = [{ role: 'user', text: '在吗', at: at(9) }, { role: 'assistant', text: '在', at: at(9, 1) }];
+  const here = expectAt({ now: at(9, 2), lastUserAt: at(9), lastBotAt: at(9, 1), history: hist, cfg: ON, present: true });
+  assert.ok(here.at - at(9, 1) <= 20 * 60e3, '在场最多 20 分钟');
+  assert.ok(here.at - at(9, 1) >= 5 * 60e3, '在场至少 5 分钟');
+  assert.match(here.why, /还在等你|刚刚的节奏/);
+  const gone = expectAt({ now: at(9, 2), lastUserAt: at(9), lastBotAt: at(9, 1), history: hist, cfg: ON, present: false });
+  assert.ok(gone.at - at(9, 1) >= 180 * 60e3, '不在场回到至少 3 小时');
+});
+
+test('在场追问：豁免 minGap，一段对话最多插一句，每天两次', () => {
+  const now = at(9, 30);
+  const base = { now, cfg: ON, lastUserAt: at(9, 29), mood: 0.6, present: true, state: { expect: { at: at(9, 28) } } };
+  const ok = pokeGate(base);
+  assert.equal(ok.ok, true, '刚说过话 + 在场：minGap 不能挡');
+  assert.equal(ok.active, true);
+  // 已经插过一句：不再插，等他接
+  assert.equal(pokeGate({ ...base, state: { ...base.state, consecutive: 1 } }).ok, false);
+  assert.match(pokeGate({ ...base, state: { ...base.state, consecutive: 1 } }).reason, /等他接/);
+  // 一天两次用完就没了
+  const used = { expect: { at: at(9, 28) }, active: { day: dayKeyOf(now), n: 2, lastAt: at(8) } };
+  assert.equal(pokeGate({ ...base, state: used }).ok, false);
+  assert.match(pokeGate({ ...base, state: used }).reason, /插过话/);
+  // 每小时一次：刚插过就等一小时
+  const justNow = { expect: { at: at(9, 28) }, active: { day: dayKeyOf(now), n: 1, lastAt: now - 5 * 60e3 } };
+  assert.match(pokeGate({ ...base, state: justNow }).reason, /刚才已经问过/);
+});
+
+test('深夜不是铁律：情绪重或者他还没睡，一夜给一次', () => {
+  const night = at(2, 0);
+  const base = { now: night, cfg: ON, lastUserAt: at(1, 40), mood: 0.6, state: { expect: { at: at(1, 30) } } };
+  // 他还没睡（30 分钟前说过话）：可以搭一句，标成深夜例外
+  const awake = pokeGate(base);
+  assert.equal(awake.ok, true);
+  assert.equal(awake.night, true);
+  // 他睡了、她情绪也平：安静
+  const calm = pokeGate({ ...base, lastUserAt: at(23, 30) });
+  assert.equal(calm.ok, false);
+  assert.match(calm.reason, /安静时段/);
+  // 情绪重：占主导，给一次
+  const moved = pokeGate({ ...base, lastUserAt: at(23, 30), emotion: { label: '触动', intensity: 0.8 } });
+  assert.equal(moved.ok, true);
+  // 这一夜已经用过一次：不再吵
+  const used = { ...base, state: { expect: { at: at(1, 30) }, night: { day: dayKeyOf(night), n: 1 } } };
+  assert.match(pokeGate(used).reason, /安静时段/);
+});
+
+test('在场时「晚点再想」也只在几分钟量级', () => {
+  const st = noteWait({ state: {}, now: at(9, 30), minutes: 45, cfg: ON, present: true });
+  assert.ok(st.expect.at - at(9, 30) <= 20 * 60e3, '不能按 45 分钟把对话放下');
+  const gone = noteWait({ state: {}, now: at(9, 30), minutes: 45, cfg: ON, present: false });
+  assert.equal(gone.expect.at - at(9, 30), 45 * 60e3);
 });

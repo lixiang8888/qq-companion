@@ -28,6 +28,20 @@ export const DEFAULTS = {
   backoffFactor: 2,         // 连发没回，期待点一次比一次晚
   maxThinksPerDay: 12,      // 一天最多「想」几次（想而不发也花钱）
   defaultWaitMinutes: 45,
+  // ---- 在场：聊天还在进行中的那十几分钟。中途的沉默按分钟算，不是按小时。----
+  presenceWindowMinutes: 30, // 必须 ≥ activeMaxWaitMinutes，否则「还在场」永远追不上「期待点」
+  activeMinWaitMinutes: 5,
+  activeMaxWaitMinutes: 20,
+  activePokeMax: 1,         // 一段对话里最多插一句（连发到这条就不再插）
+  activePerDay: 2,
+  activePerHour: 1,
+  // ---- 被晾：他上一句说完、她回了、人没了。真实事件，不是编的。----
+  leftOnReadMinutes: 20,    // 沉默超过这么久才算「人没了」
+  leftOnReadIntensity: 0.2, // 轻到只改语气
+  // ---- 深夜：情绪占主导——安静时段的例外由情绪决定，不由时钟 ----
+  nightExceptionIntensity: 0.6,
+  nightExceptionMaxPerNight: 1,
+  nightAwakeMinutes: 30,    // 他 N 分钟内还说过话 = 还没睡，可以搭一句
 };
 
 const hhmm = (ms) => {
@@ -70,24 +84,40 @@ export function typicalGap(history = []) {
 }
 
 /**
- * 期待点：这一轮说完之后，她大概什么时候会想他。
- * 三样真事：他平时多久回、这轮几点结束、已经连发了几条没回。
+ * 对话还在不在进行中：他最后一句就在这几分钟里，而且最后一条是她回的（她在等他接）。
+ * 这一条不读盘、不猜：只看时间戳和最后一条是谁。
  */
-export function expectAt({ now, lastUserAt = 0, lastBotAt = 0, history = [], cfg = DEFAULTS, consecutive = 0 } = {}) {
+export function isPresent({ now, lastUserAt = 0, history = [], cfg = DEFAULTS } = {}) {
   const c = { ...DEFAULTS, ...cfg };
-  const gap = typicalGap(history) || c.minIdleMinutes * MIN;
+  const at = num(lastUserAt, 0);
+  if (!at || now - at > c.presenceWindowMinutes * MIN) return false;
+  const last = [...(history || [])].pop();
+  return Boolean(last && last.role === 'assistant');
+}
+
+/**
+ * 期待点：这一轮说完之后，她大概什么时候会想他。
+ * 四样真事：他平时多久回、这轮几点结束、已经连发了几条没回、**聊天还在不在进行中**。
+ * 在场时按「刚刚的节奏」算（几分钟），不在场才退回「他平时多久回」（小时）。
+ */
+export function expectAt({ now, lastUserAt = 0, lastBotAt = 0, history = [], cfg = DEFAULTS, consecutive = 0, present = false } = {}) {
+  const c = { ...DEFAULTS, ...cfg };
+  const gap = typicalGap(history) || (present ? c.activeMaxWaitMinutes * MIN : c.minIdleMinutes * MIN);
   const factor = Math.pow(Math.max(1, c.backoffFactor), clamp(num(consecutive, 0), 0, 5));
   const from = Math.max(num(lastUserAt, 0), num(lastBotAt, 0)) || now;
-  const raw = from + clamp(gap * factor, c.minIdleMinutes * MIN, c.maxWaitMinutes * MIN);
+  const raw = from + (present
+    ? clamp(gap * 1.5, c.activeMinWaitMinutes * MIN, c.activeMaxWaitMinutes * MIN)
+    : clamp(gap * factor, c.minIdleMinutes * MIN, c.maxWaitMinutes * MIN));
   const at = outOfQuiet(raw, c);
   const why = [];
-  why.push(num(consecutive, 0) > 0 ? `已经连发 ${consecutive} 条没回，往后多等一会儿` : '按他平时回话的快慢算');
+  if (present) why.push('他还在等你接话，按刚刚的节奏算');
+  else why.push(num(consecutive, 0) > 0 ? `已经连发 ${consecutive} 条没回，往后多等一会儿` : '按他平时回话的快慢算');
   if (at !== raw) why.push('落在安静时段，挪到早上');
   return { at: Math.max(at, now), why: why.join('；') };
 }
 
 /** 她说完一轮：重算期待点。 */
-export function noteTurn({ now, state = {}, lastUserAt = 0, history = [], cfg = DEFAULTS, consecutive } = {}) {
+export function noteTurn({ now, state = {}, lastUserAt = 0, history = [], cfg = DEFAULTS, consecutive, present = false } = {}) {
   const e = expectAt({
     now,
     lastUserAt,
@@ -95,6 +125,7 @@ export function noteTurn({ now, state = {}, lastUserAt = 0, history = [], cfg = 
     history,
     cfg,
     consecutive: consecutive ?? num(state.consecutive, 0),
+    present,
   });
   return { ...state, expect: { at: e.at, why: e.why, from: now } };
 }
@@ -104,10 +135,16 @@ export function noteSaidByUser(state = {}) {
   return { ...state, consecutive: 0, expect: {} };
 }
 
-/** 真发出去了：记一条，连发 +1，期待点清空等下一轮重算。 */
-export function notePoked({ state = {}, now } = {}) {
+/**
+ * 真发出去了：记一条，连发 +1，期待点清空等下一轮重算。
+ * `active` = 这次是在场时插的一句，单独计数（每天/每小时都有上限，不受 minGap 约束）。
+ * `night` = 这次是深夜例外（情绪重或他还没睡），一夜只给一次。
+ */
+export function notePoked({ state = {}, now, active = false, night = false } = {}) {
   const day = dayKeyOf(now);
   const same = state.day === day;
+  const activeN = state.active?.day === day ? num(state.active.n, 0) : 0;
+  const nightN = state.night?.day === day ? num(state.night.n, 0) : 0;
   return {
     ...state,
     day,
@@ -115,6 +152,8 @@ export function notePoked({ state = {}, now } = {}) {
     lastPokeAt: now,
     consecutive: num(state.consecutive, 0) + 1,
     expect: {},
+    ...(active ? { active: { day, n: activeN + 1, lastAt: now } } : {}),
+    ...(night ? { night: { day, n: nightN + 1, at: now } } : {}),
   };
 }
 
@@ -122,43 +161,81 @@ export function notePoked({ state = {}, now } = {}) {
  * 想过了但没发（或者想的时候出错）：期待点往后推，连发不变——她没说话，不算连发。
  * 同时记一次「想」，避免每十分钟重问一遍模型。
  */
-export function noteWait({ state = {}, now, minutes, cfg = DEFAULTS } = {}) {
+export function noteWait({ state = {}, now, minutes, cfg = DEFAULTS, present = false } = {}) {
+  const c = { ...DEFAULTS, ...cfg };
   const day = dayKeyOf(now);
-  const mins = clamp(num(minutes, DEFAULTS.defaultWaitMinutes), 10, 240);
+  // 在场时「晚点再想」也只在几分钟量级：按 45 分钟推，等于这一轮对话就此结束了。
+  const cap = present ? Math.max(10, c.activeMaxWaitMinutes) : 240;
+  const mins = clamp(num(minutes, DEFAULTS.defaultWaitMinutes), 10, cap);
   const thinks = state.thinks?.day === day ? num(state.thinks.n, 0) : 0;
   return {
     ...state,
     thinks: { day, n: thinks + 1 },
     // 安静时段要用他配置的那份，不是默认那份——否则期待时间会落在安静时段里。
-    expect: { at: outOfQuiet(now + mins * MIN, cfg), why: `上次想过了，说晚点再想（${mins} 分钟）` },
+    expect: { at: outOfQuiet(now + mins * MIN, c), why: `上次想过了，说晚点再想（${mins} 分钟）` },
   };
 }
 
-/** 他现在该不该被她想起。 */
-export function pokeGate({ now, cfg = DEFAULTS, lastUserAt = 0, state = {}, mood = 0.5 } = {}) {
+/**
+ * 他现在该不该被她想起。
+ *
+ * 两条通道：
+ *   · 在场（聊天进行中）：按分钟算，一段对话里最多插一句（activePokeMax），豁免 minGap——
+ *     不然「至少隔 2 小时」会把所有追问都挡掉，等于没这个功能。
+ *   · 深夜：情绪占主导。安静时段不是铁律，情绪重（≥ nightExceptionIntensity）或者他还没睡
+ *     （nightAwakeMinutes 内说过话）就给一次，一夜只给一次。
+ * @param {boolean} [o.present] 对话还在进行中（见 isPresent）
+ * @param {{label?:string,intensity?:number}} [o.emotion] 此刻的情绪，用来判深夜例外
+ */
+export function pokeGate({ now, cfg = DEFAULTS, lastUserAt = 0, state = {}, mood = 0.5, present = false, emotion = null } = {}) {
   const c = { ...DEFAULTS, ...cfg };
   const no = (reason) => ({ ok: false, reason });
   const s = state || {};
+  const day = dayKeyOf(now);
+  const quiet = inQuietHours(new Date(now).getHours(), c);
 
   if (!c.enabled) return no('未开启');
   if (!lastUserAt) return no('还没有聊过');
-  if (inQuietHours(new Date(now).getHours(), c)) return no(`安静时段（${c.quietFrom}:00–${c.quietTo}:00）`);
   if (mood < c.moodFloor) return no('心情太低，不想主动');
-  if (s.day === dayKeyOf(now) && num(s.count, 0) >= c.maxPerDay) return no('今天已经找过了');
+  if (s.day === day && num(s.count, 0) >= c.maxPerDay) return no('今天已经找过了');
+  const thinks = s.thinks?.day === day ? num(s.thinks.n, 0) : 0;
+  if (thinks >= c.maxThinksPerDay) return no('今天想得够多了');
+  if (quiet) {
+    // 时间戳可能比 now 还晚（换天、补数据）：那不算「他刚说过话」，算没数据。
+    const sinceUser = now - num(lastUserAt, 0);
+    const awake = sinceUser >= 0 && sinceUser <= c.nightAwakeMinutes * MIN;
+    const moved = num(emotion?.intensity, 0) >= c.nightExceptionIntensity;
+    const used = s.night?.day === day ? num(s.night.n, 0) : 0;
+    if (!(awake || moved) || used >= c.nightExceptionMaxPerNight) {
+      return no(`安静时段（${c.quietFrom}:00–${c.quietTo}:00）`);
+    }
+  }
+  const expect = s.expect || {};
+  const consec = num(s.consecutive, 0);
+
+  // 在场：只判「这一刻能不能插一句」，其余护栏照旧。
+  if (present) {
+    const activeDay = s.active?.day === day ? num(s.active.n, 0) : 0;
+    if (activeDay >= c.activePerDay) return no('今天聊到一半时已经插过话了');
+    const lastActive = num(s.active?.lastAt, 0);
+    if (lastActive && now - lastActive < (60 / Math.max(1, c.activePerHour)) * MIN) return no('刚才已经问过他一次了');
+    if (consec >= c.activePokeMax) return no('已经在等他接了');
+    if (expect.at && now < expect.at) return no(`还没到期待的时间（${hhmm(expect.at)}）`);
+    return { ok: true, active: true, night: quiet, idleMinutes: Math.max(0, Math.round((now - lastUserAt) / MIN)), expectAt: num(expect.at, 0), why: String(expect.why || '') };
+  }
+
   if (s.lastPokeAt && now - s.lastPokeAt < c.minGapMinutes * MIN) return no('刚说过话，先缓缓');
   // shortcut: 连发两条没回就必须等他说，他要是几天不理她，她就一直安静。
   // 要改这个行为，得在 maxConsecutive 之外加一条「超过 N 天可以破例一次」。
-  const consec = num(s.consecutive, 0);
   if (consec >= c.maxConsecutive) return no(`连发 ${consec} 条都没回，等他说`);
-  const thinks = s.thinks?.day === dayKeyOf(now) ? num(s.thinks.n, 0) : 0;
-  if (thinks >= c.maxThinksPerDay) return no('今天想得够多了');
 
-  const expect = s.expect || {};
   if (expect.at && now < expect.at) return no(`还没到期待的时间（${hhmm(expect.at)}）`);
   if (!expect.at && now - lastUserAt < c.minIdleMinutes * MIN) return no('还没那么久');
 
   return {
     ok: true,
+    active: false,
+    night: quiet,
     idleHours: Math.round((now - lastUserAt) / HOUR),
     expectAt: num(expect.at, 0),
     why: String(expect.why || ''),
@@ -166,9 +243,11 @@ export function pokeGate({ now, cfg = DEFAULTS, lastUserAt = 0, state = {}, mood
 }
 
 /** 给她的「自己想想」提示。不是用户消息，她看完不该当成他说过这句。 */
-export function composePokePrompt({ clock = '', idle = '', lastLine = '', hint = '', inner = '', doing = '', events = [] } = {}) {
+export function composePokePrompt({ clock = '', idle = '', lastLine = '', hint = '', inner = '', doing = '', events = [], feel = '' } = {}) {
   const lines = [`【这是你自己在想，不是他说的】现在 ${clock}，${idle}。`];
   if (doing) lines.push(`你此刻：${sanitizeSecrets(doing).slice(0, 60)}。`);
+  // 情绪占主导：开不开口、说得急不急，得带着此刻的心情，不是只看时钟。
+  if (feel) lines.push(`你现在的状态：${sanitizeSecrets(feel).slice(0, 40)}。话会跟着这个状态变，但别说出来。`);
   if (lastLine) lines.push(`你们最后说的一句是：「${sanitizeSecrets(lastLine).slice(0, 120)}」。`);
   // 这些是外面真的变了的几件事（屏幕、天气、时间、记忆、钱），不是抽出来的剧情。
   // 有就写在明处：她的念头得有个来处，否则就只会说「我想你了」。
