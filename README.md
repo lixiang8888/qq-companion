@@ -86,6 +86,10 @@ token 那一格留空表示「不改」。
     "maxPerDay": 3,          // 一天最多叫几次
     "maxShakePerDay": 1      // 窗口抖动一天最多一次
   },
+  "pokeReply": {
+    "enabled": true,         // 你戳她一下（QQ 拍一拍）她会理：回一句短的 / 戳回去 / [沉默]
+    "cooldownSeconds": 30    // 连戳只算一次
+  },
   "weather": {
     "enabled": true,         // 开着会连 Open-Meteo（免密钥）
     "place": "huzhou"        // huzhou（湖州师范大学）或 zhuji（诸暨）

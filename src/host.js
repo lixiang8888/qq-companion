@@ -43,6 +43,7 @@ import { replyPlan } from './affect/behavior.js';
 import { DEFAULTS as PROACTIVE_DEFAULTS, composePokePrompt, notePoked, noteSaidByUser, noteTick, noteWait, openThread,
   parsePokeReply, pokeGate, waitingState } from './proactive.js';
 import { DEFAULTS as URGENT_DEFAULTS, noteNudge, shouldNudge } from './urgent.js';
+import { composePokeReply, normalizePoke, parsePokeReaction, pokeFromMessage } from './poke.js';
 import { perceive } from './perceive.js';
 import { BORED_QUIET_MS, createNovel, isBored, mindLine, nextRead, noteRead, noteThought, novelLine, parseBookLookup, parseReaction, planRead, PREFERRED_SOURCE, reactionEmotion, READ_MAX_CHARS, recentReactions, READ_SKIP_TRIES, READING_EMOTION_DAY_MAX, REREAD_MIN_ATTITUDE, shouldDrop, updateBook } from './novel.js';
 import { fetchWeather, isStale, placeOf, weatherLine } from './weather.js';
@@ -152,6 +153,8 @@ const DEFAULT_CONFIG = {
   // 她着急时怎么叫你：私聊戳一戳（轻）→ 窗口抖动（重，一天最多一次）。
   // QQ 没有"机器人拨语音通话"这个能力，这两级就是她能用的最强提醒。默认关：抖窗口会抢焦点。
   urgent: { ...URGENT_DEFAULTS },
+  // 你戳她一下（QQ 拍一拍）她怎么反应：回一句短的 / 戳回去 / 真的不想理就沉默。默认开。
+  pokeReply: { enabled: true, cooldownSeconds: 30 },
   // 她在哪：huzhou（湖州师范大学）或 zhuji（诸暨），坐标在 weather.js。
   // enabled 默认关：开着就会去连外网，测试和不想联网的人都该能关掉。
   weather: { enabled: false, place: 'huzhou' },
@@ -1949,9 +1952,83 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     }
   }
 
+  // 被戳（QQ 拍一拍）：这不是一条消息，但真的是一次"叫你一下"。
+  // 以前 handleEvent 只认 message，戳一戳是 notice，事件到了也在第一行被丢掉——她完全没反应。
+  let pokeReplying = false;
+  let lastPokeReplyAt = 0;
+
+  async function reactToPoke(poke) {
+    const cfg = { enabled: true, cooldownSeconds: 30, ...(config.pokeReply || {}) };
+    if (cfg.enabled === false) return { ignored: 'poke-off' };
+    if (!config.ownerQQ) return { ignored: 'no-owner' };
+    // 只认他戳她：私聊对端、动手的人都是主人；别人戳她一律不理（不碰网络、不写历史）。
+    if (String(poke.peerId) !== String(config.ownerQQ) || String(poke.senderId) !== String(config.ownerQQ)) {
+      return { ignored: 'not-owner' };
+    }
+    const t = now();
+    const gapMs = Math.max(5, Number(cfg.cooldownSeconds) || 30) * 1000;
+    // 连戳十下只回一次：她在想/在发的时候来的第二下不算新的。
+    if (pokeReplying || t - lastPokeReplyAt < gapMs) return { ignored: 'poke-cooldown' };
+    pokeReplying = true;
+    lastPokeReplyAt = t;
+    try {
+      // 他出声了：说「晚点再想」的那个计划作废。
+      pokeStore.save(noteSaidByUser(pokeStore.load()));
+      const st = companion.snapshot();
+      const hist = session.snapshot().history;
+      const lastLine = [...hist].reverse().find((m) => m.role === 'user')?.text || '';
+      const prompt = composePokeReply({
+        clock: clockText(t),
+        poke,
+        doing: await lifeBlock(),
+        lastLine,
+        feel: `心情${moodLabel(st.mood.v)}${st.emotion.label ? ` · ${st.emotion.label}` : ''}`,
+      });
+      let act;
+      try {
+        const raw = String(await complete({
+          system: `${personaCore()}\n\n（他戳了你一下，没说话。你只回那一句，不写旁白。）`,
+          messages: [{ role: 'user', text: prompt }],
+          maxTokens: 120,
+        }) || '');
+        act = parsePokeReaction(raw);
+      } catch (e) {
+        log.warn?.(`被戳了但没想好怎么回：${e.message}`);
+        act = { text: '', pokeBack: true, silent: false };  // 想不出来就戳回去：至少有个反应
+      }
+      // 他戳了她这件事是真的，也进历史——不然她那句「干嘛」以后看着像凭空冒出来的。
+      if (act.text || act.pokeBack) session.note('（他戳了戳你）', { role: 'user', at: t });
+      const msg = { kind: 'private', userId: String(config.ownerQQ), chatId: `private:${config.ownerQQ}` };
+      let sent = 0;
+      if (act.text) {
+        try {
+          await sendText(onebot, msg, act.text);
+          sent = 1;
+          session.note(act.text, { at: now() });
+        } catch (e) {
+          log.warn?.(`被戳了但没发出去：${e.message}`);
+        }
+      }
+      let pokedBack = false;
+      if (act.pokeBack) {
+        try { await sendPoke(onebot, msg); pokedBack = true; }
+        catch (e) { log.warn?.(`想戳回去没戳成：${e.message}`); }
+      }
+      log.info?.(`被戳了：${act.silent ? '这次不想理' : sent ? `回了「${act.text}」` : ''}${pokedBack ? '，戳回去了' : ''}`);
+      return { poke: true, sent, pokedBack, text: act.text, silent: act.silent };
+    } finally {
+      pokeReplying = false;
+    }
+  }
+
   async function handleEvent(ev) {
+    const poke = normalizePoke(ev);
+    if (poke) return reactToPoke(poke);
     const msg = normalizeMessage(ev);
     if (!msg || msg.kind !== 'private') return { ignored: 'not-private' };
+    // 有的客户端把戳一戳当消息送过来（poke/shake 段，或只剩 QQ 的兜底文本）。
+    const fromMsg = pokeFromMessage(msg);
+    if (fromMsg) return reactToPoke(fromMsg);
     // 空消息（某些客户端会发空段）不值得叫一次模型，也不该写进记忆。
     if (!msg.text.trim()) return { ignored: 'empty' };
     // 身份挡在**最前面**（在碰网络之前）：陌生人的私聊不该让视觉模型先看一眼再被拒，

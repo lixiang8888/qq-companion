@@ -2180,3 +2180,99 @@ test('心里不急就不叫：只是他安静着，她不戳也不抖', async ()
   assert.ok(!['poke', 'shake'].includes(pick));
   assert.ok(!sent.some((c) => c.url.endsWith('/friend_poke') || /shake/.test(String(c.body))), '没有叫他');
 });
+
+// ---- 2026-11-23：他戳了她一下（QQ 拍一拍）：事件不再被丢掉，她真的会理 ----
+
+function pokeHost({ replies }) {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-poke-'));
+  const sent = [];
+  const fetchImpl = async (url, init) => {
+    sent.push({ url: String(url), body: init?.body });
+    return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
+  };
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+    enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' },
+  }));
+  let clock = new Date(2026, 0, 1, 9, 0, 0).getTime();
+  const ctx = fakeCtx({ replies });
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+  const poke = (over = {}) => ({
+    post_type: 'notice', notice_type: 'notify', sub_type: 'poke',
+    user_id: 42, sender_id: 42, target_id: 2791189246, action: '戳了戳', suffix: '',
+    time: Math.floor(clock / 1000), self_id: 2791189246, ...over,
+  });
+  return { host, sent, ctx, poke, tick: (ms) => { clock += ms; } };
+}
+
+test('他戳了她一下：她回一句短的，这件事也进历史；连戳第二下不重复理', async () => {
+  const { host, sent, ctx, poke, tick } = pokeHost({ replies: ['干嘛'] });
+  const r = await host.handleEvent(poke());
+  assert.equal(r.poke, true);
+  assert.equal(r.sent, 1);
+  assert.equal(r.text, '干嘛');
+  const call = sent.at(-1);
+  assert.ok(call.url.endsWith('/send_private_msg'), '回的是消息，不是戳');
+  assert.equal(JSON.parse(String(call.body)).message[0].data.text, '干嘛');
+
+  // 历史里能看到「被戳」这件事，不是她凭空说了句干嘛。
+  const hist = host.session.snapshot().history;
+  assert.equal(hist.at(-2).role, 'user');
+  assert.match(hist.at(-2).text, /戳/);
+  assert.equal(hist.at(-1).role, 'assistant');
+  assert.equal(hist.at(-1).text, '干嘛');
+
+  // 五秒后连戳第二下：一分钟内只理一次
+  tick(5000);
+  const again = await host.handleEvent(poke());
+  assert.equal(again.ignored, 'poke-cooldown');
+  assert.equal(ctx.calls.length, 1, '第二下不再花一次模型调用');
+});
+
+test('她想戳回去：不发文字，回戳一下（被戳了没反应才是怪事）', async () => {
+  const { host, sent, poke } = pokeHost({ replies: ['[戳回去]'] });
+  const r = await host.handleEvent(poke());
+  assert.equal(r.poke, true);
+  assert.equal(r.pokedBack, true);
+  assert.equal(r.sent, 0);
+  assert.ok(sent.at(-1).url.endsWith('/friend_poke'), '回戳');
+});
+
+test('不认识的拍一拍（不是主人 / 群里的）：不理，也不调模型', async () => {
+  const { host, ctx, poke } = pokeHost({ replies: ['干嘛'] });
+  const stranger = await host.handleEvent(poke({ user_id: 7, sender_id: 7 }));
+  assert.equal(stranger.ignored, 'not-owner');
+  const inGroup = await host.handleEvent(poke({ group_id: 9, user_id: 7, sender_id: 7 }));
+  assert.equal(inGroup.ignored, 'not-private');
+  assert.equal(ctx.calls.length, 0);
+});
+
+test('她真的不想理：只写 [沉默] 就什么都不发（但这是她选的，不是代码漏了）', async () => {
+  const { host, sent, poke } = pokeHost({ replies: ['[沉默]'] });
+  const r = await host.handleEvent(poke());
+  assert.equal(r.silent, true);
+  assert.equal(r.sent, 0);
+  assert.equal(r.pokedBack, false);
+  assert.equal(sent.length, 0);
+  assert.equal(host.session.snapshot().history.length, 0, '没反应就不留痕');
+});
+
+test('客户端把戳一戳塞进一条消息里（真机日志那种）：也当拍一拍处理，不当聊天', async () => {
+  const { host, sent, poke } = pokeHost({ replies: ['在呢'] });
+  const r = await host.handleEvent({
+    post_type: 'message',
+    message_type: 'private',
+    self_id: 2791189246,
+    user_id: 42,
+    message_id: 1798517841,
+    message: [
+      { type: 'poke', data: {} },
+      { type: 'text', data: { text: '[戳一戳]请使用最新版手机QQ体验新功能。' } },
+    ],
+    raw_message: '',
+    sender: { nickname: '璃湘' },
+    time: Math.floor(Date.now() / 1000),
+  });
+  assert.equal(r.poke, true, '走的是"被戳"那条路，不是普通聊天');
+  assert.equal(r.sent, 1);
+  assert.equal(JSON.parse(String(sent.at(-1).body)).message[0].data.text, '在呢');
+});
