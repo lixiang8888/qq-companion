@@ -144,7 +144,11 @@ const DEFAULT_CONFIG = {
   onebot: { httpUrl: 'http://127.0.0.1:3000', wsUrl: 'ws://127.0.0.1:3001', token: '' },
   model: { provider: '', model: '' },
   persona: '小鲸鱼',
-  session: { compactAt: 40, keepRecent: 16, keepHours: 24, maxRecent: 160, replyDelayMs: 800 },
+  // 2026-11-23 放宽一次：聊得越多，越不该把最近的原文/记忆压得太狠。
+  // compactAt 60 条才考虑压缩、最近 36 小时的原话一句不压、最多留 240 条、摘要上限 1600 字。
+  session: { compactAt: 60, keepRecent: 24, keepHours: 36, maxRecent: 240, summaryMaxChars: 1600, replyDelayMs: 800 },
+  // 每轮注入的记忆块上限（字符）。2200 装 40~60 条，3600 大约能装 60~90 条。
+  memory: { maxChars: 3600 },
   // 他那边在干什么。默认关：这件事该由他自己决定开不开。
   screen: { enabled: false, ttlMinutes: 5 },
   // 余额低于这个数，她才会主动提钱。
@@ -299,8 +303,12 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const t = now();
     let card = maintain(memoryStore.load(), t);
     // 先渲染再记：这一句已经在本轮对话里了，再塞进记忆块就是让「过去」冒充「现在」，
-    // 还白占 2200 字预算。她要在「下一轮」才想起这句话。
-    const picked = selectForPrompt(card, { now: t, maxChars: 2200, query: msg.text });
+    // 还白占记忆预算。她要在「下一轮」才想起这句话。
+    const picked = selectForPrompt(card, {
+      now: t,
+      maxChars: Math.max(500, Number(config.memory?.maxChars) || 3600),
+      query: msg.text,
+    });
     // 想起来了就是复习：被注入的记一笔（同一条 7 天一次、有封顶），淡忘时才算数。
     // 只读的检索不会让她记得更牢——这一步才让"常被想起的事"真的更清楚。
     card = notePrompted(card, picked.picks.map((r) => r.id), t) || card;
@@ -517,8 +525,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     keepRecent: config.session?.keepRecent ?? 16,
     // 一天之内的原话一句都不压：他昨晚说的，今天早上她还得看得见原句。
     keepHours: config.session?.keepHours ?? 24,
-    maxRecent: config.session?.maxRecent ?? 160,
-    now,
+    maxRecent: config.session?.maxRecent ?? 240,
+    summaryMaxChars: config.session?.summaryMaxChars ?? 1600,    now,
     initial: sessionStore.load(),
     persist: (snap) => sessionStore.save(snap),
     // 每条原文都进归档：压缩之后她就只剩摘要，唯一能翻回原话的地方就是这里。
@@ -787,7 +795,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       blk('recall', recallLines, t),
       // 他隔了很久才回：真事实，只活这一轮。她可以提，也可以不提——但不能像没等过。
       blk('hung', hungLine, t, 30 * MINUTE),
-      // 她看到过的图：单独一块，不占记忆卡的 2200 字。at 用此刻——这一块是"刚想起来"，
+      // 她看到过的图：单独一块，不占记忆卡的预算。at 用此刻——这一块是"刚想起来"，
       // 不是"生于那张图的拍摄时间"（那会让它一出生就过期）。
       blk('perception', shotLines.length ? `【你看到过的】（图片，不是他这一轮发的；你当时真的看过）\n${shotLines.join('\n')}` : '', t, 5 * MINUTE),
       blk('screen', screenLine(screenNow, t, { ttl: sTtl }), Number(screenNow?.at) || t, sTtl),
@@ -2641,7 +2649,7 @@ function loadConfig(file, log) {
 /** 嵌套对象按层合并：用户只写 ownerQQ 时，onebot 的默认地址不能被整块抹掉。 */
 export function mergeConfig(base, patch) {
   const out = { ...base, ...(patch || {}) };
-  for (const key of ['onebot', 'model', 'session', 'proactive', 'budget', 'weather', 'search', 'video', 'transcript']) {
+  for (const key of ['onebot', 'model', 'session', 'memory', 'proactive', 'urgent', 'pokeReply', 'budget', 'weather', 'search', 'video', 'transcript', 'screen', 'novel', 'game']) {
     if (patch?.[key] && typeof patch[key] === 'object') out[key] = { ...(base?.[key] || {}), ...patch[key] };
   }
   return out;

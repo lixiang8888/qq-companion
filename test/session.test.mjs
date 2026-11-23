@@ -1,7 +1,7 @@
 // 会话层：多轮上下文、压缩触发、压缩失败不丢历史。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createLocalSession, recentCount, stampOf, withStamps } from '../src/session.js';
+import { DEFAULT_SUMMARY_MAX_CHARS, createLocalSession, recentCount, stampOf, withStamps } from '../src/session.js';
 
 function fake({ reply = '嗯', summary = '早先聊过猫' } = {}) {
   const calls = [];
@@ -117,7 +117,7 @@ test('摘要不会无限长：超过上限会被再压一次', async () => {
   const s = createLocalSession({ complete, system: '', compactAt: 4, keepRecent: 2 });
   for (let i = 0; i < 6; i++) await s.prompt('p', `第${i}句`);
   const snap = s.snapshot();
-  assert.ok(snap.summary.length <= 1200, `摘要 ${snap.summary.length} 字`);
+  assert.ok(snap.summary.length <= DEFAULT_SUMMARY_MAX_CHARS, `摘要 ${snap.summary.length} 字`);
   assert.ok(seen.some((s2) => /再压一次/.test(s2 || '')), '应触发过一次再压缩');
 });
 
@@ -126,7 +126,7 @@ test('再压也压不动时：截尾兜底，不抛错', async () => {
   const complete = async ({ system }) => (/再压一次/.test(system || '') ? long : /压成一段摘要/.test(system || '') ? long : '嗯');
   const s = createLocalSession({ complete, system: '', compactAt: 4, keepRecent: 2 });
   for (let i = 0; i < 6; i++) await s.prompt('p', `第${i}句`);
-  assert.ok(s.snapshot().summary.length <= 1200);
+  assert.ok(s.snapshot().summary.length <= DEFAULT_SUMMARY_MAX_CHARS);
 });
 
 test('并发调用会打乱角色顺序——这正是 host 必须串行的原因', async () => {
@@ -398,12 +398,12 @@ test('摘要里的旧时间词：告诉她那是当时写的，别照抄', async
 });
 
 test('摘要超长截断：从整段开头接上，不留半句话', async () => {
-  const long = `${'a'.repeat(100)}\n${'b'.repeat(1100)}\n${'最新'.repeat(10)}`;
+  const long = `${'a'.repeat(100)}\n${'b'.repeat(1700)}\n${'最新'.repeat(10)}`;
   const complete = async ({ system }) => (/压成一段摘要|再压一次/.test(system || '') ? long : '嗯');
   const s = createLocalSession({ complete, system: '', compactAt: 4, keepRecent: 2 });
   for (let i = 0; i < 4; i += 1) await s.prompt('p', `第${i}句`);
   const summary = s.snapshot().summary;
-  assert.ok(summary.length <= 1200, `摘要 ${summary.length} 字`);
+  assert.ok(summary.length <= DEFAULT_SUMMARY_MAX_CHARS, `摘要 ${summary.length} 字`);
   assert.match(summary, /^b/, '从下一段开头接，不从半个词中间切');
 });
 

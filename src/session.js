@@ -4,7 +4,8 @@
 // 什么时候压、压掉什么、压完还留哪些，都会影响她说的话像不像同一个人。
 // 这里只依赖一个 complete({system, messages}) → string 的注入点，方便离线测。
 
-const SUMMARY_MAX_CHARS = 1200;
+// 摘要上限：太短会把「聊了这么多天」压成几句；太长每轮都在为旧账付费。
+export const DEFAULT_SUMMARY_MAX_CHARS = 1600;
 const SYSTEM_SUFFIX = '你正在和一个特定的人私下聊天。状态只影响语气，不要说出来。';
 // 断层阈值：隔了半小时以上才值得标一次时间。每句都标既贵又像日志。
 const GAP_MS = 30 * 60e3;
@@ -111,6 +112,8 @@ export function createLocalSession({
   maxRecent = 0,            // 原文条数硬上限（0 = 不设）
   // 400 不够：推理模型先用思考占掉一截，正文就空了（真机上确实空过）。
   summaryMaxTokens = 800,
+  // 摘要正文上限（字符）。超过就再压一次，压不动截尾兜底。
+  summaryMaxChars = DEFAULT_SUMMARY_MAX_CHARS,
   now = Date.now,
   initial = null,           // 上次落盘的状态：{summary, history, compactions}
   persist = null,           // (snapshot) => void，每轮之后调用
@@ -187,7 +190,7 @@ export function createLocalSession({
 
   /** 摘要不能无限长：超过上限就再压一次，压不动就截尾兜底。 */
   async function capSummary(text) {
-    if (text.length <= SUMMARY_MAX_CHARS) return text;
+    if (text.length <= summaryMaxChars) return text;
     try {
       const squeezed = await complete({
         system: `${monthDay(now())}。把下面这段对话摘要再压一次，保留关系变化、约定、他在意的事、没说完的话题，以及每件事是哪天——写具体日期，不许写今天/昨天/前天/N天前/昨晚。不要评价、不要编。不超过 400 字。`,
@@ -205,8 +208,8 @@ export function createLocalSession({
    * 截在半个词上会留下「昨晚」这种没前文的尾巴，她照着说就会把时间说错。
    */
   function headCut(text) {
-    if (text.length <= SUMMARY_MAX_CHARS) return text;
-    const tail = text.slice(-SUMMARY_MAX_CHARS);
+    if (text.length <= summaryMaxChars) return text;
+    const tail = text.slice(-summaryMaxChars);
     const para = tail.indexOf('\n');
     if (para >= 0 && para < 120) return tail.slice(para + 1).trim();
     const sentence = tail.search(/[。！？]/);
