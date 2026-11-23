@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { BUNDLED_LAUNCHER, createHost } from '../src/host.js';
 import { appendTranscript } from '../src/transcript.js';
 import { apply } from '../src/host.js';
-import { initState } from '../src/affect/core.js';
+import { initState, pushEmotion } from '../src/affect/core.js';
 import { createCard, remember } from '../src/memory/card.js';
 import { renderPanel } from '../src/panel.js';
 
@@ -2115,4 +2115,68 @@ test('他隔了很久才回：这一轮让她知道「自己等过」；超过 1
   clock += 13 * 3600e3;
   await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '在吗', time: Math.floor(clock / 1000) });
   assert.doesNotMatch(JSON.stringify(ctx.calls.at(-1)), /他隔了很久才回/);
+});
+
+// ---- 2026-11-23：她着急时的「叫你一下」：戳一戳 → 窗口抖动 ----
+
+test('她着急又没人回：先戳一戳，半小时还没回就抖窗口（不花模型钱）', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-nudge-'));
+  const T = new Date(2026, 0, 1, 9, 0, 0).getTime();
+  let clock = T;
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+    enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' },
+    proactive: { enabled: false },
+    urgent: { enabled: true },
+  }));
+  // 情绪：真的急（强度 0.9、负向）。她是真的这个状态，不是测试替她演的。
+  writeFileSync(join(dataDir, 'affect.json'), JSON.stringify(pushEmotion(initState(T), { v: 0.2, a: 0.6, d: 0.3, intensity: 0.9, label: '低落' }, T)));
+  const sent = [];
+  const fetchImpl = async (url, init) => {
+    sent.push({ url: String(url), body: init?.body });
+    return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
+  };
+  const ctx = fakeCtx({ replies: ['嗯'] });
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '我去忙了', time: Math.floor(clock / 1000) });
+  const modelCalls = ctx.calls.length;
+
+  clock += 10 * 60e3; // 她说完十分钟，他没回
+  assert.equal(await host.intent(), 'poke');
+  assert.ok(sent.at(-1).url.endsWith('/friend_poke'), '先戳一戳');
+  assert.equal(ctx.calls.length, modelCalls, '叫他一下是一次 HTTP，不该花模型钱');
+
+  clock += 31 * 60e3; // 戳过半小时还没回
+  assert.equal(await host.intent(), 'shake');
+  assert.ok(sent.at(-1).url.endsWith('/send_private_msg'), '升级成窗口抖动');
+  assert.deepEqual(JSON.parse(String(sent.at(-1).body)).message, [{ type: 'shake' }]);
+  assert.equal(host.proactive.state().nudge.n, 2);
+
+  // 抖过就等他说：后面的心跳不再叫他（一天也最多抖一次）
+  clock += 40 * 60e3;
+  const third = await host.intent();
+  assert.ok(!['poke', 'shake'].includes(third));
+  assert.equal(host.proactive.state().nudge.n, 2);
+});
+
+test('心里不急就不叫：只是他安静着，她不戳也不抖', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-nudge-calm-'));
+  let clock = new Date(2026, 0, 1, 9, 0, 0).getTime();
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+    enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' },
+    proactive: { enabled: false },
+    urgent: { enabled: true },
+  }));
+  const sent = [];
+  const fetchImpl = async (url, init) => {
+    sent.push({ url: String(url), body: init?.body });
+    return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
+  };
+  const ctx = fakeCtx({ replies: ['嗯'] });
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '我去忙了', time: Math.floor(clock / 1000) });
+  clock += 60 * 60e3;
+  const pick = await host.intent();
+  assert.ok(!['poke', 'shake'].includes(pick));
+  assert.ok(!sent.some((c) => c.url.endsWith('/friend_poke') || /shake/.test(String(c.body))), '没有叫他');
 });

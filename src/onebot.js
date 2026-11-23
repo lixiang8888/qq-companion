@@ -173,3 +173,26 @@ export function sendImage(onebot, msg, file) {
     message: [imageSegment(file)],
   });
 }
+
+/**
+ * 戳一戳（QQ 的「拍一拍」）。OneBot 的 send_poke 只有群聊；私聊得用 friend_poke（SnowLuma 实测可用）。
+ * 这不是一句话，进不了历史——她"叫过你"这件事记在 urgent 那本账里。
+ */
+export function sendPoke(onebot, msg) {
+  if (msg.kind === 'group') return onebot.call('send_poke', { group_id: Number(msg.groupId), user_id: Number(msg.userId) });
+  return onebot.call('friend_poke', { user_id: Number(msg.userId) });
+}
+
+/**
+ * 私聊窗口抖动。OneBot v11 没有 standard action，SnowLuma 走的是消息段
+ * （`{"type":"shake"}`，且必须是这一条消息里唯一的段；实测 retcode 0）。
+ * 群聊没有这个语义，直接拒绝——宁可叫不成，也不要发一条会被网关当普通消息的东西。
+ */
+export function sendShake(onebot, msg) {
+  if (msg.kind === 'group') throw new Error('窗口抖动只有私聊能用');
+  return onebot.call('send_private_msg', {
+    user_id: Number(msg.userId),
+    message: [{ type: 'shake' }],
+  });
+}
+

@@ -79,6 +79,13 @@ token 那一格留空表示「不改」。
     "quietTo": 8,
     "moodFloor": 0.25        // 心情低于这个值就不主动
   },
+  "urgent": {
+    "enabled": false,        // 她着急时戳一戳（→ 半小时还没回就抖窗口）；抖窗口会抢焦点，默认关
+    "intensity": 0.6,        // 情绪强度到这个数才算"着急"
+    "valence": 0.45,         // 而且必须是负向的情绪（心情好不算急）
+    "maxPerDay": 3,          // 一天最多叫几次
+    "maxShakePerDay": 1      // 窗口抖动一天最多一次
+  },
   "weather": {
     "enabled": true,         // 开着会连 Open-Meteo（免密钥）
     "place": "huzhou"        // huzhou（湖州师范大学）或 zhuji（诸暨）

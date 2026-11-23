@@ -228,8 +228,12 @@ ${section('她会不会来找你', (() => {
   const factText = f
     ? `<p class="dim">查过（${escapeHtml(new Date(f.at).toLocaleString())}）：「${escapeHtml(f.query)}」→ ${escapeHtml(String(f.answer).slice(0, 100))}</p>`
     : '';
+  const n = p.nudge || {};
+  const nudgeText = n.n
+    ? `叫她 ${n.n} 次（上次 ${new Date(n.lastAt).toLocaleTimeString()} ${n.kind === 'shake' ? '窗口抖动' : '戳一戳'}）`
+    : '还没叫过你';
   return `<p>期待时间：${escapeHtml(next)}${why}</p>${verdict}${waitedText}`
-    + `<p class="dim">今天主动 ${p.count || 0} 次 · 想过 ${p.ticks?.n || 0} 次${p.lastEvents ? `（上次外面真有 ${p.lastEvents} 件事）` : ''}</p>${thought}${out}${factText}`;
+    + `<p class="dim">今天主动 ${p.count || 0} 次 · 想过 ${p.ticks?.n || 0} 次${p.lastEvents ? `（上次外面真有 ${p.lastEvents} 件事）` : ''} · ${nudgeText}</p>${thought}${out}${factText}`;
 })())}
 ${section('人格', `${traits}<p class="dim">${escapeHtml(driftLine(state.self, now) || '最近没变过')}</p><p class="dim">待结算的模式：</p>${patternText}<p class="dim">快照 ${(state.self.snapshots || []).length} 版</p>${snaps ? `<ul>${snaps}</ul>` : ''}`)}
 ${behavior?.turns ? section('这周她的说话习惯', `<p>${behavior.turns} 轮 · 平均 ${behavior.avgParts} 条 / ${behavior.avgChars} 字 · 六个字以内 ${behavior.short} 次 · 打转 ${behavior.stuck} 次 · 疑似拒绝 ${behavior.refused} 次</p>${behavior.topOpen ? `<p class="dim">最常开头：「${escapeHtml(behavior.topOpen.text)}」${behavior.topOpen.n} 次</p>` : ''}<p class="dim">只记她怎么说的，一个字都不记你说了什么。</p>`) : ''}

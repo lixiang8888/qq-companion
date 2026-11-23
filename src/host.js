@@ -10,7 +10,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createJsonStore } from './store.js';
-import { createOneBot, sendImage, sendText } from './onebot.js';
+import { createOneBot, sendImage, sendPoke, sendShake, sendText } from './onebot.js';
 import { forwardIdOf, normalizeMessage, quoteLine, renderForward, replyIdOf, setEmojiNames, setFaceNames, splitReply } from './message.js';
 import { ANIMATION_PROMPT, MAX_IMAGE_BYTES, MAX_LOCAL_BYTES, dataUrlOf, describeImage, extractGifFrames, framesPerImage, imageSegmentsOf, imageSourceOf, mimeOf, shrinkImage, sniffMime, videoSegmentsOf, withImageText } from './vision.js';
 import { MAX_VIDEO_BYTES, VIDEO_PROMPT, findFfmpeg, videoSheet, withVideoText } from './video.js';
@@ -42,6 +42,7 @@ import { rollbackTraits } from './affect/personality.js';
 import { replyPlan } from './affect/behavior.js';
 import { DEFAULTS as PROACTIVE_DEFAULTS, composePokePrompt, notePoked, noteSaidByUser, noteTick, noteWait, openThread,
   parsePokeReply, pokeGate, waitingState } from './proactive.js';
+import { DEFAULTS as URGENT_DEFAULTS, noteNudge, shouldNudge } from './urgent.js';
 import { perceive } from './perceive.js';
 import { BORED_QUIET_MS, createNovel, isBored, mindLine, nextRead, noteRead, noteThought, novelLine, parseBookLookup, parseReaction, planRead, PREFERRED_SOURCE, reactionEmotion, READ_MAX_CHARS, recentReactions, READ_SKIP_TRIES, READING_EMOTION_DAY_MAX, REREAD_MIN_ATTITUDE, shouldDrop, updateBook } from './novel.js';
 import { fetchWeather, isStale, placeOf, weatherLine } from './weather.js';
@@ -148,6 +149,9 @@ const DEFAULT_CONFIG = {
   // 余额低于这个数，她才会主动提钱。
   budget: { lowBalance: 5 },
   proactive: { ...PROACTIVE_DEFAULTS },
+  // 她着急时怎么叫你：私聊戳一戳（轻）→ 窗口抖动（重，一天最多一次）。
+  // QQ 没有"机器人拨语音通话"这个能力，这两级就是她能用的最强提醒。默认关：抖窗口会抢焦点。
+  urgent: { ...URGENT_DEFAULTS },
   // 她在哪：huzhou（湖州师范大学）或 zhuji（诸暨），坐标在 weather.js。
   // enabled 默认关：开着就会去连外网，测试和不想联网的人都该能关掉。
   weather: { enabled: false, place: 'huzhou' },
@@ -1299,15 +1303,56 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   }
 
   /**
+   * 她着急的时候叫他一下：先戳一戳，戳过半小时还没回再抖窗口（一天一次）。
+   * 这不是一句话，所以不进历史；"叫过"记在 pokeStore 的 nudge 那本账里。
+   * 判据全在 urgent.js：她最后一句没人回 + 情绪强度够高且负向 + 没在安静时段。
+   * 返回实际叫的方式（'poke' | 'shake'），或者 null。
+   */
+  async function nudgeIfUrgent(t) {
+    const cfg = { ...URGENT_DEFAULTS, ...(config.urgent || {}) };
+    if (!cfg.enabled || !config.ownerQQ) return null;
+    const state = pokeStore.load();
+    // 上次叫不成（网关不支持 / 掉线）：一小时后再试，别每十分钟刷一条告警。
+    if (state.nudgeFailAt && t - Number(state.nudgeFailAt) < 60 * 60e3) return null;
+    const st = companion.snapshot();
+    const hit = shouldNudge({
+      now: t,
+      history: session.snapshot().history,
+      emotion: st.emotion,
+      state,
+      cfg,
+    });
+    if (!hit.ok) return null;
+    const msg = { kind: 'private', userId: String(config.ownerQQ), chatId: `private:${config.ownerQQ}` };
+    try {
+      if (hit.kind === 'shake') await sendShake(onebot, msg);
+      else await sendPoke(onebot, msg);
+    } catch (e) {
+      pokeStore.save({ ...state, nudgeFailAt: t });
+      log.warn?.(`叫她一下没叫成（${hit.kind === 'shake' ? '窗口抖动' : '戳一戳'}）：${e.message}`);
+      return null;
+    }
+    pokeStore.save({ ...noteNudge({ state, now: t, kind: hit.kind }), nudgeFailAt: 0 });
+    log.info?.(`叫她一下：${hit.kind === 'shake' ? '窗口抖动' : '戳一戳'}（${hit.why}）`);
+    return hit.kind;
+  }
+
+  /**
    * 一轮心跳里她只做一件事，按真实心情的先后：
+   *   心里着急、说了话还没人回 → 叫他一下（戳一戳 / 窗口抖动，一次 HTTP，不花模型钱）；
    *   先看他（期待到了、护栏全过就自己想一次要不要找他），
    *   他没消息可找，才去看书 / 打僵尸。
    *
    * 以前这是两条独立通道：可能一边看书一边打游戏；也可能"该找他了"和"该看书了"
    * 同时发生、两条都跑。现在只有一个决定，一次只占一段时间。
-   * 返回实际发生的事：'read' | 'game' | 'talk'（真发了）| 'think'（想了但没说）| 'none' | 'busy'。
+   * 返回实际发生的事：'poke'|'shake'（叫他）| 'read' | 'game' | 'talk'（真发了）
+   * | 'think'（想了但没说）| 'none' | 'busy'。
    */
   async function decideIntent() {
+    // 叫他一下是几秒钟的事，不占她的"一段时间"，所以放在忙不忙的判断之前：
+    // 打着僵尸也照样会担心他。
+    const nudged = await nudgeIfUrgent(now());
+    if (nudged) return nudged;
     if (reading || playingGame || choosingPastime) return 'busy';
     const cfg = { ...PROACTIVE_DEFAULTS, ...(config.proactive || {}) };
     if (cfg.enabled) {

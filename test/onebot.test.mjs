@@ -1,7 +1,7 @@
 // OneBot 客户端：只测我们自己写的逻辑（连接、鉴权、重连退避、调用与错误）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createOneBot, sendText } from '../src/onebot.js';
+import { createOneBot, sendPoke, sendShake, sendText } from '../src/onebot.js';
 
 function harness({ wsUrl = 'ws://127.0.0.1:3001/onebot/v11/ws', httpUrl = 'http://127.0.0.1:3001', token = 'T', wsToken = '' } = {}) {
   const events = [];
@@ -119,4 +119,26 @@ test("网关参数：WS token 必须单独传下去（漏了就一直是 reconne
   assert.equal(ep.token, 'HTTP');
   assert.equal(ep.wsToken, 'WS');
   assert.notEqual(ep.token, ep.wsToken, '两个 token 不能互相顶替');
+});
+
+// ---- 2026-11-23：她着急时的两种"叫你" ----
+test('戳一戳：私聊走 friend_poke（send_poke 只有群聊）', async () => {
+  const h = harness();
+  await sendPoke(h.ob, { kind: 'private', userId: '42' });
+  const c = h.calls.at(-1);
+  assert.ok(c.url.endsWith('/friend_poke'), c.url);
+  assert.deepEqual(JSON.parse(String(c.init.body)), { user_id: 42 });
+});
+
+test('窗口抖动：私聊发唯一一个 shake 段；群聊直接拒绝', async () => {
+  const h = harness();
+  await sendShake(h.ob, { kind: 'private', userId: '42' });
+  const c = h.calls.at(-1);
+  assert.ok(c.url.endsWith('/send_private_msg'), c.url);
+  const body = JSON.parse(String(c.init.body));
+  assert.equal(body.user_id, 42);
+  assert.deepEqual(body.message, [{ type: 'shake' }]);
+  // 群聊没有窗口抖动这个语义：宁可叫不成，也不能发一条普通消息出去。
+  assert.throws(() => sendShake(h.ob, { kind: 'group', groupId: '9' }), /私聊/);
+  assert.equal(h.calls.length, 1, '被拒的那次不该发出请求');
 });
