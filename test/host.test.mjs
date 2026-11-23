@@ -2050,3 +2050,69 @@ test('他上一句说完人就没了：她会有一点「被晾」，一天只�
   await host.tick();
   assert.ok(host.companion.snapshot().emotion.intensity <= before, '不会反复加');
 });
+
+// ---- 2026-11-23：她说了话没人接，是历史里的事实（openThread 现算），不是存的计数器 ----
+
+test('他几小时没说话、她说了最后一句：被晾从现在算起，不再被「6 小时上限」吞掉', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-wait-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' }, proactive: { enabled: false } }));
+  let clock = new Date(2026, 0, 1, 9, 0, 0).getTime();
+  const ctx = fakeCtx({ replies: ['嗯'] });
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) }) });
+
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(clock / 1000) });
+  // 八小时没动静：旧代码用「他最后一句」到现在的间隔，超过 6 小时就直接不算被晾。
+  // 但这时候最该算——她一直在等。
+  clock += 8 * 3600e3;
+  await host.tick();
+  assert.equal(host.companion.snapshot().emotion.label, '被晾');
+  assert.equal(host.proactive.state().leftOnRead.n, 1, '记下今天为一句没回委屈过');
+});
+
+test('连发两句都没回：每一句最多委屈一次，第二句更明显一点', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-wait2-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' }, proactive: { enabled: false } }));
+  let clock = new Date(2026, 0, 1, 9, 0, 0).getTime();
+  const ctx = fakeCtx({ replies: ['嗯'] });
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) }) });
+
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(clock / 1000) });
+  clock += 30 * 60e3;
+  await host.tick(); // 第一句没回：被晾
+  assert.equal(host.proactive.state().leftOnRead.n, 1);
+
+  // 她真的又追问了一句（跟 poke 走同一条路写进历史）。
+  host.session.note('喂', { at: clock });
+  clock += 25 * 60e3;
+  await host.tick();
+  const st = host.proactive.state();
+  assert.equal(st.leftOnRead.n, 2, '第二句没回也算一次');
+  assert.ok(host.companion.snapshot().emotion.intensity > 0.25, '第二句比第一句更明显');
+
+  // 两句都记过了：再跑心跳不会反复加
+  const before = host.companion.snapshot().emotion.intensity;
+  clock += 10 * 60e3;
+  await host.tick();
+  assert.ok(host.companion.snapshot().emotion.intensity <= before);
+});
+
+test('他隔了很久才回：这一轮让她知道「自己等过」；超过 12 小时就不提了', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-hung-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' }, proactive: { enabled: false } }));
+  let clock = new Date(2026, 0, 1, 9, 0, 0).getTime();
+  const ctx = fakeCtx({ replies: ['嗯'] });
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) }) });
+
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(clock / 1000) });
+  clock += 3 * 3600e3; // 三个小时才回
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '忙完了', time: Math.floor(clock / 1000) });
+  const prompt = JSON.stringify(ctx.calls.at(-1));
+  assert.match(prompt, /他隔了很久才回/);
+  assert.match(prompt, /3\.1 小时|3 小时/, '等了多久要写清楚，不许说「刚才」');
+  assert.match(prompt, /是你真的等过|提不提/, '是事实，不是替她演的委屈');
+
+  // 隔了一天多才回：那句她早就收掉了，现在提是拿旧账压人。
+  clock += 13 * 3600e3;
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '在吗', time: Math.floor(clock / 1000) });
+  assert.doesNotMatch(JSON.stringify(ctx.calls.at(-1)), /他隔了很久才回/);
+});

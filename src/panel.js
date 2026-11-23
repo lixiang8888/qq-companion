@@ -206,13 +206,20 @@ ${section('空间', (() => {
 })())}
 ${section('她会不会来找你', (() => {
   const p = proactive || {};
-  const e = p.expect || {};
   const gate = p.gate;
-  const when = e.at ? new Date(e.at).toLocaleString() : '还没算（等她说完一轮）';
-  const why = e.why ? `<span class="dim">（${escapeHtml(e.why)}）</span>` : '';
+  const w = p.waiting || {};
+  const next = gate?.expectAt ? new Date(gate.expectAt).toLocaleString() : '还没算';
+  const why = gate?.why ? `<span class="dim">（${escapeHtml(gate.why)}）</span>` : '';
   const verdict = gate?.ok
     ? '<p class="big">现在可以找他</p>'
     : `<p class="dim">现在不发：${escapeHtml(gate?.reason || '未开启')}</p>`;
+  // 她在等回话：几句、等多久——都从她的历史现算，面板不再显示一个会跟事实漂的计数器。
+  const mins = Math.round((Number(w.waitedMs) || 0) / 60e3);
+  const waitedText = !w.unanswered
+    ? '<p class="dim">没有在等回话</p>'
+    : w.stage === 'dropped'
+      ? `<p class="dim">说过 ${w.unanswered} 句，一直没人接——她已经把那句收掉了（不再提）</p>`
+      : `<p>她最后一句还在等：「${escapeHtml(String(w.lastText || '').slice(0, 40))}」· 已经 ${mins} 分钟</p>`;
   const thought = p.lastThought?.text
     ? `<p class="dim">上次想的是（${escapeHtml(new Date(p.lastThought.at).toLocaleString())}）：「${escapeHtml(p.lastThought.text.slice(0, 80))}」</p>`
     : '';
@@ -221,8 +228,8 @@ ${section('她会不会来找你', (() => {
   const factText = f
     ? `<p class="dim">查过（${escapeHtml(new Date(f.at).toLocaleString())}）：「${escapeHtml(f.query)}」→ ${escapeHtml(String(f.answer).slice(0, 100))}</p>`
     : '';
-  return `<p>期待时间：${escapeHtml(when)}${why}</p>${verdict}`
-    + `<p class="dim">今天主动 ${p.count || 0} 次 · 连发没回 ${p.consecutive || 0} 条 · 想过 ${p.ticks?.n || 0} 次${p.lastEvents ? `（上次外面真有 ${p.lastEvents} 件事）` : ''}</p>${thought}${out}${factText}`;
+  return `<p>期待时间：${escapeHtml(next)}${why}</p>${verdict}${waitedText}`
+    + `<p class="dim">今天主动 ${p.count || 0} 次 · 想过 ${p.ticks?.n || 0} 次${p.lastEvents ? `（上次外面真有 ${p.lastEvents} 件事）` : ''}</p>${thought}${out}${factText}`;
 })())}
 ${section('人格', `${traits}<p class="dim">${escapeHtml(driftLine(state.self, now) || '最近没变过')}</p><p class="dim">待结算的模式：</p>${patternText}<p class="dim">快照 ${(state.self.snapshots || []).length} 版</p>${snaps ? `<ul>${snaps}</ul>` : ''}`)}
 ${behavior?.turns ? section('这周她的说话习惯', `<p>${behavior.turns} 轮 · 平均 ${behavior.avgParts} 条 / ${behavior.avgChars} 字 · 六个字以内 ${behavior.short} 次 · 打转 ${behavior.stuck} 次 · 疑似拒绝 ${behavior.refused} 次</p>${behavior.topOpen ? `<p class="dim">最常开头：「${escapeHtml(behavior.topOpen.text)}」${behavior.topOpen.n} 次</p>` : ''}<p class="dim">只记她怎么说的，一个字都不记你说了什么。</p>`) : ''}

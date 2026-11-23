@@ -24,6 +24,7 @@ function fakeCtx() {
         if (/这一回合做什么/.test(all)) text = '[种:向日葵 1,1]';
         else if (/你刚自己看完一章/.test(all)) text = '看到「刺进」那段有点闷。[读:闷 2 继续]';
         else if (/你刚自己打完一局/.test(all)) text = '「第 1 关」就这。[玩:无感 1]';
+        else if (/这是你自己在想/.test(all)) text = '{"send":true,"message":"喂"}';
         yield { type: 'text-delta', index: 0, text };
         yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0 } };
         yield { type: 'finish', reason: { kind: 'done' } };
@@ -37,12 +38,13 @@ function fakeCtx() {
 
 const BODY = '　　他紧握手掌，尖锐的指甲深深的刺进了掌心之中，带来一阵阵钻心的疼痛。'.repeat(6);
 
-function setup({ seedNovel = null, novelDown = false } = {}) {
+function setup({ seedNovel = null, novelDown = false, config = {} } = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), 'qqc-pastime-'));
   writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
     enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' },
     novel: { base: 'http://127.0.0.1:1123' },
     game: { enabled: true, edgePath: 'C:\\fake\\msedge.exe', stepMs: 10, maxDecisions: 10, maxMinutes: 5, maxPerDay: 2 },
+    ...config,
   }));
   if (seedNovel) writeFileSync(join(dataDir, 'novel.json'), JSON.stringify(seedNovel));
   const fetchImpl = async (url) => {
@@ -113,4 +115,19 @@ test('小说读到腻了：这轮换成打游戏，不看书', async () => {
   assert.equal(pick, 'game', '态度 -0.4：腻了，换花样');
   assert.equal(calls.open, 1, '真去开浏览器打了一局');
   assert.equal(readFileSync(join(dataDir, 'novel.json'), 'utf8'), before, '这轮不该读书——一章都没读');
+});
+
+test('一轮只做一件事：能找他时先找他，找过了才看书（不再两条通道一起跑）', async () => {
+  const { dataDir, host, tick } = setup({ config: { proactive: { enabled: true, minIdleMinutes: 30, quietFrom: 0, quietTo: 0 } } });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '我去忙了', time: Math.floor(T / 1000) });
+  tick(40 * 60e3);
+  const first = await host.intent();
+  assert.equal(first, 'talk', '期待到了：这一轮先找他');
+  assert.ok(!existsSync(join(dataDir, 'novel.json')), '这一轮没去看书——一次只占一段时间');
+
+  // 刚发完，冷却挡着：下一轮才轮到看书。
+  tick(10 * 60e3);
+  const second = await host.intent();
+  assert.equal(second, 'read');
+  assert.ok(existsSync(join(dataDir, 'novel.json')), '这一轮真读了');
 });
