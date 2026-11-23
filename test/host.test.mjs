@@ -2276,3 +2276,27 @@ test('客户端把戳一戳塞进一条消息里（真机日志那种）：也�
   assert.equal(r.sent, 1);
   assert.equal(JSON.parse(String(sent.at(-1).body)).message[0].data.text, '在呢');
 });
+
+// ---- 2026-11-23：想起也算复习（以前只有"他再说一遍"才算）----
+test('想起就算复习：被她想起来的那条记一笔，冷却期里不重复算', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-review-'));
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+    enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' },
+  }));
+  let clock = new Date(2026, 0, 1, 9, 0, 0).getTime();
+  // 置顶记忆每轮都会被注入：正好用来验证「被注入 = 复习」。
+  const card = remember(createCard(clock), '他养了一只猫叫团子', { now: clock, owner: true, pinned: true });
+  writeFileSync(join(dataDir, 'memory.json'), JSON.stringify(card));
+  const ctx = fakeCtx({ replies: ['嗯'] });
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0 });
+  const readRec = () => JSON.parse(readFileSync(join(dataDir, 'memory.json'), 'utf8')).records.find((r) => /团子/.test(r.text));
+
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(clock / 1000) });
+  assert.equal(readRec().promptedCount, 1, '被想起来一次');
+  assert.ok(readRec().lastPromptedAt > 0);
+
+  // 十分钟后再聊：同一条还在冷却里，不再加复习次数
+  clock += 10 * 60e3;
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '在吗', time: Math.floor(clock / 1000) });
+  assert.equal(readRec().promptedCount, 1, '7 天内只算一次');
+});

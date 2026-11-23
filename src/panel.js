@@ -96,8 +96,18 @@ export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', 
   // forgottenAt 可能是 0（测试里时钟从 0 开始），所以只能用 !== undefined 判断。
   const live = (memory?.records || []).filter((r) => r.forgottenAt === undefined);
   const recent = live.slice(-10).reverse();
+  // 复习的两个来源分开显示：被再说一遍（他重提）和被她自己想起来（注入时算的）。
+  const reviewNote = (r) => {
+    const said = Number(r.recallCount) || 0;
+    const recalled = Number(r.promptedCount) || 0;
+    if (!said && !recalled) return '';
+    const bits = [];
+    if (recalled) bits.push(`想起 ${recalled} 次`);
+    if (said) bits.push(`被再说 ${said} 次`);
+    return ` <span class="dim">（${bits.join(' · ')}）</span>`;
+  };
   const memoryList = recent.length
-    ? `<ul>${recent.map((r) => `<li><span class="tag">${CLARITY_LABEL[r.clarity] || r.clarity}</span> ${escapeHtml(r.text)} <a href="?pin=${encodeURIComponent(r.id)}">${r.pinned ? '取消置顶' : '置顶'}</a> <a href="?forget=${encodeURIComponent(r.id)}">忘记</a></li>`).join('')}</ul>`
+    ? `<ul>${recent.map((r) => `<li><span class="tag">${CLARITY_LABEL[r.clarity] || r.clarity}</span> ${escapeHtml(r.text)}${reviewNote(r)} <a href="?pin=${encodeURIComponent(r.id)}">${r.pinned ? '取消置顶' : '置顶'}</a> <a href="?forget=${encodeURIComponent(r.id)}">忘记</a></li>`).join('')}</ul>`
     : '<p class="dim">记忆卡还是空的</p>';
 
   // 遗忘是可逆的：软删除的还在，90 天内点一下就回来。

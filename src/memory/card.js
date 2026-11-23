@@ -22,11 +22,27 @@ const hits = (text, words) => words.reduce((n, w) => n + (text.includes(w) ? 1 :
 // 不重算是有意的——按「此刻的心情」重算等于让她每次心情差就觉得过去全不重要。
 export const HEAT_KEEP = 0.6;   // 高于它：长期清楚、不清除
 export const HEAT_GIST = 0.35;  // 低于它：按日常闲话老化，最后可以忘掉
+// 2026-11-23：单纯被想起来也算一次复习，但要有冷却和封顶——否则每天被注入的那几条
+// 会自我强化成永久「清晰」，她的记忆就开始复读。
+export const PROMPT_COOLDOWN_MS = 7 * DAY_MS; // 同一条 7 天内只算一次「被想起」
+export const PROMPT_CREDIT_MAX = 6;           // 被想起来最多折算 6 分（×0.5 → +3，再 ×2 → +6）
+export const RESURFACE_GAP_MS = 7 * DAY_MS;   // 这么久没出现在她眼前的，才配占「轮换位」
+export const MAX_CHATTER = 1200;              // 闲话滚动上限：旧事太多时先淘汰它们
 
 /** 老记录没有 heat，按重要度折算兜底；不冒充当时的情绪，也不让它们全被判成「不重要」。 */
 export function heatOf(rec) {
   if (Number.isFinite(rec?.heat)) return Math.max(0, Math.min(1, rec.heat));
   return Math.min(0.6, ((Number(rec?.importance) || 0) / 100) * 0.6);
+}
+
+/**
+ * 复习信用：他再说一遍同一件事算 1 分；单纯被想起来算 0.5 分（有冷却、有封顶）。
+ * 被注入≠复习的旧版本里只有前者——那样天天出现在上下文里的事照样按天淡。
+ */
+export function reviewCredit(rec) {
+  const said = Number(rec?.recallCount) || 0;
+  const prompted = Math.min(PROMPT_CREDIT_MAX, Number(rec?.promptedCount) || 0);
+  return said + prompted * 0.5;
 }
 
 /**
@@ -147,7 +163,7 @@ export function targetClarity(rec, now) {
   const days = Math.max(0, (now - rec.createdAt) / DAY_MS);
   const sinceSeen = Math.max(0, (now - rec.lastSeenAt) / DAY_MS);
   let retention = rec.importance
-    + Math.min(12, (rec.recallCount || 0) * 2)
+    + Math.min(12, Math.round(reviewCredit(rec) * 2))
     + (sinceSeen <= 7 ? 18 : 0)
     + Math.round(heat * 30)
     - Math.max(0, days - 7) * (rec.owner ? 0.12 : 0.35);
@@ -305,6 +321,20 @@ export function remember(card, text, { now = 0, owner = false, inGroup = false, 
     victim.supersededAt = now;
     next.stats.superseded = (next.stats.superseded || 0) + 1;
   }
+  // 旧事太多时先淘汰闲话（2026-11-23）：身份类、事件、高热、被再提过/被想起过的一条都不动。
+  // 只靠 3000 条总上限的话，闲话会把长期事实挤出去（400 天实测：10 条长期事实只剩 2 条）。
+  const chatter = next.records.filter((r) => isLive(r) && r.kind === 'chatter' && !r.pinned && !r.first
+    && heatOf(r) < HEAT_KEEP && !(Number(r.recallCount) > 0) && !(Number(r.promptedCount) > 0));
+  if (chatter.length > MAX_CHATTER) {
+    const victims = chatter
+      .sort((a, b) => (a.importance - b.importance)
+        || (rank(a.clarity) - rank(b.clarity))
+        || (a.lastSeenAt - b.lastSeenAt))
+      .slice(0, chatter.length - MAX_CHATTER);
+    const dropSet = new Set(victims);
+    next.records = next.records.filter((r) => !dropSet.has(r));
+    next.stats.evicted = (next.stats.evicted || 0) + victims.length;
+  }
   // 安全阀：条数有上限，先淘汰「日常闲话」，再淘汰事件，最后才动「关于他是谁」的记录；锚点永远不动。
   if (next.records.length > maxRecords) {
     const active = next.records.filter((r) => r.forgottenAt === undefined);
@@ -327,6 +357,21 @@ export function remember(card, text, { now = 0, owner = false, inGroup = false, 
 }
 
 /**
+ * 轮换位候选人：值得（情绪重或重要）、但好久没出现在她眼前的旧事。
+ * 旧事多起来之后，2200 字会永远被最近那几条占着——这条保证重要的旧事隔一阵回来一次。
+ * 只挑一条，且要 7 天没被注入过（被注入过就会更新 lastPromptedAt）。
+ */
+export function resurfaceCandidate(card, { now = 0, exclude = new Set() } = {}) {
+  const aired = (r) => Number(r.lastPromptedAt) || Number(r.createdAt) || 0;
+  const worth = (r) => heatOf(r) >= HEAT_GIST || (Number(r.importance) || 0) >= 60;
+  return (card?.records || [])
+    .filter((r) => r && isLive(r) && !exclude.has(r.id) && worth(r) && now - aired(r) >= RESURFACE_GAP_MS)
+    .sort((a, b) => (rank(b.clarity) - rank(a.clarity))
+      || (b.importance - a.importance)
+      || (aired(a) - aired(b)))[0] || null;
+}
+
+/**
  * 排序：初次相遇/置顶永远在前；「关于他是谁」紧跟其后（有上限），
  * 然后是 query 命中的，最后按清晰度和重要度补。
  * 不把身份类提前的话，store 里留着也白留——最近几句 vivid 闲聊会把 2200 字挤满。
@@ -344,13 +389,22 @@ export function rankForPrompt(card, { now = 0, query = '' } = {}) {
     return i || b.lastSeenAt - a.lastSeenAt;
   });
   const head = query ? search(others, query, { now, limit: 6 }).map((h) => h.rec) : [];
-  return [...anchors, ...idents, ...head, ...byValue];
+  // 轮换位排在「命中」之后、普通按价值之前：给值得的旧事一个固定的位子。
+  const resurfaced = resurfaceCandidate(card, {
+    now,
+    exclude: new Set([...anchors, ...idents, ...head].map((r) => r.id)),
+  });
+  return [...anchors, ...idents, ...head, ...(resurfaced ? [resurfaced] : []), ...byValue];
 }
 
-/** 注入块。 */
-export function render(card, { now = 0, maxChars = 2200, query = '' } = {}) {
+/**
+ * 这一轮要注入哪几条记忆。返回文本和**被选中的记录**——调用方要拿 picks 去记「想起过」。
+ * 只读：不改卡片。
+ */
+export function selectForPrompt(card, { now = 0, maxChars = 2200, query = '' } = {}) {
   const seen = new Set();
   const lines = [];
+  const picks = [];
   let used = 0;
   // 按日历日算，不按 24 小时算：00:10 看前天晚上的事，除以 24 小时只有 1 天多，会标成「昨天」。
   const midnight = (t) => { const d = new Date(Number(t) || 0); d.setHours(0, 0, 0, 0); return d.getTime(); };
@@ -374,10 +428,46 @@ export function render(card, { now = 0, maxChars = 2200, query = '' } = {}) {
       : `- [${when}]${tag} ${r.text}`;
     if (used + line.length > maxChars) break;
     lines.push(line);
+    picks.push(r);
     used += line.length + 1;
   }
-  if (!lines.length) return '';
-  return `【你记得的事】\n${lines.join('\n')}\n（这些是以前的事，不是他刚说的；不确定就说记不清，别编。）`;
+  const text = lines.length
+    ? `【你记得的事】\n${lines.join('\n')}\n（这些是以前的事，不是他刚说的；不确定就说记不清，别编。）`
+    : '';
+  return { text, lines, picks };
+}
+
+/** 注入块。 */
+export function render(card, opts = {}) {
+  return selectForPrompt(card, opts).text;
+}
+
+/**
+ * 她这一轮真的想起这些了：记一笔。
+ *   · lastPromptedAt：每次出现都更新——给「最久没出现的先上」的轮换用；
+ *   · promptedCount：同一条 **7 天内只算一次**复习，封顶后不再加分。
+ * 不值得时就返回 null（调用方不用存盘）。
+ */
+export function notePrompted(card, ids = [], now = 0) {
+  const pick = new Set(ids);
+  if (!pick.size) return null;
+  const next = structuredClone(card);
+  let changed = false;
+  for (const rec of next.records) {
+    if (!pick.has(rec.id) || rec.forgottenAt !== undefined) continue;
+    const lastCredit = Number(rec.lastPromptCreditAt) || 0;
+    const first = lastCredit === 0;
+    if (first || now - lastCredit >= PROMPT_COOLDOWN_MS) {
+      rec.promptedCount = (Number(rec.promptedCount) || 0) + 1;
+      rec.lastPromptCreditAt = now;
+      changed = true;
+    }
+    if (!Number(rec.lastPromptedAt) || now > Number(rec.lastPromptedAt)) {
+      rec.lastPromptedAt = now;
+      changed = true;
+    }
+  }
+  return changed ? next : null;
 }
 
 export function stats(card) {

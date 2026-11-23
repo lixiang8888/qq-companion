@@ -20,7 +20,7 @@ import { createLocalSession, MAX_TURN_IMAGES, stampOf } from './session.js';
 import { createCompanion } from './companion.js';
 import { dayKeyOf, initState, pushEmotion, settle } from './affect/core.js';
 import { moodLabel, stateLine } from './affect/inject.js';
-import { createCard, forget, maintain, rankForPrompt, remember, render, restore, stats as memoryStats } from './memory/card.js';
+import { createCard, forget, maintain, notePrompted, rankForPrompt, remember, restore, selectForPrompt, stats as memoryStats } from './memory/card.js';
 import { sanitizeSecrets } from './memory/sanitize.js';
 import { search as memorySearch } from './memory/search.js';
 import { parsePerception } from './perception/slots.js';
@@ -300,7 +300,11 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     let card = maintain(memoryStore.load(), t);
     // 先渲染再记：这一句已经在本轮对话里了，再塞进记忆块就是让「过去」冒充「现在」，
     // 还白占 2200 字预算。她要在「下一轮」才想起这句话。
-    const block = render(card, { now: t, maxChars: 2200, query: msg.text });
+    const picked = selectForPrompt(card, { now: t, maxChars: 2200, query: msg.text });
+    // 想起来了就是复习：被注入的记一笔（同一条 7 天一次、有封顶），淡忘时才算数。
+    // 只读的检索不会让她记得更牢——这一步才让"常被想起的事"真的更清楚。
+    card = notePrompted(card, picked.picks.map((r) => r.id), t) || card;
+    const block = picked.text;
     // 想起来的那件事，顺手把那天的前后两句带上——光有结论没有场景，她接不住。
     const scene = sceneFor(msg.text, t);
     // 记住「这一轮想起了什么」：调检索时没有这个观测点就是盲调。
