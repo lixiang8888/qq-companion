@@ -166,6 +166,8 @@ export function createLocalSession({
     summary = await capSummary(summary ? `${summary}\n${text}` : text);
     history = history.slice(-keep);
     compactions += 1;
+    // 压成功了就把上一次失败标成「已恢复」：面板上一直挂着旧错误，看起来像一直坏着。
+    if (lastError && !lastError.resolvedAt) lastError = { ...lastError, resolvedAt: now() };
     try { persist?.({ summary, history: history.slice(), compactions }); } catch { /* 落盘失败不影响继续 */ }
     return true;
   }

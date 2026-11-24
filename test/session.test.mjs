@@ -417,3 +417,18 @@ test('尺度那句话进系统提示：她会不好意思，而且不主动升�
   // 人格永远是第一段，规矩跟在后面：不能让人格被规矩顶到末尾去。
   assert.ok(sys.indexOf('你是小鲸鱼') === 0);
 });
+
+test('压缩失败之后又成功：错误标成「已恢复」，不把旧账一直挂面板上', async () => {
+  let fail = true;
+  const complete = async ({ system }) => {
+    if (/压成一段摘要/.test(system || '')) return fail ? '' : '压好了，他说过要早点睡。';
+    return '嗯';
+  };
+  const s = createLocalSession({ complete, system: '', compactAt: 4, keepRecent: 2 });
+  for (let i = 0; i < 6; i += 1) await s.prompt('p', `第${i}句`);
+  assert.equal(s.snapshot().lastError?.message, '压缩返回空内容');
+  assert.equal(s.snapshot().lastError?.resolvedAt, undefined);
+  fail = false;
+  for (let i = 0; i < 6; i += 1) await s.prompt('p', `后面${i}`);
+  assert.ok(s.snapshot().lastError?.resolvedAt > 0, '成功之后要标已恢复');
+});
