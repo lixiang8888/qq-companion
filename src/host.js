@@ -31,7 +31,7 @@ import { baselineOf, composePrompt, diff as diaryDiff, dueDay, hasDiary, readDia
 import { addUsage, createBudget, fetchBalance, LOW_BALANCE_CNY, moneyBlock, usageOf } from './budget.js';
 import { createMailbox, DEFAULT_WINDOW_MS, mergeTexts } from './mailbox.js';
 import { applyInsights, composePrompt as insightsPrompt, createInsights, dueInsights, insightsLastAt, parseInsights, renderInsights, INSIGHT_TTL } from './insights.js';
-import { applySettle, applyThought, createImpulses, dueSettle, dueThought, parseSettle, parseThought, renderImpulses, settlePrompt, thoughtPrompt } from './impulse.js';
+import { applySettle, applyThought, createImpulses, dueSettle, dueThought, IMPULSE_DEFAULTS, noteTry, parseSettle, parseThought, renderImpulses, repeatThought, settlePrompt, thoughtPrompt, topicOf } from './impulse.js';
 import { composeCommentPrompt, composePostPrompt, decidePost, notePosted, parseCommentReply, parsePostReply } from './qzone-post.js';
 import { comment as qzoneComment, detail as qzoneDetail, freshComments, publish as qzonePublish, remove as qzoneRemove } from './qzone.js';
 import { appendTranscript, looksLikeRecall, readTranscript, recallLine, searchTranscript } from './transcript.js';
@@ -160,6 +160,9 @@ const DEFAULT_CONFIG = {
   urgent: { ...URGENT_DEFAULTS },
   // 你戳她一下（QQ 拍一拍）她怎么反应：回一句短的 / 戳回去 / 真的不想理就沉默。默认开。
   pokeReply: { enabled: true, cooldownSeconds: 30 },
+  // 她心里冒念头：跟着刚才聊的话题走，很便宜的小调用，所以可以密一点。
+  // 想更密/更稀、或者干脆关掉，都在这里改（minGapMinutes / maxPerDay / settlePerDay）。
+  impulse: { ...IMPULSE_DEFAULTS },
   // 她在哪：huzhou（湖州师范大学）或 zhuji（诸暨），坐标在 weather.js。
   // enabled 默认关：开着就会去连外网，测试和不想联网的人都该能关掉。
   weather: { enabled: false, place: 'huzhou' },
@@ -884,22 +887,26 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   }
 
   /**
-   * 情绪上来了，她自己冒一个念头；过一阵平复了，再问她「现在还是那个想法吗」。
+   * 心里冒念头：跟着刚才聊的事走，或一个人时情绪上来了才冒；过一阵平复了再回头看。
    *
+   * 这个调用刻意做得很小：不思考（reasoningEffort:'off'）、120 token 上限——它只是
+   * 「一句嘀咕」，用不上推理；换来的是一天可以冒几十次，而不是四次。
    * 一次只做一件事：先看有没有该回头看的，再看要不要冒新的。
-   * 两次都是小调用（有上限，空了会自动换不思考再要一次），失败就等下一次心跳。
    */
   async function refreshImpulse() {
     const t = now();
+    const cfg = { ...IMPULSE_DEFAULTS, ...(config.impulse || {}) };
+    if (cfg.enabled !== true) return impulseStore.load();
     const cur = impulseStore.load();
     const st = settle(store.load(), t);
-    const open = dueSettle(cur, st, t);
+    const open = dueSettle(cur, st, t, { perDay: Math.max(1, Number(cfg.settlePerDay) || IMPULSE_DEFAULTS.settlePerDay) });
     if (open) {
       try {
         const text = await complete({
           system: `${personaCore()}\n\n（你在回头看自己刚才的情绪，不跟任何人说话。）`,
           messages: [{ role: 'user', text: settlePrompt(open, st, t) }],
-          maxTokens: 200,
+          maxTokens: 120,
+          reasoningEffort: 'off',
         });
         const said = parseSettle(text);
         // 「没变」也要落一行（空内容）：不然十分钟后又会问她一遍同一句。
@@ -909,20 +916,37 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         return next;
       } catch (e) {
         log.warn?.(`念头回头看出错：${e.message}`);
-        return cur;
+        impulseStore.save(noteTry(cur, t)); // 失败也要退避，别每个心跳都撞一次
+        return impulseStore.load();
       }
     }
-    if (!dueThought(st, cur, t)) return cur;
+    // 刚才聊的是什么：他最后一句 + 她最后一句。有这个就不需要「等情绪上来」。
+    const topic = topicOf(session.snapshot().history, { now: t });
+    // 他晾着她（她说完了没人接）：这种时候最会冒坏心思，也是真事，不是编的。
+    const w = waitingState({ now: t, history: session.snapshot().history, cfg: { ...PROACTIVE_DEFAULTS, ...(config.proactive || {}) } });
+    const waiting = w.stage === 'ignored'
+      ? { unanswered: w.unanswered, minutes: Math.round(w.waitedMs / 60e3), lastText: String(w.lastText || '') }
+      : null;
+    const gapMs = Math.max(60e3, Number(cfg.minGapMinutes || IMPULSE_DEFAULTS.minGapMinutes) * 60e3);
+    const maxPerDay = Math.max(1, Number(cfg.maxPerDay) || IMPULSE_DEFAULTS.maxPerDay);
+    if (!dueThought(st, cur, t, { topicAt: topic.at, waiting, gapMs, maxPerDay })) return cur;
     // 有正在处理的事情就不打扰她：念头该是这时候真冒出来的，不是排出来的任务。
     if (thinking || reading) return cur;
+    const oldThoughts = (cur.lines || []).slice(-2).reverse().map((l) => l.text);
     try {
       const text = await complete({
         system: `${personaCore()}\n\n（你在自己心里嘀咕，不是在跟他说话。）`,
-        messages: [{ role: 'user', text: thoughtPrompt(st, { now: t }) }],
-        maxTokens: 200,
+        messages: [{ role: 'user', text: thoughtPrompt(st, { now: t, topic, waiting, oldThoughts }) }],
+        maxTokens: 120,
+        reasoningEffort: 'off',
       });
       const thought = parseThought(text);
-      if (!thought) return cur;
+      // 回「没有」、或者跟旧念头太像：记一笔「问过了」，别让每个周期都重问。
+      if (!thought || repeatThought(cur, thought)) {
+        impulseStore.save(noteTry(cur, t));
+        if (thought) log.info?.(`念头重复了，这次不记：${thought}`);
+        return impulseStore.load();
+      }
       const next = applyThought(cur, thought, t, { v: st.emotion.v });
       impulseStore.save(next);
       log.info?.(`念头：${thought}`);
@@ -2219,8 +2243,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     } catch (e) {
       log.warn?.(`行为账本没写成：${e.message}`); // 账本坏了不能让这一轮哑掉
     }
-    // 这一轮可能让她情绪上来了：给她一点自己的时间冒个念头（后台，不堵下一句）。
-    enqueue(refreshImpulse).catch((e) => log.warn?.(`念头出错：${e.message}`));
+    // 念头不在这里冒：挂在十分钟一次的心跳上（一次小调用，跟着刚才的话题走），
+    // 免得每一句话后面都追一次调用，也免得和他的回话抢时间。
     return { ...r, sent: parts.length, plan, sticker, merged: batch.texts.length };
   }
 
@@ -2768,7 +2792,7 @@ function loadConfig(file, log) {
 /** 嵌套对象按层合并：用户只写 ownerQQ 时，onebot 的默认地址不能被整块抹掉。 */
 export function mergeConfig(base, patch) {
   const out = { ...base, ...(patch || {}) };
-  for (const key of ['onebot', 'model', 'session', 'memory', 'proactive', 'urgent', 'pokeReply', 'budget', 'weather', 'search', 'video', 'transcript', 'screen', 'novel', 'game']) {
+  for (const key of ['onebot', 'model', 'session', 'memory', 'proactive', 'urgent', 'pokeReply', 'impulse', 'budget', 'weather', 'search', 'video', 'transcript', 'screen', 'novel', 'game']) {
     if (patch?.[key] && typeof patch[key] === 'object') out[key] = { ...(base?.[key] || {}), ...patch[key] };
   }
   return out;

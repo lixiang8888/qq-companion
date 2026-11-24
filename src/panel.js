@@ -131,15 +131,17 @@ export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', 
   // 房间是固定的：他问过「你房间什么样」，以前每次答的都不一样——因为根本没有房间。
   const roomText = `<p class="dim">她的房间：${escapeHtml(HOME)}</p>`;
   // 情绪上来的念头：冒过什么、后来还是不是那个想法。两句都是她当时真想的。
-  const impLines = (impulses?.lines || []).slice(-3).reverse();
+  const impLines = (impulses?.lines || []).slice(-5).reverse();
+  const today = new Date(now).toDateString();
+  const impToday = (impulses?.lines || []).filter((l) => new Date(l.at).toDateString() === today).length;
   const impulseText = impLines.length
-    ? `<p class="dim">这一阵心里嘀咕过的：</p><ul>${impLines.map((l) => {
+    ? `<p class="dim">这一阵心里嘀咕过的（今天 ${impToday} 个）：</p><ul>${impLines.map((l) => {
       const after = l.settled?.text
         ? ` <span class="dim">→ 后来觉得「${escapeHtml(l.settled.text)}」</span>`
         : l.settled ? ' <span class="dim">（后来觉得没变）</span>' : '';
       return `<li><span class="tag">${escapeHtml(clockOf(l.at))}</span>「${escapeHtml(l.text)}」${after}</li>`;
     }).join('')}</ul>`
-    : '<p class="dim">还没冒过念头（情绪真的上来了才有）</p>';
+    : '<p class="dim">还没冒过念头（刚聊过就会跟着冒，孤零零的时候要情绪上来才有）</p>';
   // 表情：最后想发的那一张为什么没发出去，比「一张都没发过」有用。
   const stLast = stickers?.last;
   const stickerLastText = stLast

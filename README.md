@@ -92,6 +92,14 @@ token 那一格留空表示「不改」。
     "enabled": true,         // 你戳她一下（QQ 拍一拍）她会理：回一句短的 / 戳回去 / [沉默]
     "cooldownSeconds": 30    // 连戳只算一次
   },
+  // 心里的念头 / 联想：跟着刚才聊的东西抓一个特征，想到另一件事。
+  // 这些小调用不思考、只有 120 token 上限，所以可以冒得勤；想更密/更稀都在这调。
+  "impulse": {
+    "enabled": true,
+    "minGapMinutes": 8,      // 两次念头之间至少隔这么久
+    "maxPerDay": 40,         // 一天最多冒几个
+    "settlePerDay": 20       // 回头看她自己那个念头的次数上限
+  },
   "weather": {
     "enabled": true,         // 开着会连 Open-Meteo（免密钥）
     "place": "huzhou"        // huzhou（湖州师范大学）或 zhuji（诸暨）

@@ -2404,16 +2404,29 @@ test('现实边界：她知道自己只在聊天框里，房间是固定的那�
   assert.match(sys, /括号里的动作和画面/, '他括号里的动作不是真的发生在她身上');
 });
 
-test('念头：情绪上来了才冒；过一阵回头看，她自己能看见前后不一样', async () => {
+test('念头：她说的没人接，念头里就有「他还没回你」和一点小坏心思', async () => {
+  const { host, ctx, say, tick } = talkSetup({ replies: ['嗯', '算了，不回他了'] });
+  await say('早');
+  tick(75 * 60e3); // 一个多小时没人接
+  await host.impulse.refresh();
+  assert.equal(host.impulse.state().lines[0].text, '算了，不回他了');
+  const prompt = JSON.stringify(ctx.calls[1].messages);
+  assert.match(prompt, /他还没回你/, '等多久是算出来的真事');
+  assert.match(prompt, /小坏心思/, '被晾着的时候允许想点对他不好的');
+});
+
+test('念头：跟着刚聊的话题冒（不思考、便宜）；过一阵回头看，能看见前后不一样', async () => {
   // 调用顺序：第一轮说话 → 冒念头 → 第二轮说话 → （两小时后）回头看。
+  // 念头挂在心跳上，不追着每一句话跑；这里手动踢一次心跳里的那一步。
   const { host, dataDir, ctx, say, tick } = talkSetup({ replies: ['嗯', '好想黏着他', '嗯', '其实他也没那么坏'] });
   await say('你好可爱！！！');
-  // 念头是后台排的（不能堵着下一句），等它跑完再看。
-  await new Promise((r) => setTimeout(r, 20));
+  await host.impulse.refresh();
   const first = host.impulse.state();
-  assert.equal(first.lines.length, 1, '情绪上来了，冒一个念头');
+  assert.equal(first.lines.length, 1, '聊完一句就会顺着冒一个念头');
   assert.equal(first.lines[0].text, '好想黏着他');
   assert.equal(first.lines[0].settled, null, '还没回头看');
+  assert.equal(ctx.calls[1].reasoningEffort, 'off', '念头不用思考——它只是句嘀咕');
+  assert.match(JSON.stringify(ctx.calls[1].messages), /你好可爱/, '念头要跟着刚才聊的事，不是凭空想');
 
   // 不能清空 ctx.calls：假模型靠它的长度取下一句，清掉就会把「回头看」的那句错位。
   const at = ctx.calls.length;
