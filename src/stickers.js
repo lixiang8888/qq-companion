@@ -34,17 +34,25 @@ export function mergeFavorites(prev = [], fresh = []) {
   });
 }
 
+const normName = (s) => String(s ?? '').replace(/[\s「」『』（）()［］\[\]：:，。！？、,.!?~～/／|｜·]/g, '');
+
 /**
  * 按她说的挑一张。挑不到就返回 null——**宁可这次没有表情，也不要拿一张不相干的顶替**，
  * 那比没有更糟：她以为自己在说「无语」，他看到的是一张笑脸。
+ *
+ * 匹配放宽到「标点空格不同也算同一个名字」：她不会每次都把名字一字不差地抄一遍。
+ * 但只做同一张图的名字变形匹配，不做近义替换——「无语」和「就这」不是一张图。
  */
 export function pickSticker(items = [], hint = '') {
-  const h = String(hint || '').trim();
+  const h = normName(hint);
   if (!items.length || !h) return null;
   const named = items.filter((s) => s.name);
-  const exact = named.find((s) => s.name === h);
+  const exact = named.find((s) => normName(s.name) === h);
   if (exact) return exact;
-  const loose = named.find((s) => s.name.includes(h) || h.includes(s.name));
+  // 名字里可能塞了两个词（「累瘫了/饿晕了」）：任意一段对上就算。
+  const seg = named.find((s) => String(s.name).split(/[/／、|｜]/).map(normName).filter(Boolean).includes(h));
+  if (seg) return seg;
+  const loose = named.find((s) => normName(s.name).includes(h) || h.includes(normName(s.name)));
   return loose || null;
 }
 
@@ -59,7 +67,7 @@ export function namesLine(items = [], { max = MAX_LISTED, maxChars = LIST_CHARS 
     picked.push(n);
     used += n.length + 1;
   }
-  return `【你手上的表情】${picked.join('、')}（想发就写 [表情:名字]，别把方括号念出来）`;
+  return `【你手上的表情】${picked.join('、')}（想发就写 [表情:名字]，一轮最多一张；只能从这几个名字里挑，写别的发不出去）`;
 }
 
 /** 还没名字的那几张——同步时只给这些花视觉调用，不重复起名。 */

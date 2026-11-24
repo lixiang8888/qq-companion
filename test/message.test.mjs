@@ -1,7 +1,7 @@
 // 消息映射与拆条：协议细节在这里钉死，真机出问题时先怀疑传输层。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { forwardIdOf, normalizeMessage, renderForward, splitReply } from '../src/message.js';
+import { forwardIdOf, normalizeMessage, renderForward, splitReply, withoutStageDirections } from '../src/message.js';
 
 const base = { post_type: 'message', self_id: 100, time: 1700000000 };
 
@@ -55,11 +55,23 @@ test('拆条：没有标点的超长句也会被切成可发的长度', () => {
   assert.ok(parts.every((p) => p.length <= 200));
 });
 
-test('拆条：按换行、去空行、最多 4 条', () => {
+test('拆条：按换行、去空行；超过 4 条并进最后一条，不丢内容', () => {
   assert.deepEqual(splitReply('一\n\n二\n三'), ['一', '二', '三']);
-  assert.deepEqual(splitReply('1\n2\n3\n4\n5\n6'), ['1', '2', '3', '4']);
+  // 以前这里是 ['1','2','3','4']，第 5、6 句被静默吞掉——她写下来的话不能丢。
+  assert.deepEqual(splitReply('1\n2\n3\n4\n5\n6'), ['1', '2', '3', '4 5 6']);
   assert.deepEqual(splitReply('  '), []);
   assert.deepEqual(splitReply('一句话\n'), ['一句话']);
+});
+
+// 他括号里写的是聊天框里的剧本（「（偷看裙底）」），不是真的伸手过来。
+// 以前这句话原样进情绪评估，「没穿」这种词还能真把她撩到——现在先剥掉再算。
+test('括号里的动作和画面被剥掉，括号外的话留下', () => {
+  assert.equal(withoutStageDirections('（偷看宝宝裙底）').trim(), '');
+  assert.equal(withoutStageDirections('(看见没穿)').trim(), '');
+  assert.equal(withoutStageDirections('（你看了一眼他发来的图：一只猫。）'), ' ');
+  assert.equal(withoutStageDirections('喜欢你（抱住）'), '喜欢你 ');
+  assert.equal(withoutStageDirections('【图片】真好').trim(), '真好');
+  assert.equal(withoutStageDirections('没有括号就原样'), '没有括号就原样');
 });
 
 test('颜文字不能被拦腰切断：括号里的标点不算句末', () => {

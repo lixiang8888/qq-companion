@@ -6,6 +6,7 @@ import { applyDamage, applyWarmth, pushEmotion, settle, stateHash } from './affe
 import { appraise } from './affect/appraise.js';
 import { buildContext } from './affect/inject.js';
 import { monthlyDrift, notePattern } from './affect/personality.js';
+import { withoutStageDirections } from './message.js';
 
 // 反复出现的事才会改性格：这里只登记证据，改不改由月度结算决定。
 const PATTERN_DELTAS = {
@@ -36,7 +37,9 @@ export function createCompanion({ load, save, session, ownerQQ = '', now = Date.
 
       const t = now();
       let st = settle(load(), t);
-      const a = appraise(msg.text, { direct: true });
+      // 括号里的动作/画面不参与情绪判定：那是他打的字，不是真的发生在她身上。
+      // 她的情绪只该由他「说」的话起——否则一句「（偷看裙底）」就真能把她撩到。
+      const a = appraise(withoutStageDirections(msg.text), { direct: true });
       if (a.emotion) st = pushEmotion(st, a.emotion, t);
       if (a.damage > 0) st = applyDamage(st, a.damage, t).state;
       // 被认真对待会加温：只涨信任/亲密，不动戒备（戒备只能靠时间回落）。

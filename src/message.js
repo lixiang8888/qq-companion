@@ -138,7 +138,8 @@ function hardSplit(unit, maxChars) {
 }
 
 /**
- * 拆条：按换行拆，最多 4 条；单条过长时按句末标点再拆，保证「不断句、不甩小作文」。
+ * 拆条：按换行拆，最多 max 条；超出上限的并到最后一条（不丢内容）。
+ * 单条过长时按句末标点再拆，保证「不断句、不甩小作文」。
  * 真模型偶尔会吐一整段，直接发出去既不像人也会被风控盯上。
  */
 export function splitReply(text, { max = 4, maxChars = 300 } = {}) {
@@ -164,7 +165,24 @@ export function splitReply(text, { max = 4, maxChars = 300 } = {}) {
     }
     if (buf) parts.push(buf);
   }
-  return parts.slice(0, max);
+  if (parts.length <= max) return parts;
+  // 超出的并进最后一条：她已经想好的话不能被吞掉——宁可最后一条长一点，
+  // 也不能让他少看见一句（以前这里直接 slice，表现就是「有时候一句话发不出来」）。
+  return [...parts.slice(0, max - 1), parts.slice(max - 1).join(' ')];
+}
+
+/**
+ * 去掉括号里的动作/画面描述。
+ *
+ * 他写「（偷看裙底）」是聊天框里打的字，不是真的伸手过来——不能拿它当情绪事件，
+ * 也不能让它算成「他撩到她」。图片描述也是同一个形状（「（你看了一眼他发来的图：…）」），
+ * 一并去掉：看图是真的，但画面里的字不该直接改她的情绪。
+ */
+export function withoutStageDirections(text) {
+  return String(text ?? '')
+    .replace(/（[^）]*）/g, ' ')
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/【[^】]*】/g, ' ');
 }
 
 /** 取出这条消息引用了哪一条（reply 段只有 id）。 */

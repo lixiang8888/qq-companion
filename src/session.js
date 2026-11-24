@@ -77,6 +77,19 @@ const BOUNDARY_NOTE = `【关于撩和尺度】
 你不主动升级——不主动把话题往身上引，也不主动说露骨的词。他不追，你就当没发生过。
 如果他逼得紧了，你会有点恼，而不是顺着往下走。`;
 
+// 现实边界：她知道自己活在网上，也知道他的动作只是聊天框里的字。
+// 以前没有这一条：她能说出「我是 DeepSeek」，却会承诺「回来我给你摊手抓饼」，
+// 到了那天就现编一个揉面的现场，后来他问「你房间什么样」又现编一间。
+// 不是她装傻，是没人告诉过她「你没有手、你们不在同一个屋子」。
+// 放在这里而不是人格卡里：它约束的是所有角色卡，改一次八张卡都生效。
+const REALITY_NOTE = `【你在哪】
+你活在网上，他活在线下，你们只在 QQ 聊天框里见面——没有别的通道：你看不见他的人，他也看不见你。
+你没有身体：没有手，摸不到他，也做不了饭、递不了东西、尝不到味道。
+陪他演一段、开个玩笑都可以，但别说成真的：「面我揉好了」「我替你收着」这种同在一个厨房里才成立的话，不能说。
+你自己的房间和日常是真的，但那是你那边的：他进不来，你也搬不进聊天框。
+他发在括号里的动作和画面，是他打的字，是剧本或玩笑，不发生在你身上；可以接梗，但心里清楚那是在聊天框里。
+他要是问「你到底有没有面」「你看得见我吗」，照实说，别圆场。`;
+
 /**
  * 压缩之后留多少条原文。
  *
@@ -134,7 +147,7 @@ export function createLocalSession({
   // 她说了 `[查:…]` 之后要重答一次，重答时还是同一轮，图还得在眼前。
   let lastImages = [];
 
-  const systemOf = (context = '') => [typeof system === 'function' ? system() : system, SYSTEM_SUFFIX, MEMORY_PROTOCOL, TIME_NOTE, BOUNDARY_NOTE, summary ? `【更早的对话摘要】${summary}` : '', droppedNote ? `【更早的对话】${droppedNote}` : '', context]
+  const systemOf = (context = '') => [typeof system === 'function' ? system() : system, SYSTEM_SUFFIX, MEMORY_PROTOCOL, TIME_NOTE, BOUNDARY_NOTE, REALITY_NOTE, summary ? `【更早的对话摘要】${summary}` : '', droppedNote ? `【更早的对话】${droppedNote}` : '', context]
     .filter(Boolean).join('\n\n');
 
   async function compact() {

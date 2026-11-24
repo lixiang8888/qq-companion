@@ -33,6 +33,18 @@ test('挑图：精确 → 包含；挑不到就是 null', () => {
   assert.equal(pickSticker([], '无语'), null);
 });
 
+test('挑图：标点空格不一样也算同一张，但不做近义替换', () => {
+  const items = [
+    { md5: 'a', url: 'u1', name: '累瘫了/饿晕了' },
+    { md5: 'b', url: 'u2', name: '奶凶警告' },
+  ];
+  assert.equal(pickSticker(items, '累瘫了').md5, 'a', '名字里塞了两个词，对上任意一段就算');
+  assert.equal(pickSticker(items, '饿晕了').md5, 'a');
+  assert.equal(pickSticker(items, '奶凶 警告').md5, 'b', '空格不影响');
+  assert.equal(pickSticker(items, '「奶凶警告」').md5, 'b', '引号不影响');
+  assert.equal(pickSticker(items, '无语'), null, '近义不等于同一张：他看到的会是一张不相干的图');
+});
+
 test('名字可能很长：起名之后要截断', () => {
   const got = parseFavorites([{ md5: 'm', url: 'u', desc: '这个表情表达了一种极度无语的心情' }]);
   assert.equal(got[0].name.length, MAX_NAME);

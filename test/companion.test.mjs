@@ -103,6 +103,24 @@ test('人格：被凶很多次、跨月之后才真的变化', async () => {
   assert.ok(st.self.snapshots.length >= 1);
 });
 
+test('括号里的动作不是真的发生在她身上：不动情绪、也不记伤害', async () => {
+  const { companion, prompts, state } = setup();
+  // 「没穿」在词表里算撩，但写在括号里就是他在打的字，不是他真做了什么。
+  const r = await companion.handleMessage(msg({ text: '（看见没穿）(偷看裙底)' }));
+  assert.equal(state().emotion.intensity, 0, '括号里的画面不该把她撩到');
+  assert.equal(state().emotion.label, '');
+  assert.equal(r.damage, 0);
+  // 但他打的那句话她还是要看见——剥掉的只是「算情绪」的输入。
+  assert.match(prompts[0].text, /偷看裙底/);
+});
+
+test('括号外的骂照常算：剥的是动作，不是话', async () => {
+  const { companion, state } = setup();
+  const r = await companion.handleMessage(msg({ text: '闭嘴（好吧我道歉）' }));
+  assert.ok(r.damage > 0, '括号外的「闭嘴」还是要算');
+  assert.equal(state().emotion.label, '被凶');
+});
+
 test('状态会落盘：下一次进来接着用', async () => {
   const { companion, state } = setup();
   await companion.handleMessage(msg({ text: '谢谢，辛苦了' }));

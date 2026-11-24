@@ -2300,3 +2300,134 @@ test('想起就算复习：被她想起来的那条记一笔，冷却期里不�
   await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '在吗', time: Math.floor(clock / 1000) });
   assert.equal(readRec().promptedCount, 1, '7 天内只算一次');
 });
+
+// ---- 2026-11-24：她说的话不能被吞、表情要能看见发生过什么、她的房间是固定的 ----
+function talkSetup({ replies = null, reply = '嗯', extraConfig = {}, fetchImpl = null } = {}) {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-talk-'));
+  const sent = [];
+  const fakeFetch = fetchImpl || (async (url, init) => {
+    sent.push({ path: new URL(String(url)).pathname, body: JSON.parse(init?.body || '{}') });
+    return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
+  });
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+    enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' }, ...extraConfig,
+  }));
+  let clock = new Date(2026, 0, 1, 9, 0, 0).getTime();
+  const ctx = fakeCtx({ replies, reply });
+  const host = createHost(ctx, {
+    dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl: fakeFetch,
+  });
+  const say = (text = '在吗') => host.handleEvent({
+    post_type: 'message', message_type: 'private', user_id: 42, raw_message: text, time: Math.floor(clock / 1000),
+  });
+  const tick = (ms) => { clock += ms; };
+  const texts = () => sent
+    .filter((s) => s.path.endsWith('/send_private_msg'))
+    .map((s) => (s.body.message || []).map((seg) => seg?.data?.text ?? seg?.type).join(''));
+  return { host, ctx, dataDir, sent, texts, say, tick };
+}
+
+test('吞话：她写了四句就发四句，不按心情砍成两条', async () => {
+  const { texts, say } = talkSetup({ reply: '一\n二\n三\n四' });
+  await say();
+  assert.deepEqual(texts(), ['一', '二', '三', '四'], '心情一般时最多两条的老规矩，不能再拿她的句子开刀');
+});
+
+test('吞话：某一句发失败要重试，且不能把后面几句一起吞掉', async () => {
+  const attempts = [];
+  let failed = false;
+  const { say } = talkSetup({
+    reply: '一\n二\n三',
+    // 第一次发「二」故意失败：和风控/网络抖动的表现一样。
+    fetchImpl: async (url, init) => {
+      const body = JSON.parse(init?.body || '{}');
+      const text = (body.message || []).map((seg) => seg?.data?.text ?? '').join('');
+      attempts.push(text);
+      if (text === '二' && !failed) {
+        failed = true;
+        return { ok: false, status: 500, json: async () => ({}) };
+      }
+      return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
+    },
+  });
+  await say();
+  assert.deepEqual(attempts, ['一', '二', '二', '三'], '二重试一次；三没有被前面那次失败吞掉');
+});
+
+test('表情：发出去过没有要留一笔——「没想发」和「想发没这张」是两件事', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-sticker-'));
+  writeFileSync(join(dataDir, 'stickers.json'), JSON.stringify({
+    at: 1, items: [{ md5: 'a', url: 'https://p.qpic.cn/x/0', name: '疑惑' }],
+  }));
+  const sent = [];
+  const fetchImpl = async (url, init) => {
+    sent.push({ path: new URL(String(url)).pathname, body: JSON.parse(init?.body || '{}') });
+    return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
+  };
+  writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' } }));
+  let clock = new Date(2026, 0, 1, 9, 0, 0).getTime();
+  // 第一轮她想发一张收藏里没有的；第二轮发对了名字。
+  const ctx = fakeCtx({ replies: ['嗯\n[表情:无语]', '嗯\n[表情:疑惑]'] });
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+  const say = () => host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '在吗', time: Math.floor(clock / 1000) });
+  const last = () => JSON.parse(readFileSync(join(dataDir, 'stickers.json'), 'utf8')).last;
+
+  await say();
+  assert.equal(last().ok, false);
+  assert.match(last().reason, /无语/, '名字对不上要说清楚是哪张，不然查不出来');
+  assert.ok(sent.every((s) => !String(s.body?.message?.[0]?.type).includes('image')), '没这张就别发图');
+
+  clock += 5 * 60e3;
+  const at = ctx.calls.length;
+  await say();
+  // 上一轮没发出去，这一轮得让她知道——不然她以为发了，他那边什么都没来。
+  assert.match(systemOf(ctx.calls[at]), /没发出去/, '她的动作为什么失败了，要告诉她');
+  assert.match(systemOf(ctx.calls[at]), /疑惑/, '顺便把能发的名字给她，下一句就能改');
+  assert.equal(last().ok, true, '名字对上了就真发出去');
+  assert.equal(last().name, '疑惑');
+  const img = sent.find((s) => s.body?.message?.[0]?.type === 'image');
+  assert.ok(img, '走的是 image 段');
+  assert.match(JSON.stringify(img.body), /p\.qpic\.cn/, '用收藏的 url，不落到本地');
+});
+
+test('现实边界：她知道自己只在聊天框里，房间是固定的那一间', async () => {
+  const { ctx, host, say } = talkSetup({ reply: '嗯' });
+  await host.life.refresh();
+  // 她定「现在干什么」时看到的是真有的房间，不是空白让她自由发挥。
+  assert.match(JSON.stringify(ctx.calls[0]), /你的房间/, '没有房间可挑，她就只能现编一间');
+
+  ctx.calls.length = 0;
+  await say('你房间什么样的');
+  const sys = systemOf(ctx.calls[0]);
+  assert.match(sys, /只在 QQ 聊天框里见面/, '现实边界要每轮都在');
+  assert.match(sys, /窗台（一盆绿萝）/, '房间固定，不再每次现编一间');
+  assert.match(sys, /括号里的动作和画面/, '他括号里的动作不是真的发生在她身上');
+});
+
+test('念头：情绪上来了才冒；过一阵回头看，她自己能看见前后不一样', async () => {
+  // 调用顺序：第一轮说话 → 冒念头 → 第二轮说话 → （两小时后）回头看。
+  const { host, dataDir, ctx, say, tick } = talkSetup({ replies: ['嗯', '好想黏着他', '嗯', '其实他也没那么坏'] });
+  await say('你好可爱！！！');
+  // 念头是后台排的（不能堵着下一句），等它跑完再看。
+  await new Promise((r) => setTimeout(r, 20));
+  const first = host.impulse.state();
+  assert.equal(first.lines.length, 1, '情绪上来了，冒一个念头');
+  assert.equal(first.lines[0].text, '好想黏着他');
+  assert.equal(first.lines[0].settled, null, '还没回头看');
+
+  // 不能清空 ctx.calls：假模型靠它的长度取下一句，清掉就会把「回头看」的那句错位。
+  const at = ctx.calls.length;
+  await say('在吗');
+  assert.match(systemOf(ctx.calls[at]), /你心里冒出来的/, '念头在上下文里，但她不用说出来');
+
+  // 两小时后情绪散了：该回头看一眼自己刚才在想什么。
+  tick(2 * 3600e3);
+  await host.impulse.refresh();
+  const after = host.impulse.state();
+  assert.equal(after.lines[0].settled.text, '其实他也没那么坏');
+  assert.ok(JSON.parse(readFileSync(join(dataDir, 'impulses.json'), 'utf8')).lines[0].settled.text, '落盘了');
+
+  const at2 = ctx.calls.length;
+  await say('刚才想啥呢');
+  assert.match(systemOf(ctx.calls[at2]), /前后不一样/, '先前那么想、后来这么想——两句都给她');
+});

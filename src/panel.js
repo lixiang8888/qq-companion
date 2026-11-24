@@ -7,7 +7,7 @@
 import { CLARITY_LABEL, isLive, stats as memoryStats } from './memory/card.js';
 import { TRAITS, TRAIT_BASE } from './affect/core.js';
 import { moodLabel, stateLine } from './affect/inject.js';
-import { clockOf, gapText } from './life.js';
+import { clockOf, gapText, HOME } from './life.js';
 import { balanceLine, spendLine } from './budget.js';
 import { renderInsights } from './insights.js';
 import { driftLine } from './affect/personality.js';
@@ -39,7 +39,7 @@ function section(title, body) {
 /**
  * @param {{state: object, memory: object, gateway: string, session: object, persona: string, config: object, now: number}} o
  */
-export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', session = {}, history = [], checks = [], persona = '', config = {}, life = null, diaries = [], budget = null, alive = null, insights = null, qzone = null, proactive = null, weather = null, facts = null, screen = null, stickers = null, behavior = null, perception = null, novel = null, game = null, now = Date.now() } = {}) {
+export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', session = {}, history = [], checks = [], persona = '', config = {}, life = null, diaries = [], budget = null, alive = null, insights = null, impulses = null, qzone = null, proactive = null, weather = null, facts = null, screen = null, stickers = null, behavior = null, perception = null, novel = null, game = null, now = Date.now() } = {}) {
   const cfg = config || {};
   const conn = cfg.onebot || {};
   const screenText = !cfg.screen?.enabled
@@ -128,6 +128,23 @@ export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', 
   const doing = life?.doing
     ? `<p class="big">${escapeHtml(life.doing)}${life.until > now ? ` <span class="dim">（大概到 ${escapeHtml(clockOf(life.until))}）</span>` : ''}</p>`
     : '<p class="dim">这会儿没在做什么（到点她会自己定）</p>';
+  // 房间是固定的：他问过「你房间什么样」，以前每次答的都不一样——因为根本没有房间。
+  const roomText = `<p class="dim">她的房间：${escapeHtml(HOME)}</p>`;
+  // 情绪上来的念头：冒过什么、后来还是不是那个想法。两句都是她当时真想的。
+  const impLines = (impulses?.lines || []).slice(-3).reverse();
+  const impulseText = impLines.length
+    ? `<p class="dim">这一阵心里嘀咕过的：</p><ul>${impLines.map((l) => {
+      const after = l.settled?.text
+        ? ` <span class="dim">→ 后来觉得「${escapeHtml(l.settled.text)}」</span>`
+        : l.settled ? ' <span class="dim">（后来觉得没变）</span>' : '';
+      return `<li><span class="tag">${escapeHtml(clockOf(l.at))}</span>「${escapeHtml(l.text)}」${after}</li>`;
+    }).join('')}</ul>`
+    : '<p class="dim">还没冒过念头（情绪真的上来了才有）</p>';
+  // 表情：最后想发的那一张为什么没发出去，比「一张都没发过」有用。
+  const stLast = stickers?.last;
+  const stickerLastText = stLast
+    ? `<p class="dim">上次想发的表情：${escapeHtml(clockOf(stLast.at))}「${escapeHtml(stLast.hint || '')}」→ ${stLast.ok ? `已发出「${escapeHtml(stLast.name || stLast.hint)}」` : `没发出去（${escapeHtml(stLast.reason || '')}）`}</p>`
+    : '<p class="dim">她还没想发过表情</p>';
   // 关机时长是她唯一「亲身」经历过的虚空：机器关了，那段时间没有她。
   // 每周一次的自述：日有日记、月有人格漂移，中间这一层就是它。
   const insightText = insights?.at
@@ -201,7 +218,7 @@ ${section('体检', checks.length
     ? `<ul>${checks.map((c) => `<li>${c.ok ? '✅' : '❌'} ${escapeHtml(c.label)} — ${escapeHtml(c.detail)}</li>`).join('')}</ul>`
     : '<p class="dim">没有可检查的项</p>')}
 ${section('此刻', `<p class="big">${escapeHtml(stateLine(state))}</p><p class="dim">心情「${escapeHtml(moodLabel(state.mood.v))}」· 情绪强度 ${state.emotion.intensity.toFixed(2)}</p>`)}
-${section('她的房间', `${doing}${awakeText}${insightText}${diaryText}`)}
+${section('她的房间', `${doing}${roomText}${impulseText}${awakeText}${insightText}${diaryText}`)}
 ${section('空间', (() => {
   const last = qzone?.lastDecision;
   const why = last
@@ -252,7 +269,7 @@ ${section('最近想起', recalls.length    ? `<ul>${recalls.map((r) => `<li><sp
     : '<p class="dim">还没有聊过</p>')}
 ${section('最近对话', chatText)}
 ${section('运行', `<p>网关：${escapeHtml(gateway)} · 会话 ${session.size ?? 0} 条（最近 ${session.keepHours ?? 0} 小时内的原话一句不压）· 已压缩 ${session.compactions ?? 0} 次 · 人格 ${escapeHtml(persona || '未设置')}</p><p class="dim">他那边：${escapeHtml(screenText)} · 表情：${escapeHtml(stickerText)}${escapeHtml(shotText)}${escapeHtml(novelText)}${escapeHtml(gameText)}</p>${session.lastError ? `<p class="dim">${session.lastError.resolvedAt ? `上次压缩失败（已恢复，${escapeHtml(new Date(session.lastError.resolvedAt).toLocaleTimeString())} 压成功过一次）` : '上次压缩失败'}：${escapeHtml(session.lastError.message)}</p>` : ''}`)}
-${section('表情', `${stickerGrid}${stickers?.note ? `<p class="dim">${escapeHtml(stickers.note)}</p>` : ''}<p class="dim">名字是随便起的，不对就直接改——她只会照着名字挑。</p>`)}
+${section('表情', `${stickerGrid}${stickerLastText}${stickers?.note ? `<p class="dim">${escapeHtml(stickers.note)}</p>` : ''}<p class="dim">名字是随便起的，不对就直接改——她只会照着名字挑。</p>`)}
 ${section('钱包', moneyText)}
 ${section('设置', `<form method="post" action="config">
   <label>ownerQQ（只回这个人的私聊；不填她谁都不回）<input name="ownerQQ" value="${escapeHtml(cfg.ownerQQ || '')}"></label>

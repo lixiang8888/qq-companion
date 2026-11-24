@@ -26,11 +26,12 @@ import { search as memorySearch } from './memory/search.js';
 import { parsePerception } from './perception/slots.js';
 import { MAX_RECORDS, addRecord, createIndex, pruneCold, prunePixels, sha12, statsOf } from './perception/store.js';
 import { RECHECK_PROMPT, REOPEN_SCORE, canRecheck, candidates, noteRecheck, parsePick, perceptionLine, recentLine, recentShots } from './perception/recall.js';
-import { advance, applyPlan, clockOf, createLife, LIFE_PROMPT, lifeLine, offLine, parsePlan } from './life.js';
+import { advance, applyPlan, clockOf, createLife, HOME, homeLine, LIFE_PROMPT, lifeLine, offLine, parsePlan } from './life.js';
 import { baselineOf, composePrompt, diff as diaryDiff, dueDay, hasDiary, readDiaries, snapshot as diarySnapshot, writeDiary } from './diary.js';
 import { addUsage, createBudget, fetchBalance, LOW_BALANCE_CNY, moneyBlock, usageOf } from './budget.js';
 import { createMailbox, DEFAULT_WINDOW_MS, mergeTexts } from './mailbox.js';
 import { applyInsights, composePrompt as insightsPrompt, createInsights, dueInsights, insightsLastAt, parseInsights, renderInsights, INSIGHT_TTL } from './insights.js';
+import { applySettle, applyThought, createImpulses, dueSettle, dueThought, parseSettle, parseThought, renderImpulses, settlePrompt, thoughtPrompt } from './impulse.js';
 import { composeCommentPrompt, composePostPrompt, decidePost, notePosted, parseCommentReply, parsePostReply } from './qzone-post.js';
 import { comment as qzoneComment, detail as qzoneDetail, freshComments, publish as qzonePublish, remove as qzoneRemove } from './qzone.js';
 import { appendTranscript, looksLikeRecall, readTranscript, recallLine, searchTranscript } from './transcript.js';
@@ -212,6 +213,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   const budgetStore = createJsonStore(join(dataDir, 'budget.json'), { defaults: () => createBudget(now()), log: (m) => log.warn?.(m) });
   // 每周一次的自述：三类认识，各自有界。
   const insightsStore = createJsonStore(join(dataDir, 'insights.json'), { defaults: () => createInsights(), log: (m) => log.warn?.(m) });
+  // 情绪上来的念头：什么时候冒的、后来回头看还是不是那个想法。两句都留，她自己能看见前后不一样。
+  const impulseStore = createJsonStore(join(dataDir, 'impulses.json'), { defaults: () => createImpulses(), log: (m) => log.warn?.(m) });
   // 她自己在看什么书：读到第几章、上一章的感想。正文不落盘——一章两千多字，读完就够。
   const novelStore = createJsonStore(join(dataDir, 'novel.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
   // 她的游戏战绩：上一局打到哪、最好成绩、最近 5 局和她自己的原话。
@@ -693,24 +696,55 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     return minute < 2 && hour < 10;
   }
 
-  /** 把她挑的那张发出去。挑不到、超频、发失败都只是这一张没有，不影响文字。 */
+  /**
+   * 把她挑的那张发出去。挑不到、超频、发失败都只是这一张没有，不影响文字。
+   *
+   * 每次都想留一笔（`last`）：以前这里什么都不留，面板上看不出「她根本没想发」
+   * 和「想发了但名字对不上」——「表情包一次都没发出去过」这种事，查都没处查。
+   */
   async function sendSticker(msg, hint) {
     const items = stickerStore.load().items || [];
     const pick = pickSticker(items, hint);
-    if (!pick) return { sent: false, reason: `没有叫「${hint}」的表情` };
+    const remember = (ok, reason = '') => {
+      try {
+        const cur = stickerStore.load();
+        stickerStore.save({ ...cur, last: { at: now(), hint: String(hint || '').slice(0, MAX_NAME), ok, name: pick?.name || '', reason } });
+      } catch { /* 记一笔失败不影响发 */ }
+    };
+    if (!pick) {
+      const reason = `没有叫「${hint}」的表情`;
+      remember(false, reason);
+      log.warn?.(`她想发「${hint}」那张表情，收藏里没这个名`);
+      return { sent: false, reason };
+    }
     const t = now();
-    if (!stickerAllowed(t)) return { sent: false, reason: '发得太频，先歇会儿' };
+    if (!stickerAllowed(t)) {
+      remember(false, '发得太频，先歇会儿');
+      return { sent: false, reason: '发得太频，先歇会儿' };
+    }
     try {
       await sendImage(onebot, msg, pick.url);
       stickerSends.push(t);
       // 只留最近一小时：不然这个数组只增不减，一年下来几千个数躺在内存里。
       while (stickerSends.length && t - stickerSends[0] > 3600e3) stickerSends.shift();
+      remember(true);
+      log.info?.(`发表情：「${pick.name}」`);
       return { sent: true, name: pick.name };
     } catch (e) {
-      log.warn?.(`发表情失败：${e.message}`);
+      remember(false, e.message);
+      log.warn?.(`发表情失败（${pick.name}）：${e.message}`);
       return { sent: false, reason: e.message };
     }
   }
+  /** 她挑的那张发不出去时，下一轮告诉她一声——不然她以为发出去了，他那边什么都没来。 */
+  function stickerFailLine(cur, t) {
+    const last = cur?.last;
+    if (!last || last.ok) return '';
+    if (t - Number(last.at || 0) > 10 * MINUTE) return '';
+    const names = (cur.items || []).map((s) => s.name).filter(Boolean).slice(0, 8).join('、');
+    return `（你刚才想发「${last.hint}」那张表情，没发出去：${last.reason}。能发的只有：${names}）`;
+  }
+
   /** 她看得见「现在几点」。没有这一行，她只能猜，而猜出来的时间是假的。 */
   function clockText(t = now()) {
     const d = new Date(t);
@@ -802,8 +836,16 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       blk('screen', screenLine(screenNow, t, { ttl: sTtl }), Number(screenNow?.at) || t, sTtl),
       blk('awake', awakeLine(), t),
       blk('insights', renderInsights(ins, t), insightsLastAt(ins) || t, INSIGHT_TTL),
+      // 她自己心里冒出来的念头：情绪上来了才有；不用说出来，但它在。
+      blk('impulse', renderImpulses(impulseStore.load(), t), t),
       blk('life', await lifeBlock(), t),
+      // 她的房间只有这一间：有这一行，她说的「我屋里」才不会每次都换一间。
+      blk('home', homeLine(), t),
       blk('stickers', namesLine(stickerStore.load().items), t),
+      (() => {
+        const stk = stickerStore.load();
+        return blk('stickerfail', stickerFailLine(stk, t), Number(stk.last?.at) || t, 10 * MINUTE);
+      })(),
       blk('pending', pendingLine(pendingQuestions), t),
       blk('money', moneyNow(), t),
       // 她自己看的书：念头 / 对书态度 / 读到哪，三选一——一轮塞三段读书内容，
@@ -839,6 +881,56 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const next = applyInsights(cur, lines, t);
     insightsStore.save(next);
     return next;
+  }
+
+  /**
+   * 情绪上来了，她自己冒一个念头；过一阵平复了，再问她「现在还是那个想法吗」。
+   *
+   * 一次只做一件事：先看有没有该回头看的，再看要不要冒新的。
+   * 两次都是小调用（有上限，空了会自动换不思考再要一次），失败就等下一次心跳。
+   */
+  async function refreshImpulse() {
+    const t = now();
+    const cur = impulseStore.load();
+    const st = settle(store.load(), t);
+    const open = dueSettle(cur, st, t);
+    if (open) {
+      try {
+        const text = await complete({
+          system: `${personaCore()}\n\n（你在回头看自己刚才的情绪，不跟任何人说话。）`,
+          messages: [{ role: 'user', text: settlePrompt(open, st, t) }],
+          maxTokens: 200,
+        });
+        const said = parseSettle(text);
+        // 「没变」也要落一行（空内容）：不然十分钟后又会问她一遍同一句。
+        const next = applySettle(cur, open.at, said, t);
+        impulseStore.save(next);
+        log.info?.(said ? `念头平复：${said}` : '念头平复：想法没变');
+        return next;
+      } catch (e) {
+        log.warn?.(`念头回头看出错：${e.message}`);
+        return cur;
+      }
+    }
+    if (!dueThought(st, cur, t)) return cur;
+    // 有正在处理的事情就不打扰她：念头该是这时候真冒出来的，不是排出来的任务。
+    if (thinking || reading) return cur;
+    try {
+      const text = await complete({
+        system: `${personaCore()}\n\n（你在自己心里嘀咕，不是在跟他说话。）`,
+        messages: [{ role: 'user', text: thoughtPrompt(st, { now: t }) }],
+        maxTokens: 200,
+      });
+      const thought = parseThought(text);
+      if (!thought) return cur;
+      const next = applyThought(cur, thought, t, { v: st.emotion.v });
+      impulseStore.save(next);
+      log.info?.(`念头：${thought}`);
+      return next;
+    } catch (e) {
+      log.warn?.(`念头没冒出来：${e.message}`);
+      return cur;
+    }
   }
 
   /**
@@ -1497,11 +1589,21 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         : gap < 86400e3 ? `${Math.round(gap / 3600e3)} 小时前跟他说过话`
           : `${Math.floor(gap / 86400e3)} 天没说话了`;
     const card = memoryStats(memoryStore.load());
+    // 她真正做过的事：给她的素材只在「真有的东西」和「真做过的事」里挑，
+    // 不然编出来的家当下一句追问就对不上（真机编过一次「换了个绿萝的盆」，还编了整间屋子）。
+    const real = [];
+    const nl = novelLine(novelStore.load(), t);
+    if (nl?.text) real.push(nl.text);
+    const gl = gameLine(gameStore.load(), t);
+    if (gl?.text) real.push(gl.text);
+    if (hasDiary(dataDir, dayKeyOf(t))) real.push('今天的日记已经写过了');
     return [
       `现在：${d.getMonth() + 1}月${d.getDate()}日 周${week} ${clockOf(t)}`,
       idle,
       `你记得 ${card.total} 件事，忘了 ${card.forgotten} 件；你们的对话被压缩过 ${session.snapshot().compactions} 次`,
-    ].join('\n');
+      homeLine(),
+      real.length ? `你最近真做过的事：${real.join('；')}` : '',
+    ].filter(Boolean).join('\n');
   }
 
   /**
@@ -2082,11 +2184,19 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const act = parseActions(r.reply);
     // 归档放在这里，不放 session 里：`[查:…]` 触发重答时，第一版草稿从没发出去过。
     if (config.transcript?.enabled !== false) appendTranscript(dataDir, { at: now(), role: 'assistant', text: act.text });
-    const parts = splitReply(act.text).slice(0, plan.maxParts);
+    // 拆条只决定「分几条发」，不决定「丢不丢」：她写下来的每一句都要发出去。
+    // 以前这里按心情 slice 掉超出的句子——心情一般时最多 2 条，第 3 句就这么没了，
+    // 表现就是「话题快的时候有时候一句话发不出来」。
+    const parts = splitReply(act.text);
     if (!parts.length && !act.stickers.length) log.warn?.('模型返回了空内容，这一轮她没有说话');
     for (const part of parts) {
       try { await sleep(plan.delayMs); await sendText(onebot, msg, part); }
-      catch (e) { log.warn?.(`发言失败：${e.message}`); break; }
+      catch (e) {
+        // 发失败不能吞掉这一句，更不能吞掉后面几句：宁可重试一次、慢两秒。
+        log.warn?.(`发言失败：${e.message}，重试一次`);
+        try { await sleep(plan.delayMs * 2); await sendText(onebot, msg, part); }
+        catch (e2) { log.warn?.(`这一句没发出去：${e2.message}`); }
+      }
     }
     // 表情另起一条：OneBot 的 image 段不能和文字合并成一个气泡。
     const sticker = act.stickers.length ? await sendSticker(msg, act.stickers[0]) : null;
@@ -2109,6 +2219,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     } catch (e) {
       log.warn?.(`行为账本没写成：${e.message}`); // 账本坏了不能让这一轮哑掉
     }
+    // 这一轮可能让她情绪上来了：给她一点自己的时间冒个念头（后台，不堵下一句）。
+    enqueue(refreshImpulse).catch((e) => log.warn?.(`念头出错：${e.message}`));
     return { ...r, sent: parts.length, plan, sticker, merged: batch.texts.length };
   }
 
@@ -2358,6 +2470,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     thinkIfBored().catch((e) => log.warn?.(`想一想出错：${e.message}`));
     // 她说了话没人接：给她一个很轻的「被晾」，只改语气；每一句没回最多一次，一天最多两次。
     try { noteLeftOnRead(t); } catch (e) { log.warn?.(`记被晾失败：${e.message}`); }
+    // 念头：这一阵她情绪有没有上来、之前那个念头平复了没有。十分钟一次够细了。
+    enqueue(refreshImpulse).catch((e) => log.warn?.(`念头出错：${e.message}`));
     enqueue(evaluatePost).catch((e) => log.warn?.(`空间判定出错：${e.message}`));
     enqueue(refreshQzoneComments).catch((e) => log.warn?.(`查评论出错：${e.message}`));
     if (weatherOn()) enqueue(refreshWeather).catch((e) => log.warn?.(`查天气出错：${e.message}`));
@@ -2436,6 +2550,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         budget: budgetStore.load(),
         alive: { before: aliveBefore, bootAt, offMs: aliveBefore ? Math.max(0, bootAt - aliveBefore) : 0 },
         insights: insightsStore.load(),
+        impulses: impulseStore.load(),
         qzone: qzoneStore.load(),
         proactive: { ...pokeStore.load(), gate: pokeNow(), waiting: waitingNow() },
         weather: weatherStore.load(),
@@ -2544,6 +2659,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         budget: snap.budget,
         alive: snap.alive,
         insights: snap.insights,
+        impulses: snap.impulses,
         qzone: snap.qzone,
         proactive: snap.proactive,
         weather: snap.weather,
@@ -2554,11 +2670,13 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         game: snap.game,
         screen: screenStore.load(),
         stickers: (() => {
-          const items = stickerStore.load().items || [];
+          const cur = stickerStore.load();
+          const items = cur.items || [];
           return {
             total: items.length,
             named: items.filter((s) => s.name).length,
             items: items.map((s) => ({ md5: s.md5, name: s.name || '', url: s.url || '' })),
+            last: cur.last || null,
             note: panelNote,
           };
         })(),
@@ -2631,7 +2749,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     log.info?.(`qq-companion：面板 ${panelUrl}`);
   } catch { /* 诊断日志失败不影响启动 */ }
 
-  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, perception: { cleanup: () => enqueue(refreshPerception), stats: () => statsOf(perceptionStore.load()) }, novel: { state: () => novelStore.load(), read: () => readNovelIfBored(), think: () => thinkIfBored(), line: () => novelLine(novelStore.load(), now()), mind: () => mindLine(novelStore.load(), now()), look: (spec) => lookBookSpec(spec) }, game: { state: () => gameStore.load(), play: () => playGameIfBored(), line: () => gameLine(gameStore.load(), now()) }, pastime: () => pastimeIfBored(), intent: () => decideIntent(), get config() { return config; }, dataDir };
+  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, impulse: { state: () => impulseStore.load(), refresh: () => enqueue(refreshImpulse) }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, perception: { cleanup: () => enqueue(refreshPerception), stats: () => statsOf(perceptionStore.load()) }, novel: { state: () => novelStore.load(), read: () => readNovelIfBored(), think: () => thinkIfBored(), line: () => novelLine(novelStore.load(), now()), mind: () => mindLine(novelStore.load(), now()), look: (spec) => lookBookSpec(spec) }, game: { state: () => gameStore.load(), play: () => playGameIfBored(), line: () => gameLine(gameStore.load(), now()) }, pastime: () => pastimeIfBored(), intent: () => decideIntent(), get config() { return config; }, dataDir };
 }
 
 function loadConfig(file, log) {
