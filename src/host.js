@@ -500,7 +500,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const sel = await ensureModel();
     const key = `${sel.provider}/${sel.model}`;
     if (!completeImpl || completeKey !== key) {
-      completeImpl = createLlmComplete(ctx, sel);
+      completeImpl = createLlmComplete(ctx, sel, { log });
       completeKey = key;
     }
     // 每次调用都记一笔：她说一句话、她定当下、她写日记，都算在里面。
@@ -526,7 +526,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     // 一天之内的原话一句都不压：他昨晚说的，今天早上她还得看得见原句。
     keepHours: config.session?.keepHours ?? 24,
     maxRecent: config.session?.maxRecent ?? 240,
-    summaryMaxChars: config.session?.summaryMaxChars ?? 1600,    now,
+    summaryMaxChars: config.session?.summaryMaxChars ?? 1600,
+    now,
     initial: sessionStore.load(),
     persist: (snap) => sessionStore.save(snap),
     // 每条原文都进归档：压缩之后她就只剩摘要，唯一能翻回原话的地方就是这里。
