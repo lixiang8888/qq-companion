@@ -2701,3 +2701,24 @@ test('今天想做点什么：开了才问，一天只问一次，产出一条�
   assert.equal(await host.dailyPlan.refresh(), null);
   assert.equal(ctx.calls.length, 1);
 });
+
+test('睡着的时候：不重新决定「此刻在干什么」，也不冒念头（醒着才会）', async () => {
+  seedLoopDir: {
+    const dataDir = mkdtempSync(join(tmpdir(), 'qqc-asleep-idle-'));
+    seedJson(dataDir, 'config.json', { enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' } });
+    seedJson(dataDir, 'life.json', { doing: '', until: 0 });
+    seedJson(dataDir, 'rhythm.json', { at: INTENT_T0, state: 'asleep', since: INTENT_T0 - 3600e3, until: INTENT_T0 + 8 * HOUR_MS, reason: '她说要去睡', claim: '晚安', wokeBy: '' });
+    const ctx = fakeCtx({ replies: ['在收拾书桌|30'] });
+    const host = createHost(ctx, { dataDir, now: () => INTENT_T0, log: quiet, autoStart: false });
+    await host.life.refresh();
+    assert.equal(ctx.calls.length, 0, '睡着就不问「现在想干什么」');
+  }
+  // 对照：醒着（没有 rhythm 文件，默认 awake）会问一次
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-awake-idle-'));
+  seedJson(dataDir, 'config.json', { enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' } });
+  seedJson(dataDir, 'life.json', { doing: '', until: 0 });
+  const ctx = fakeCtx({ replies: ['在收拾书桌|30'] });
+  const host = createHost(ctx, { dataDir, now: () => INTENT_T0, log: quiet, autoStart: false });
+  await host.life.refresh();
+  assert.equal(ctx.calls.length, 1);
+});

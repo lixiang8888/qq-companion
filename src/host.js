@@ -933,6 +933,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const t = now();
     const cfg = { ...IMPULSE_DEFAULTS, ...(config.impulse || {}) };
     if (cfg.enabled !== true) return impulseStore.load();
+    // 睡着/在外的时候没有「心里嘀咕」——说去睡了就真的睡，不能一边睡一边冒念头。
+    if (rhythmOn() && rhythmStore.load().state !== 'awake') return impulseStore.load();
     const cur = impulseStore.load();
     const st = settle(store.load(), t);
     const open = dueSettle(cur, st, t, { perDay: Math.max(1, Number(cfg.settlePerDay) || IMPULSE_DEFAULTS.settlePerDay) });
@@ -1066,6 +1068,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   async function refreshDailyPlan() {
     if (!intentsOn() || intentsCfg().dailyPlan !== true) return null;
     const t = now();
+    // 睡着/在外不定今天的计划。
+    if (rhythmOn() && rhythmStore.load().state !== 'awake') return null;
     const day = dayKeyOf(t);
     if (planningDay === day || intentStore.load().planDay === day) return null;
     const hour = new Date(t).getHours();
@@ -1728,6 +1732,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   async function thinkIfBored() {
     if (thinking) return novelStore.load();
     const t = now();
+    // 睡着/在外：没有「一个人待着想事情」这回事。
+    if (rhythmOn() && rhythmStore.load().state !== 'awake') return novelStore.load();
     const st = novelStore.load();
     const day = dayKeyOf(t);
     if (st.thoughtDay === day) return st;
@@ -2632,6 +2638,11 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   async function evaluatePost({ force = false } = {}) {
     const t = now();
     const qz = qzoneStore.load();
+    // 睡着/在外不会发公开说说（她不在）。
+    if (rhythmOn() && rhythmStore.load().state !== 'awake') {
+      qzoneStore.save({ ...qz, lastDecision: { at: t, reason: '她在睡/不在' } });
+      return { post: false, reason: '她在睡/不在' };
+    }
     const st = companion.snapshot();
     const events = [];
 
@@ -2715,6 +2726,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
    */
   async function refreshQzoneComments({ force = false } = {}) {
     const qz = qzoneStore.load();
+    // 睡着/在外不会去刷空间回评论。
+    if (rhythmOn() && rhythmStore.load().state !== 'awake') return { checked: 0, replied: 0, reason: '她在睡/不在' };
     const tid = String(qz.lastTid || '');
     if (!tid) return { checked: 0, replied: 0, reason: '还没发过说说' };
     const t = now();
