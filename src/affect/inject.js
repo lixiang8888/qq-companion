@@ -49,6 +49,8 @@ const LABEL_HINT = {
   烦: '你有点不耐烦：短、冲一点，别哄他',
   // 他上一句说完、你回了、人没了。轻到只改语气：别质问、别翻旧账。
   被晾: '你刚被晾了一下：句子短一点，少一句撒娇，但别问他去哪了',
+  // 答应过的事没做到（2026-11-25）：亏欠也是一种情绪，数值越大越压着。
+  亏欠: '你欠着他一件事没兑现：话可以短、可以绕，但别装没事，也别拿撒娇混过去',
 };
 
 /** 当前状态的一句话摘要（给面板看，也给注入用）。 */
@@ -61,6 +63,7 @@ export function stateLine(st) {
   if (Number.isFinite(d) && (d <= 0.35 || d >= 0.7)) bits.push(`底气 ${d.toFixed(2)}`);
   bits.push(`信任 ${st.relation.trust.toFixed(2)}`, `亲密 ${st.relation.intimacy.toFixed(2)}`);
   if (st.relation.guard >= 0.3) bits.push(`戒备 ${st.relation.guard.toFixed(2)}`);
+  if (Number(st.relation.debt) >= 0.05) bits.push(`欠着 ${Number(st.relation.debt).toFixed(2)}`);
   return bits.join(' · ');
 }
 
@@ -83,6 +86,10 @@ export function buildContext(st, now = 0) {
   if (dHint) parts.push(dHint);
   const g = GUARD_HINT(st.relation.guard);
   parts.push(`${TRUST_HINT(st.relation.trust)}${g ? '，' + g : ''}`);
+  // 亏欠按数值分档：数值只选一句语气，不把分数说给她听。
+  const debt = Number(st.relation.debt) || 0;
+  if (debt >= 0.15) parts.push('你心里压着件没兑现的事，欠他挺多');
+  else if (debt >= 0.05) parts.push('你欠着他一件小事，可能会绕开');
   // 人格只在偏离基线明显时提一句，否则每天重复同一个形容词会把性格念死。
   // 有漂移叙事时用它（那是「她对自己变化的说法」），过期了才退回到特质词。
   const line = driftLine(st.self, t) || traitLine(st);

@@ -2444,3 +2444,260 @@ test('念头：跟着刚聊的话题冒（不思考、便宜）；过一阵回�
   await say('刚才想啥呢');
   assert.match(systemOf(ctx.calls[at2]), /前后不一样/, '先前那么想、后来这么想——两句都给她');
 });
+
+// ---- 2026-11-25：意图层（未完成的事 / 话回写状态 / 有话说那条通道） ----
+
+const INTENT_T0 = new Date(2026, 0, 1, 9, 0, 0).getTime();
+const HOUR_MS = 3600e3;
+const seedJson = (dir, name, value) => writeFileSync(join(dir, name), JSON.stringify(value));
+
+const seededLoop = (over = {}) => ({
+  id: 'lt_seed_1', kind: 'tell', about: 'novel', text: '想跟他讲地蛋这名字',
+  source: 'novel:x:140', anchor: '地蛋这名字', label: '《放开那个女巫》', weight: 0.6,
+  createdAt: INTENT_T0, dueAt: INTENT_T0, expiresAt: INTENT_T0 + 48 * HOUR_MS,
+  target: null, spokenAt: 0, doneAt: 0, droppedAt: 0, missedAt: 0, expiredAt: 0, attempts: 0, lastTryAt: 0,
+  ...over,
+});
+
+test('意图：读完一章她写了一行 [想说:…]，就记一条「还没说出口的事」', async () => {
+  const body = '　　他紧握手掌，尖锐的指甲深深的刺进了掌心之中，带来一阵阵钻心的疼痛。'.repeat(6);
+  const { dataDir, host, tick } = novelSetup({
+    replies: ['嗯', '看着「刺进了掌心」那段，心里有点闷。[读:闷 2 继续]\n[想说:想跟他讲地蛋这名字]'],
+    chapters: [{ index: 0, title: '第一章 陨落的天才' }],
+    content: () => body,
+  });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(INTENT_T0 / 1000) });
+  tick(3 * HOUR_MS);
+  await host.novel.read();
+  const st = JSON.parse(readFileSync(join(dataDir, 'intents.json'), 'utf8'));
+  assert.equal(st.loops.length, 1);
+  assert.equal(st.loops[0].kind, 'tell');
+  assert.equal(st.loops[0].text, '想跟他讲地蛋这名字');
+  assert.equal(st.loops[0].about, 'novel');
+  assert.ok(st.loops[0].source.startsWith('novel:'), '出处必须能核对');
+  assert.equal(st.loops[0].spokenAt, 0);
+});
+
+test('意图：他回来的时候，上下文里有「你手里还有件事没跟他说」', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-intent-inject-'));
+  seedJson(dataDir, 'config.json', { enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' } });
+  seedJson(dataDir, 'intents.json', { at: INTENT_T0, loops: [seededLoop()] });
+  let clock = INTENT_T0 + HOUR_MS;
+  const ctx = fakeCtx({ replies: ['啊？'] });
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0 });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '在干嘛', time: Math.floor(clock / 1000) });
+  const prompt = JSON.stringify(ctx.calls[0]);
+  assert.match(prompt, /你手里还有件事没跟他说/);
+  assert.match(prompt, /地蛋这名字/);
+  assert.match(prompt, /想不想说都行/);
+});
+
+test('意图：她说到了这件事，账就销掉，下一轮不再出现', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-intent-spoken-'));
+  seedJson(dataDir, 'config.json', { enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' } });
+  seedJson(dataDir, 'intents.json', { at: INTENT_T0, loops: [seededLoop()] });
+  const clock = INTENT_T0 + HOUR_MS;
+  const ctx = fakeCtx({ replies: ['地蛋这名字确实土'] });
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0 });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '在干嘛', time: Math.floor(clock / 1000) });
+  const st = JSON.parse(readFileSync(join(dataDir, 'intents.json'), 'utf8'));
+  assert.ok(st.loops[0].spokenAt > 0, '她说了，就销账');
+  const prompt2 = JSON.stringify(ctx.calls[0]);
+  assert.match(prompt2, /地蛋这名字/); // 这一轮还在（她正是这一轮说的）
+});
+
+test('意图：她选择 [不回] 就真的不发，但留一条痕给面板看', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-intent-silent-'));
+  seedJson(dataDir, 'config.json', { enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' } });
+  const sent = [];
+  const fetchImpl = async (url, init) => {
+    sent.push(String(url));
+    return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
+  };
+  const ctx = fakeCtx({ replies: ['[不回]'] });
+  const host = createHost(ctx, { dataDir, now: () => INTENT_T0, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+  const r = await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '在吗', time: Math.floor(INTENT_T0 / 1000) });
+  assert.equal(r.silent, true);
+  assert.equal(r.sent, 0);
+  assert.ok(!sent.some((u) => u.endsWith('/send_private_msg')), '一个字都没发');
+  const st = JSON.parse(readFileSync(join(dataDir, 'intents.json'), 'utf8'));
+  assert.equal(st.loops[0].kind, 'reply');
+  assert.ok(st.loops[0].droppedAt > 0, '她的选择留了痕');
+});
+
+test('意图：[晚点回:20] 不是吞掉，是记一条 20 分钟后到点的回话', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-intent-defer-'));
+  seedJson(dataDir, 'config.json', { enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' } });
+  const fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) });
+  const ctx = fakeCtx({ replies: ['等下说[晚点回:20]'] });
+  const host = createHost(ctx, { dataDir, now: () => INTENT_T0, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '晚上吃啥', time: Math.floor(INTENT_T0 / 1000) });
+  const st = JSON.parse(readFileSync(join(dataDir, 'intents.json'), 'utf8'));
+  const reply = st.loops.find((l) => l.kind === 'reply');
+  assert.ok(reply);
+  assert.equal(reply.dueAt, INTENT_T0 + 20 * 60e3);
+  assert.match(reply.text, /晚上吃啥/);
+});
+
+test('回写：她说「晚安，我先睡了」，就真的进睡着；主动通道不再开口', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-rhythm-'));
+  seedJson(dataDir, 'config.json', { enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' }, proactive: { enabled: true, quietFrom: 0, quietTo: 0 } });
+  const fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) });
+  const ctx = fakeCtx({ replies: ['晚安，我先睡了'] });
+  const host = createHost(ctx, { dataDir, now: () => INTENT_T0, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '不早了', time: Math.floor(INTENT_T0 / 1000) });
+  const rh = JSON.parse(readFileSync(join(dataDir, 'rhythm.json'), 'utf8'));
+  assert.equal(rh.state, 'asleep');
+  assert.match(rh.claim, /晚安/);
+  assert.ok(rh.until > INTENT_T0);
+  // 睡着的时候她不做自己的事、也不主动开口
+  assert.equal(await host.intent(), 'none');
+});
+
+test('回写：他发消息把她叫醒（被吵醒也是真事）', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-rhythm-wake-'));
+  seedJson(dataDir, 'config.json', { enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' } });
+  seedJson(dataDir, 'rhythm.json', { at: INTENT_T0, state: 'asleep', since: INTENT_T0 - 3600e3, until: INTENT_T0 + 8 * HOUR_MS, reason: '她说要去睡', claim: '晚安', wokeBy: '' });
+  const fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) });
+  const ctx = fakeCtx({ replies: ['……嗯？'] });
+  const host = createHost(ctx, { dataDir, now: () => INTENT_T0, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '睡了吗', time: Math.floor(INTENT_T0 / 1000) });
+  const rh = JSON.parse(readFileSync(join(dataDir, 'rhythm.json'), 'utf8'));
+  assert.equal(rh.state, 'awake');
+  assert.equal(rh.wokeBy, 'his message');
+  // 上下文里会告诉她「你刚被吵醒」
+  assert.match(JSON.stringify(ctx.calls[0]), /刚被吵醒/);
+});
+
+test('回写：她答应「回来给你讲」，就落一条承诺账', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-promise-'));
+  seedJson(dataDir, 'config.json', { enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' } });
+  const fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) });
+  const ctx = fakeCtx({ replies: ['行，回来给你讲那个结局'] });
+  const host = createHost(ctx, { dataDir, now: () => INTENT_T0, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '那本书结局是啥', time: Math.floor(INTENT_T0 / 1000) });
+  const st = JSON.parse(readFileSync(join(dataDir, 'intents.json'), 'utf8'));
+  const p = st.loops.find((l) => l.kind === 'promise');
+  assert.ok(p, '答应的事要有账');
+  assert.match(p.text, /回来给你讲/);
+});
+
+test('回写：答应的事没做到，是亏欠情绪（按数值调语气），并留一句能认账的话', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-missed-'));
+  seedJson(dataDir, 'config.json', { enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' } });
+  const promise = seededLoop({
+    id: 'lt_promise_1', kind: 'promise', text: '回来给你讲那个结局', source: 'promise:1', anchor: '',
+    createdAt: INTENT_T0 - 30 * HOUR_MS, dueAt: INTENT_T0 - 30 * HOUR_MS,
+    expiresAt: INTENT_T0 + 6 * 86400e3,
+  });
+  seedJson(dataDir, 'intents.json', { at: INTENT_T0, loops: [promise] });
+  const ctx = fakeCtx({ replies: ['嗯'] });
+  const host = createHost(ctx, { dataDir, now: () => INTENT_T0, log: quiet, autoStart: false });
+  await host.intents.refresh();
+  const st = JSON.parse(readFileSync(join(dataDir, 'intents.json'), 'utf8'));
+  assert.ok(st.loops.find((l) => l.id === 'lt_promise_1').missedAt > 0, '没做到要认账');
+  assert.ok(st.loops.some((l) => l.kind === 'tell' && /没做到/.test(l.text)), '留一句能认账的话');
+  const aff = host.companion.snapshot();
+  assert.equal(aff.emotion.label, '亏欠');
+  assert.ok(aff.relation.debt > 0, '欠着的分量进了关系');
+});
+
+test('目标：快读完一本书时，她给自己立一个「剩下 N 章读完」的目标', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-goal-'));
+  seedJson(dataDir, 'config.json', { enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' } });
+  seedJson(dataDir, 'novel.json', {
+    bookName: '放开那个女巫', bookUrl: 'http://x/1', index: 141, bookTotal: 150, at: INTENT_T0 - HOUR_MS,
+    books: {}, readsToday: 2,
+  });
+  const ctx = fakeCtx({ replies: ['嗯'] });
+  const host = createHost(ctx, { dataDir, now: () => INTENT_T0, log: quiet, autoStart: false });
+  await host.intents.refresh();
+  const st = JSON.parse(readFileSync(join(dataDir, 'intents.json'), 'utf8'));
+  const goal = st.loops.find((l) => l.kind === 'do');
+  assert.ok(goal);
+  assert.match(goal.text, /剩下的 8 章读完/);
+  const d = new Date(INTENT_T0);
+  assert.equal(st.goalDay, `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+});
+
+test('有话说：手里有件没说的事 + 他安静够久，她自己开口，说出口就销账', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-share-'));
+  seedJson(dataDir, 'config.json', {
+    enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' },
+    proactive: { enabled: true, minIdleMinutes: 180, quietFrom: 0, quietTo: 0 },
+  });
+  const sent = [];
+  const fetchImpl = async (url) => {
+    sent.push(String(url));
+    return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
+  };
+  let clock = INTENT_T0;
+  const ctx = fakeCtx({ replies: ['嗯', '{"send":true,"message":"我跟你说，地蛋这名字也太土了","loopId":"lt_seed_1"}'] });
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(clock / 1000) });
+  clock += 4 * HOUR_MS;
+  seedJson(dataDir, 'intents.json', { at: INTENT_T0, loops: [seededLoop({ createdAt: INTENT_T0, expiresAt: INTENT_T0 + 48 * 3600e3 })] });
+  const r = await host.proactive.tick('share');
+  assert.equal(r.poked, true, JSON.stringify(r));
+  assert.equal(r.route, 'share');
+  assert.ok(sent.some((u) => u.endsWith('/send_private_msg')), '真的发出去了');
+  const st = JSON.parse(readFileSync(join(dataDir, 'intents.json'), 'utf8'));
+  assert.ok(st.loops[0].spokenAt > 0, '说出口就销账');
+  const p = host.proactive.state();
+  assert.equal(p.share.n, 1, '「有话说」单独计数');
+  assert.equal(p.decisions.at(-1).action, 'speak');
+});
+
+test('有话说：没挑中手里那件事就不发（不许退化成「在吗」）', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-share-none-'));
+  seedJson(dataDir, 'config.json', {
+    enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' },
+    proactive: { enabled: true, minIdleMinutes: 180, quietFrom: 0, quietTo: 0 },
+  });
+  const sent = [];
+  const fetchImpl = async (url) => {
+    sent.push(String(url));
+    return { ok: true, status: 200, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
+  };
+  let clock = INTENT_T0;
+  const ctx = fakeCtx({ replies: ['嗯', '{"send":true,"message":"在吗"}'] });
+  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, mergeWindowMs: 0, fetchImpl });
+  await host.handleEvent({ post_type: 'message', message_type: 'private', user_id: 42, raw_message: '早', time: Math.floor(clock / 1000) });
+  clock += 4 * HOUR_MS;
+  seedJson(dataDir, 'intents.json', { at: INTENT_T0, loops: [seededLoop()] });
+  const before = sent.length;
+  const r = await host.proactive.tick('share');
+  assert.equal(r.poked, false);
+  assert.match(r.reason, /没挑中/);
+  assert.ok(!sent.slice(before).some((u) => u.endsWith('/send_private_msg')), '这一轮一个字都没发');
+});
+
+
+
+test('今天想做点什么：默认关，不发生调用', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-plan-off-'));
+  seedJson(dataDir, 'config.json', { enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' } });
+  const ctx = fakeCtx({ replies: ['嗯'] });
+  const host = createHost(ctx, { dataDir, now: () => INTENT_T0, log: quiet, autoStart: false });
+  assert.equal(await host.dailyPlan.refresh(), null);
+  assert.equal(ctx.calls.length, 0, '默认不开就不花这次调用');
+});
+
+test('今天想做点什么：开了才问，一天只问一次，产出一条真会做的事', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'qqc-plan-on-'));
+  seedJson(dataDir, 'config.json', {
+    enabled: true, ownerQQ: '42', onebot: { httpUrl: 'http://127.0.0.1:9' },
+    intents: { dailyPlan: true },
+  });
+  const ctx = fakeCtx({ replies: ['[想做:把书桌上摊的东西归一遍]'] });
+  const host = createHost(ctx, { dataDir, now: () => INTENT_T0, log: quiet, autoStart: false });
+  const want = await host.dailyPlan.refresh();
+  assert.equal(want, '把书桌上摊的东西归一遍');
+  const st = JSON.parse(readFileSync(join(dataDir, 'intents.json'), 'utf8'));
+  const loop = st.loops.find((l) => l.kind === 'do' && l.source.startsWith('plan:'));
+  assert.ok(loop);
+  assert.match(loop.text, /归一遍/);
+  // 同一天不再问第二遍
+  assert.equal(await host.dailyPlan.refresh(), null);
+  assert.equal(ctx.calls.length, 1);
+});

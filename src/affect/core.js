@@ -11,6 +11,8 @@ export const EMOTION_HALF_MS = 30 * 60e3;      // 情绪强度半衰期
 export const MOOD_DECAY_MS = 24 * 3600e3;      // 心境回落基线
 export const MOOD_FOLLOW_MS = 8 * 3600e3;      // 心境跟随当前情绪
 export const REPAIR_HALF_MS = 4 * 86400e3;     // 修复：按残余比例，半衰期 3~5 天取中
+// 亏欠：她自己答应过、没做到的事。按五天半衰——不会一夜就忘，也不该永远背着。
+export const DEBT_HALF_MS = 5 * 86400e3;
 export const GUARD_QUIET_MS = 30 * 86400e3;    // 连续 30 天无伤害，guard 才开始回落
 export const GUARD_STEP = 0.01;                // 每月回落
 export const GUARD_MAX = 0.7;
@@ -50,7 +52,7 @@ export function initState(now = 0) {
     mood: { v: BASELINE.v, a: BASELINE.a, at: now },
     relation: {
       trust: 0.5, intimacy: 0.4, guard: 0.2, debt: 0,
-      residual: 0, lastDamageAt: 0, guardMonths: 0,
+      residual: 0, lastDamageAt: 0, guardMonths: 0, lastSettleAt: now,
       dayKey: dayKeyOf(now), dayDamage: 0, dayWarmth: 0,
     },
     self: {
@@ -122,6 +124,9 @@ function settleRelation(st, now) {
     const recovered = prev - r.residual;
     r.trust = clamp(r.trust + recovered * 0.8, 0, 0.95);
   }
+  // 亏了自己淡（旧状态文件里没有这个数：补 0，别让 NaN 污染整份关系）。
+  if (!Number.isFinite(r.debt)) r.debt = 0;
+  if (r.debt > 0) r.debt = Math.max(0, Math.round(r.debt * decay(dt, DEBT_HALF_MS) * 1000) / 1000);
   r.lastSettleAt = now;
   // guard 回落：只认「连续无伤害的整月」，用计数器保证幂等，不靠每次乘系数。
   if (r.lastDamageAt > 0 && now - r.lastDamageAt >= GUARD_QUIET_MS) {

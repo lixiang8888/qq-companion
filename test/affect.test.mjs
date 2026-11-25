@@ -238,3 +238,41 @@ test('同一个标签，被骂两次比一次更没底气（标签不变，数�
   assert.equal(twice.emotion.label, '被凶', '标签还是那个');
   assert.ok(twice.emotion.d < once.emotion.d, '但底气更低——这就是 d 和标签的分工');
 });
+
+// ---- 2026-11-25：亏欠也是一种情绪（答应的事没做到） ----
+
+test('亏欠：标签存进状态，注入里有一句「别装没事」', () => {
+  const st = pushEmotion(initState(T0), { v: 0.34, a: 0.3, d: 0.28, intensity: 0.65, label: '亏欠' }, T0);
+  assert.equal(st.emotion.label, '亏欠');
+  const ctx = buildContext(st, T0);
+  assert.match(ctx, /欠着他一件事/);
+  assert.match(ctx, /别装没事/);
+  // 过一阵自己散掉，不会永远挂在她身上
+  assert.equal(settle(st, T0 + 20 * EMOTION_HALF_MS).emotion.label, '');
+});
+
+test('亏欠按数值分档：数值只选语气，不把分数说给她听', () => {
+  const heavy = initState(T0);
+  heavy.relation.debt = 0.2;
+  assert.match(buildContext(heavy, T0), /压着件没兑现的事/);
+  assert.doesNotMatch(buildContext(heavy, T0), /0\.2/);
+  const light = initState(T0);
+  light.relation.debt = 0.06;
+  assert.match(buildContext(light, T0), /欠着他一件小事/);
+  const none = initState(T0);
+  assert.doesNotMatch(buildContext(none, T0), /欠着/);
+});
+
+test('欠着的分量会自己淡（五天半衰），不会一夜忘也不会背一辈子', () => {
+  const st = initState(T0);
+  st.relation.debt = 0.32;
+  const mid = settle(st, T0 + 5 * 86400e3).relation.debt;
+  assert.ok(mid > 0.13 && mid < 0.18, `五天该剩一半左右：${mid}`);
+  assert.equal(settle(st, T0 + 60 * 86400e3).relation.debt, 0);
+});
+
+test('面板状态行在欠着的时候能看见（可核对，不是藏着的）', () => {
+  const st = initState(T0);
+  st.relation.debt = 0.12;
+  assert.match(stateLine(st), /欠着 0\.12/);
+});

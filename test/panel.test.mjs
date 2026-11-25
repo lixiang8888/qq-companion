@@ -176,3 +176,39 @@ test('面板：读书那行带上对这本书的态度', () => {
   });
   assert.ok(!plain.includes('对这本'));
 });
+
+test('面板：她心里挂着的事（没说完的、答应没做到的、睡着、最冲的劲儿、开口判定）', () => {
+  const state = initState(T0);
+  const loop = (over) => ({
+    id: 'lt_x', kind: 'tell', about: 'novel', text: '想跟他讲地蛋这名字', label: '《书》',
+    createdAt: T0, dueAt: T0, expiresAt: T0 + 48 * 3600e3,
+    spokenAt: 0, doneAt: 0, droppedAt: 0, missedAt: 0, expiredAt: 0, attempts: 0, lastTryAt: 0, target: null,
+    ...over,
+  });
+  const html = renderPanel({
+    state,
+    memory: createCard(T0),
+    intents: {
+      loops: [
+        loop(),
+        loop({ id: 'lt_p', kind: 'promise', text: '回来给你讲那个结局', missedAt: T0 }),
+      ],
+    },
+    rhythm: { state: 'asleep', since: T0, until: T0 + 8 * 3600e3, reason: '她说要去睡', claim: '晚安', wokeBy: '' },
+    drives: { share: 0.6, miss: 0.2, proud: 0, curious: 0, tired: 0, sulk: 0 },
+    proactive: { decisions: [{ at: T0, route: 'share', action: 'wait', reason: '他刚回来，这次先不说', loopText: '地蛋这名字' }] },
+    now: T0,
+  });
+  assert.match(html, /她心里挂着的事/);
+  assert.match(html, /想跟他讲地蛋这名字/);
+  assert.match(html, /答应过但没做到/);
+  assert.match(html, /现在睡着/);
+  assert.match(html, /现在最冲的劲儿：有件事想跟他说/);
+  assert.match(html, /最近几次开口判定/);
+});
+
+test('面板：她没账时也照实写「没有」，不编一句', () => {
+  const html = renderPanel({ state: initState(T0), memory: createCard(T0), now: T0 });
+  assert.match(html, /她手里没有还没完成的事/);
+  assert.match(html, /她现在是醒着的/);
+});

@@ -47,3 +47,25 @@ test('书：翻自己的书，和查/表情互不打架', () => {
 test('没有指令的普通句子原样返回', () => {
   assert.deepEqual(parseActions('今天好累啊'), { text: '今天好累啊', stickers: [], searches: [], books: [] });
 });
+
+test('不回：她主动选择这一轮不理，标记剔掉、文本为空', () => {
+  const a = parseActions('[不回]');
+  assert.equal(a.text, '');
+  assert.equal(a.silent, true);
+  assert.equal(a.deferMinutes, undefined);
+});
+
+test('晚点回：默认 20 分钟，带分钟数也认，夹在 5~360', () => {
+  assert.equal(parseActions('[晚点回]').deferMinutes, 20);
+  assert.equal(parseActions('[晚点回:90]').deferMinutes, 90);
+  assert.equal(parseActions('[晚点回：1]').deferMinutes, 5, '太短的夹到 5 分钟');
+  assert.equal(parseActions('[晚点回:999]').deferMinutes, 360, '太长的夹到 360');
+  const mixed = parseActions('等我一下[晚点回:30]');
+  assert.equal(mixed.text, '等我一下', '带话也行：先应一声，晚点再说');
+  assert.equal(mixed.deferMinutes, 30);
+});
+
+test('没标记时返回形状不变（不凭空多出 silent/deferMinutes 键）', () => {
+  const a = parseActions('今天好累');
+  assert.deepEqual(Object.keys(a).sort(), ['books', 'searches', 'stickers', 'text']);
+});

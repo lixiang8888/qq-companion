@@ -13,6 +13,7 @@ import { renderInsights } from './insights.js';
 import { driftLine } from './affect/personality.js';
 import { screenLine } from './screen.js';
 import { weatherLine } from './weather.js';
+import { driveLine, isOpen } from './intent.js';
 
 export function escapeHtml(value) {
   return String(value ?? '')
@@ -39,7 +40,7 @@ function section(title, body) {
 /**
  * @param {{state: object, memory: object, gateway: string, session: object, persona: string, config: object, now: number}} o
  */
-export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', session = {}, history = [], checks = [], persona = '', config = {}, life = null, diaries = [], budget = null, alive = null, insights = null, impulses = null, qzone = null, proactive = null, weather = null, facts = null, screen = null, stickers = null, behavior = null, perception = null, novel = null, game = null, now = Date.now() } = {}) {
+export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', session = {}, history = [], checks = [], persona = '', config = {}, life = null, diaries = [], budget = null, alive = null, insights = null, impulses = null, qzone = null, proactive = null, weather = null, facts = null, screen = null, stickers = null, behavior = null, perception = null, novel = null, game = null, intents = null, rhythm = null, drives = null, now = Date.now() } = {}) {
   const cfg = config || {};
   const conn = cfg.onebot || {};
   const screenText = !cfg.screen?.enabled
@@ -159,6 +160,30 @@ export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', 
     ? diaries.map((d) => `<p><span class="tag">${escapeHtml(d.date)}</span></p><p class="diary">${escapeHtml(d.text)}</p>`).join('')
     : '<p class="dim">还没写过日记</p>';
 
+  // 她心里还没完成的事（2026-11-25）：想说没说的、想做没做的、答应过的、没回的那句。
+  // 面板只显示「有没有」和最近几条——它们是给她自己用的，不是给他看的任务清单。
+  const KIND_WORD = { tell: '想说', do: '想做', promise: '答应过', ask: '想知道', reply: '没回' };
+  const loopRows = (intents?.loops || []).filter((l) => isOpen(l, now)).slice(-8).reverse();
+  const loopText = loopRows.length
+    ? `<ul>${loopRows.map((l) => {
+      const after = l.spokenAt ? ' <span class="dim">已说</span>' : l.doneAt ? ' <span class="dim">已做</span>' : '';
+      return `<li><span class="tag">${escapeHtml(KIND_WORD[l.kind] || l.kind)}</span>${escapeHtml(String(l.text || '').slice(0, 40))}${l.label ? ` <span class="dim">（${escapeHtml(l.label)}）</span>` : ''}${after}</li>`;
+    }).join('')}</ul>`
+    : '<p class="dim">她手里没有还没完成的事</p>';
+  const missedRows = (intents?.loops || []).filter((l) => l.kind === 'promise' && l.missedAt).slice(-2).reverse();
+  const missedText = missedRows.length
+    ? `<p class="dim">答应过但没做到：${missedRows.map((l) => `「${escapeHtml(String(l.text || '').slice(0, 30))}」`).join('、')}</p>`
+    : '';
+  const rhythmText = rhythm?.state && rhythm.state !== 'awake'
+    ? `<p class="big">现在${rhythm.state === 'asleep' ? '睡着' : '不在'}（${escapeHtml(clockOf(rhythm.since))} 起 · ${escapeHtml(rhythm.reason || '')}）</p>`
+    : '<p class="dim">她现在是醒着的</p>';
+  const drive = driveLine(drives || {});
+  const driveText = drive ? `<p class="dim">现在最冲的劲儿：${escapeHtml(drive)}</p>` : '';
+  const decRows = (proactive?.decisions || []).slice(-3).reverse();
+  const decText = decRows.length
+    ? `<p class="dim">最近几次开口判定：</p><ul>${decRows.map((d) => `<li>${escapeHtml(clockOf(d.at))} ${d.action === 'speak' ? '开口了' : '没说'}${d.reason ? `（${escapeHtml(d.reason)}）` : ''}${d.loopText ? ` · ${escapeHtml(d.loopText)}` : ''}</li>`).join('')}</ul>`
+    : '';
+
   // 钱包：她自己的 token 和账户余额分开写——两个数来源不同，混在一起就是骗人。
   const bal = budget?.balance;
   const moneyText = budget
@@ -221,6 +246,7 @@ ${section('体检', checks.length
     : '<p class="dim">没有可检查的项</p>')}
 ${section('此刻', `<p class="big">${escapeHtml(stateLine(state))}</p><p class="dim">心情「${escapeHtml(moodLabel(state.mood.v))}」· 情绪强度 ${state.emotion.intensity.toFixed(2)}</p>`)}
 ${section('她的房间', `${doing}${roomText}${impulseText}${awakeText}${insightText}${diaryText}`)}
+${section('她心里挂着的事', `${rhythmText}${loopText}${missedText}${driveText}${decText}`)}
 ${section('空间', (() => {
   const last = qzone?.lastDecision;
   const why = last

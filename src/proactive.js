@@ -199,11 +199,12 @@ export function noteSaidByUser(state = {}) {
  * `night` = 这次是深夜例外（情绪重或他还没睡），一夜只给一次。
  * `breaking` = 这次是「好几天没回」的破例，记下来，免得一天破例三次。
  */
-export function notePoked({ state = {}, now, active = false, night = false, breaking = false } = {}) {
+export function notePoked({ state = {}, now, active = false, night = false, breaking = false, share = false } = {}) {
   const day = dayKeyOf(now);
   const same = state.day === day;
   const activeN = state.active?.day === day ? num(state.active.n, 0) : 0;
   const nightN = state.night?.day === day ? num(state.night.n, 0) : 0;
+  const shareN = state.share?.day === day ? num(state.share.n, 0) : 0;
   return {
     ...state,
     day,
@@ -214,6 +215,8 @@ export function notePoked({ state = {}, now, active = false, night = false, brea
     ...(breaking ? { breakAt: now } : {}),
     ...(active ? { active: { day, n: activeN + 1, lastAt: now } } : {}),
     ...(night ? { night: { day, n: nightN + 1, at: now } } : {}),
+    // 「有话说」单独记一条：它有自己的每日额度，也受总主动上限约束。
+    ...(share ? { share: { day, n: shareN + 1, lastAt: now } } : {}),
   };
 }
 
@@ -338,7 +341,7 @@ export function pokeGate({ now, cfg = DEFAULTS, history = [], lastUserAt = 0, st
 }
 
 /** 给她的「自己想想」提示。不是用户消息，她看完不该当成他说过这句。 */
-export function composePokePrompt({ clock = '', idle = '', lastLine = '', hint = '', inner = '', doing = '', events = [], feel = '', waiting = '' } = {}) {
+export function composePokePrompt({ clock = '', idle = '', lastLine = '', hint = '', inner = '', doing = '', events = [], feel = '', waiting = '', drive = '', loopLines = [] } = {}) {
   const lines = [`【这是你自己在想，不是他说的】现在 ${clock}，${idle}。`];
   if (doing) lines.push(`你此刻：${sanitizeSecrets(doing).slice(0, 60)}。`);
   // 她说过一句还没人接：那是真事，写给她看，免得隔了几个小时又从头问一遍。
@@ -354,12 +357,19 @@ export function composePokePrompt({ clock = '', idle = '', lastLine = '', hint =
   }
   if (hint) lines.push(`你心里还挂着件事：${sanitizeSecrets(hint).slice(0, 60)}。`);
   if (inner) lines.push(`上次这个点你也想过这事，当时想的是：「${sanitizeSecrets(inner).slice(0, 60)}」。`);
+  // 她自己的「未完成」：到点还没说的事、没回的那句。这是「有话说」那条通道的燃料。
+  if (drive) lines.push(`你心里现在最冲的是：${sanitizeSecrets(drive).slice(0, 30)}。`);
+  if (loopLines.length) {
+    lines.push('【你手里还有件事没跟他说】');
+    for (const l of loopLines.slice(0, 2)) lines.push(`- ${sanitizeSecrets(String(l)).slice(0, 100)}`);
+    lines.push('要挑一件说的话，把那条前面的 id 填进 loopId；一条都不挑就不用发。');
+  }
   lines.push('要不要找他？他可能在忙、在睡，也可能这会儿就是不想说话——不说也完全没问题。');
   lines.push('要是你心里有个具体的疑问（外面的新闻、某个东西是什么），可以顺手查一下，加一个键："search":"你想查的那句话"。');
   lines.push('顺便说一句你接下来想干什么（不用装成上班通勤），和你心里那句话。');
   lines.push('只回一个 JSON，别的什么都不要：');
   lines.push('{"send":false,"waitMinutes":45,"reason":"一句话，为什么先不说","doing":"接下来想干什么，不想就留空","think":"心里那句话，二十字以内，可以留空"}');
-  lines.push('或者 {"send":true,"message":"你要发过去的那句话","doing":"","think":""}');
+  lines.push('或者 {"send":true,"message":"你要发过去的那句话","loopId":"上面那行开头的 id","doing":"","think":""}');
   lines.push('想查就再加一句：{"send":false,"waitMinutes":60,"reason":"…","doing":"","think":"","search":"湖州明天会下雨吗"}');
   return lines.join('\n');
 }
@@ -394,9 +404,13 @@ export function parsePokeReply(text) {
     // 查什么跟发不发是两件事：可以只想查、不说话。
     const search = String(j.search || '').replace(/\s+/g, ' ').trim().slice(0, 80);
     const extra = { doing: doing(j.doing), think: think(j.think) };
-    if (j.send === true) {
+    // 「有话说」那条通道要交代她挑的是哪一条；对不上就当没说，绝不硬发。
+    const loopId = /^lt_[a-z0-9_]+$/i.test(String(j.loopId || '').trim()) ? String(j.loopId).trim() : '';
+    const withLoop = loopId ? { loopId } : {};
+    // speak 是计划书里的写法，send 是现有协议；两个都认。
+    if (j.send === true || j.speak === true) {
       const message = String(j.message || '').trim();
-      if (message && !isSilent(message)) return { send: true, message, search, ...extra };
+      if (message && !isSilent(message)) return { send: true, message, search, ...extra, ...withLoop };
       return { send: false, waitMinutes, search, reason: String(j.reason || '想说，但没话'), ...extra };
     }
     return { send: false, waitMinutes, search, reason: String(j.reason || ''), ...extra };

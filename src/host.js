@@ -32,6 +32,16 @@ import { addUsage, createBudget, fetchBalance, LOW_BALANCE_CNY, moneyBlock, usag
 import { createMailbox, DEFAULT_WINDOW_MS, mergeTexts } from './mailbox.js';
 import { applyInsights, composePrompt as insightsPrompt, createInsights, dueInsights, insightsLastAt, parseInsights, renderInsights, INSIGHT_TTL } from './insights.js';
 import { applySettle, applyThought, createImpulses, dueSettle, dueThought, IMPULSE_DEFAULTS, noteTry, parseSettle, parseThought, renderImpulses, repeatThought, settlePrompt, thoughtPrompt, topicOf } from './impulse.js';
+import {
+  INTENT_DEFAULTS, REPLY_TTL_MS, SHARE_PROMPT_LINE, WANT_PROMPT_LINE,
+  addLoop, computeDrives, createIntents, deriveGoal, detectDone, detectSpoken, driveLine, dueLoops,
+  expireDue, looksLikeShell, makeLoop, markDropped, markMissed, markSpoken, openLoops, parseShare,
+  parseWant, promptLoopLines, renderIntentBlock, renderPromiseBlock, shareGate,
+} from './intent.js';
+import {
+  RHYTHM_DEFAULTS, advanceRhythm, applyClaim, createRhythm, debtForMisses, latePromises,
+  missedEmotion, parsePromise, parseRhythmClaim, promiseLoop, rhythmLine, wakeRhythm,
+} from './commitment.js';
 import { composeCommentPrompt, composePostPrompt, decidePost, notePosted, parseCommentReply, parsePostReply } from './qzone-post.js';
 import { comment as qzoneComment, detail as qzoneDetail, freshComments, publish as qzonePublish, remove as qzoneRemove } from './qzone.js';
 import { appendTranscript, looksLikeRecall, readTranscript, recallLine, searchTranscript } from './transcript.js';
@@ -163,6 +173,11 @@ const DEFAULT_CONFIG = {
   // 她心里冒念头：跟着刚才聊的话题走，很便宜的小调用，所以可以密一点。
   // 想更密/更稀、或者干脆关掉，都在这里改（minGapMinutes / maxPerDay / settlePerDay）。
   impulse: { ...IMPULSE_DEFAULTS },
+  // 她心里还没完成的事：想说没说的、答应过的、没回的那句（2026-11-25）。
+  // 关掉 intents.enabled 后行为与以前完全一致。
+  intents: { ...INTENT_DEFAULTS },
+  // 她说去睡了/去忙了：真的进状态，主动通道不再开口；他说一条消息可以把她叫醒（默认开）。
+  rhythm: { ...RHYTHM_DEFAULTS },
   // 她在哪：huzhou（湖州师范大学）或 zhuji（诸暨），坐标在 weather.js。
   // enabled 默认关：开着就会去连外网，测试和不想联网的人都该能关掉。
   weather: { enabled: false, place: 'huzhou' },
@@ -218,6 +233,10 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   const insightsStore = createJsonStore(join(dataDir, 'insights.json'), { defaults: () => createInsights(), log: (m) => log.warn?.(m) });
   // 情绪上来的念头：什么时候冒的、后来回头看还是不是那个想法。两句都留，她自己能看见前后不一样。
   const impulseStore = createJsonStore(join(dataDir, 'impulses.json'), { defaults: () => createImpulses(), log: (m) => log.warn?.(m) });
+  // 她心里还没完成的事（想说没说的/答应过的/没回的那句）。
+  const intentStore = createJsonStore(join(dataDir, 'intents.json'), { defaults: () => createIntents(), log: (m) => log.warn?.(m) });
+  // 她在睡/在忙/醒着：她说去睡了，就真的进状态。
+  const rhythmStore = createJsonStore(join(dataDir, 'rhythm.json'), { defaults: () => createRhythm(), log: (m) => log.warn?.(m) });
   // 她自己在看什么书：读到第几章、上一章的感想。正文不落盘——一章两千多字，读完就够。
   const novelStore = createJsonStore(join(dataDir, 'novel.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
   // 她的游戏战绩：上一局打到哪、最好成绩、最近 5 局和她自己的原话。
@@ -758,6 +777,18 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   }
   const clockLine = (t) => `此时：${clockText(t)}`;
 
+  /** 意图层的配置（和默认值合并）；关掉就让所有产出与注入都不发生。 */
+  const intentsOn = () => config.intents?.enabled !== false;
+  const intentsCfg = () => ({ ...INTENT_DEFAULTS, ...(config.intents || {}) });
+  const rhythmOn = () => config.rhythm?.enabled !== false;
+  const rhythmCfg = () => ({ ...RHYTHM_DEFAULTS, ...(config.rhythm || {}) });
+  /** 记一条 loop（没开就什么都不做）。 */
+  function noteIntent(loop) {
+    if (!intentsOn() || !loop) return '';
+    intentStore.save(addLoop(intentStore.load(), loop));
+    return loop.id;
+  }
+
   const screenOn = () => config.screen?.enabled === true;
   const screenTtl = () => Math.max(60e3, Number(config.screen?.ttlMinutes ?? 5) * 60e3);
 
@@ -825,6 +856,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     // 周自述和人格叙事都能一年后还在说「最近」。规矩现在由 fresh.js 强制。
     return assemble([
       blk('clock', clockLine(t), t),
+      // 她在睡/在忙/刚被吵醒：这是「她此刻在不在」的事实，不是心情。
+      blk('rhythm', rhythmLine(rhythmStore.load(), t), t),
       blk('situation', situationText(personaFull(), situationsFor(msg?.text, { at: t })), t),
       blk('stuck', looksStuck(said) ? STUCK_LINE : '', t),
       // 天气是几小时前查的：过了半天还在说，就是拿早上的天说下午的话。
@@ -841,6 +874,9 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       blk('insights', renderInsights(ins, t), insightsLastAt(ins) || t, INSIGHT_TTL),
       // 她自己心里冒出来的念头：情绪上来了才有；不用说出来，但它在。
       blk('impulse', renderImpulses(impulseStore.load(), t), t),
+      // 她手里还没完成的事：想说没说的、答应过的。每轮现算，过期的不进（render 里按 now 过滤）。
+      blk('intent', intentsOn() ? renderIntentBlock(intentStore.load(), t) : '', t),
+      blk('promise', intentsOn() ? renderPromiseBlock(intentStore.load(), t) : '', t),
       blk('life', await lifeBlock(), t),
       // 她的房间只有这一间：有这一行，她说的「我屋里」才不会每次都换一间。
       blk('home', homeLine(), t),
@@ -936,11 +972,20 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     try {
       const text = await complete({
         system: `${personaCore()}\n\n（你在自己心里嘀咕，不是在跟他说话。）`,
-        messages: [{ role: 'user', text: thoughtPrompt(st, { now: t, topic, waiting, oldThoughts }) }],
-        maxTokens: 120,
+        messages: [{ role: 'user', text: `${thoughtPrompt(st, { now: t, topic, waiting, oldThoughts })}\n${WANT_PROMPT_LINE}` }],
+        // 多了一行可选的 `[想做:…]`，预算从 120 提到 240；还是不做推理，便宜。
+        maxTokens: 240,
         reasoningEffort: 'off',
       });
-      const thought = parseThought(text);
+      // 先把「想做的一件小事」剥出来：它不是念头，是之后真会去做的事。
+      const got = parseWant(String(text || ''));
+      if (got.want) {
+        noteIntent(makeLoop({
+          kind: 'do', about: 'self', text: got.want, source: `impulse:${Math.round(t / 60e3)}`,
+          weight: 0.35, now: t,
+        }));
+      }
+      const thought = parseThought(got.text);
       // 回「没有」、或者跟旧念头太像：记一笔「问过了」，别让每个周期都重问。
       if (!thought || repeatThought(cur, thought)) {
         impulseStore.save(noteTry(cur, t));
@@ -954,6 +999,112 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     } catch (e) {
       log.warn?.(`念头没冒出来：${e.message}`);
       return cur;
+    }
+  }
+
+  /**
+   * 意图层的日常维护（纯计算，不调模型）：
+   *   1) 过期的账作废；2) 答应的事到期没做到 → 亏欠（进情绪、进关系，并留一句能认账的话）；
+   *   3) 真做完的事销账；4) 一天最多派生一个跨天目标；5) 睡/忙到点了自己醒。
+   */
+  async function refreshIntents() {
+    const t = now();
+    // 关掉意图层 = 不读写这本账（行为与没有它时一致）；但作息还是照常到点醒。
+    if (!intentsOn()) {
+      if (rhythmOn()) {
+        const rh = advanceRhythm(rhythmStore.load(), t, rhythmCfg());
+        if (rh) rhythmStore.save(rh);
+      }
+      return intentStore.load();
+    }
+    let st = intentStore.load();
+    const ex = expireDue(st, t);
+    st = ex.state;
+    // 答应的事没做到：亏欠也是一种情绪（用户拍板：套用情绪那套模板，按数值选语气）。
+    if (intentsOn()) {
+      const late = latePromises(st, t);
+      if (late.length) {
+        const aff = settle(store.load(), t);
+        const nextAff = pushEmotion(aff, missedEmotion(late.length), t);
+        nextAff.relation.debt = Math.max(0, Math.min(1, (Number(nextAff.relation.debt) || 0) + debtForMisses(late.length)));
+        store.save(nextAff);
+        for (const l of late) {
+          st = markMissed(st, l.id, t);
+          // 留一条「还没跟他说」的话：自己答应的事，没做到要认。
+          st = addLoop(st, makeLoop({
+            kind: 'tell', about: 'self', text: `说好「${l.text}」的那件事，没做到`,
+            source: `missed:${l.id}`, weight: 0.7, now: t, expiresAt: t + 72 * 3600e3,
+          }));
+        }
+        log.info?.(`有 ${late.length} 件答应的事没做到（欠着）`);
+      }
+    }
+    // 真做完的事：do 类按真事件核销（读到书 / 打过游戏）。
+    const done = detectDone(st, { now: t, novel: novelStore.load(), game: gameStore.load() });
+    st = done.state;
+    // 跨天目标：一天最多派生一个，只从真进度里算（读到哪、过了哪关）。
+    if (intentsOn() && st.goalDay !== dayKeyOf(t)) {
+      const goal = deriveGoal(st, { now: t, novel: novelStore.load(), game: gameStore.load() });
+      if (goal) log.info?.(`她给自己定了个目标：${goal.text}`);
+      st = (goal ? addLoop(st, goal) : st);
+      st = { ...st, goalDay: dayKeyOf(t) };
+    }
+    intentStore.save({ ...st, at: t });
+    // 睡/忙到点了自己醒（说去睡就真的睡，不是只改一句语气）。
+    if (rhythmOn()) {
+      const rh = advanceRhythm(rhythmStore.load(), t, rhythmCfg());
+      if (rh) rhythmStore.save(rh);
+    }
+    return st;
+  }
+
+  /**
+   * 每天一次：「今天想干点什么」（M5b，默认关——多一次调用，开了才跑）。
+   * 只能从房间里真有的东西和真做过的事里挑；产出最多一条想做的事。
+   */
+  let planningDay = '';
+  async function refreshDailyPlan() {
+    if (!intentsOn() || intentsCfg().dailyPlan !== true) return null;
+    const t = now();
+    const day = dayKeyOf(t);
+    if (planningDay === day || intentStore.load().planDay === day) return null;
+    const hour = new Date(t).getHours();
+    if (hour < 8 || hour >= 23) return null;
+    const st = intentStore.load();
+    // 已经有一件想做的事就不问：一天一件，够她忙的了。
+    if (openLoops(st, t).some((l) => l.kind === 'do')) {
+      intentStore.save({ ...st, planDay: day });
+      return null;
+    }
+    planningDay = day;
+    const prompt = [
+      '你一个人待着。今天想干点什么？',
+      '只能从你房间里真有的东西、和你真做过的事里挑（看书、打游戏、写日记、收拾屋子、翻旧聊天）。',
+      '不要编新的家当、亲戚、宠物、地点；不要写「今天要努力」这种空话。',
+      '只回一行：`[想做:一件今天真会去做的小事，不超过 40 字]`。真的没想做的，就只写：没有',
+    ].join('\n');
+    try {
+      const text = String(await complete({
+        system: `${personaCore()}\n\n（你在给自己定今天要做的一件小事。）`,
+        messages: [{ role: 'user', text: `${lifeFacts(t)}\n\n${prompt}` }],
+        maxTokens: 300,
+      }) || '');
+      const got = parseWant(text);
+      const base = { ...intentStore.load(), planDay: day };
+      if (got.want) {
+        intentStore.save(addLoop(base, makeLoop({
+          kind: 'do', about: 'self', text: got.want, source: `plan:${day}`,
+          weight: 0.4, now: t, expiresAt: t + 18 * 3600e3,
+        })));
+        log.info?.(`今天想做的事：${got.want}`);
+      } else {
+        intentStore.save(base);
+        log.info?.('今天没有特别想做的事');
+      }
+      return got.want || null;
+    } catch (e) {
+      log.warn?.(`今天想做点什么没问成：${e.message}`);
+      return null;
     }
   }
 
@@ -1112,6 +1263,9 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
             '',
             '最后单独一行写：`[读:标签 强度 去留]`',
             '标签从 爽/触动/酸/闷/尬/烦/无感 里选一个；强度 1(轻) 2(中) 3(重)；去留可写 继续/敷衍/想弃，不想写就省掉。',
+            '',
+            // 她读完这章，心里有没有一句想跟他说的（意图层的来源之一）。可选。
+            SHARE_PROMPT_LINE,
           ].join('\n'),
           messages: [{
             role: 'user',
@@ -1119,13 +1273,18 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
           }],
           // 200 实测会把 `[读:…]` 标记切断（推理模型先吃掉预算）：宁可多给，也不能让她
           // 写完了感想却没留下标签——那是「有感觉但记成无感」。
-          maxTokens: 400,
+          // 2026-11-25：后面又加了一行可选的 `[想说:…]`，预算提到 800 并排在最后，
+          // 先保标签、再保分享；被截断时解析器把它当没有（不硬编）。
+          maxTokens: 800,
         }) || '').trim();
       } catch (e) {
         log.warn?.(`读后感没写出来：${e.message}`);
         return st;
       }
 
+      // `[想说:…]` 先剥出来：它不是感想，不该进 parseReaction 的锚点判断。
+      const said = parseShare(text);
+      text = said.text;
       // 反应 → 情绪：无锚点或无感就不推（引不出原文的反应多半是在演）；一天累计有上限。
       const reaction = parseReaction(text, ch.text);
       const anchored = reaction.anchored;
@@ -1164,10 +1323,23 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         emotionDay: day,
         emotionToday: Math.min(READING_EMOTION_DAY_MAX, emotionToday + (emo ? emo.intensity : 0)),
         origin: book.origin || '',
+        // 全本多少章：跨天目标（「把剩下 N 章读完」）要拿它算，不能靠猜。
+        bookTotal: Math.max(0, Number(book.total) || 0),
         // 每本书的真账本：态度、连烦、最近几章的反应。行为后果（弃书/重读）靠它。
         books: { ...books, [book.bookUrl]: rec },
       };
       novelStore.save(next);
+      // 这一章里她真想跟他说一句：记成一条「还没有说出口的事」。
+      // 没写 `[想说:…]` 就是不想说——绝不拿反应强度替她补一句（那是编）。
+      if (said.share) {
+        noteIntent(makeLoop({
+          kind: 'tell', about: 'novel', text: said.share,
+          source: `novel:${book.bookUrl}:${title || plan.index}`,
+          anchor: reaction.anchor, label: `《${book.name}》`,
+          weight: Math.min(1, 0.4 + 0.2 * (Number(reaction.intensity) || 0)),
+          now: t,
+        }));
+      }
       log.info?.(`读书：《${book.name}》第 ${plan.index + 1} 章 · ${trusted.label || '无感'}${emo ? '（情绪 +' + emo.intensity.toFixed(2) + '）' : ''} · 对这本 ${rec.attitude.toFixed(2)}`);
       return next;
     } catch (e) {
@@ -1324,13 +1496,19 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
           '',
           '最后单独一行写：`[玩:标签 强度]`',
           '标签从 爽/触动/酸/闷/尬/烦/无感 里选一个；强度 1(轻) 2(中) 3(重)。哪怕是「无感」也要写这一行。',
+          '',
+          // 和读书同一条：打完这局，有没有一句想跟他说的。可选；被截断就当没有。
+          SHARE_PROMPT_LINE,
         ].join('\n'),
         messages: [{ role: 'user', text: `【这局的记录】${materialAll}${lockedNote ? `\n（${lockedNote}）` : ''}\n\n你现在的状态：${moodWord}` }],
-        maxTokens: 400,
+        maxTokens: 800,
       }) || '').trim();
     } catch (e) {
       log.warn?.(`打僵尸：局后感想没写出来（${e.message}）`);
     }
+    // 剥掉 `[想说:…]`，别让它进 parseGameReaction 的锚点判断。
+    const said = parseShare(text);
+    text = said.text;
     const reaction = text
       ? parseGameReaction(text, materialAll)
       : { thought: '', label: '', intensity: 0, anchor: '', anchored: false };
@@ -1349,6 +1527,16 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       events: gameEvents(prev, snap),
     });
     gameStore.save(next);
+    // 这局里她真想跟他说一句：记成没被说出口的事（和读书同一条规矩，不写就没有）。
+    if (said.share) {
+      noteIntent(makeLoop({
+        kind: 'tell', about: 'game', text: said.share,
+        source: `game:${lv.n}:${Number(snap?.wave) || 0}`,
+        anchor: reaction.anchor, label: '植物大战僵尸',
+        weight: Math.min(1, 0.45 + 0.2 * (Number(reaction.intensity) || 0)),
+        now: t,
+      }));
+    }
     log.info?.(`打僵尸：第 ${lv.n} 关 · ${material}${reaction.label ? ` · ${reaction.label}` : ' · 无感'}${emo ? `（情绪 +${emo.intensity.toFixed(2)}）` : ''} · ${decisions} 手${next.cleared.length > (prev.cleared || []).length ? ` · 过了第 ${lv.n} 关，下一关是第 ${next.level} 关` : ''}`);
     return next;
   }
@@ -1443,6 +1631,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   async function nudgeIfUrgent(t) {
     const cfg = { ...URGENT_DEFAULTS, ...(config.urgent || {}) };
     if (!cfg.enabled || !config.ownerQQ) return null;
+    // 她在睡/在外：不会去抖他的窗口。
+    if (rhythmOn() && rhythmStore.load().state !== 'awake') return null;
     const state = pokeStore.load();
     // 上次叫不成（网关不支持 / 掉线）：一小时后再试，别每十分钟刷一条告警。
     if (state.nudgeFailAt && t - Number(state.nudgeFailAt) < 60 * 60e3) return null;
@@ -1486,21 +1676,37 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const nudged = await nudgeIfUrgent(now());
     if (nudged) return nudged;
     if (reading || playingGame || choosingPastime) return 'busy';
+    // 她说去睡了/去忙了：是真的不在——不主动开口，也不看书打游戏。他发消息会把她叫醒。
+    if (rhythmOn() && rhythmStore.load().state !== 'awake') return 'none';
     const cfg = { ...PROACTIVE_DEFAULTS, ...(config.proactive || {}) };
     if (cfg.enabled) {
       const t = now();
       const st = companion.snapshot();
+      const hist = session.snapshot().history;
+      const lastUserAt = [...hist].reverse().find((m) => m.role === 'user')?.at || 0;
       const gate = pokeGate({
         now: t,
         cfg,
-        history: session.snapshot().history,
+        history: hist,
         state: pokeStore.load(),
         mood: st.mood.v,
         emotion: st.emotion,
       });
       if (gate.ok) {
-        const r = await tickProactive();
+        const r = await tickProactive('wait');
         return r?.poked ? 'talk' : 'think';
+      }
+      // 等待型没到点，但她手里有件真事还没说：那也是一个开口的理由。
+      // 判据是「手里有没有话说」，不是「他多久没回」——两条路共用发送和总闸。
+      if (intentsOn()) {
+        const shared = shareGate({
+          now: t, cfg: intentsCfg(), pokeCfg: cfg, loops: intentStore.load().loops,
+          rhythm: rhythmStore.load(), state: pokeStore.load(), lastUserAt, mood: st.mood.v, history: hist,
+        });
+        if (shared.ok) {
+          const r = await tickProactive('share');
+          return r?.poked ? 'talk' : 'think';
+        }
       }
     }
     return pastimeIfBored();
@@ -1577,6 +1783,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   }
 
   async function refreshLife() {    const t = now();
+    // 她在睡/在外：不重新决定「此刻在干什么」，那会儿没有她。
+    if (rhythmOn() && rhythmStore.load().state !== 'awake') return advance(lifeStore.load(), t);
     let life = advance(lifeStore.load(), t);
     // advance 之后：until 在未来 = 还在做；until 为 0 = 到点了，该问了。
     if (life.until > t) return life;
@@ -1684,11 +1892,15 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   }
 
   /** 主动搭话：期待到了、护栏全过，她先自己想一想；想的结果是发，或者晚点再想。 */
-  async function tickProactive() {
-    return enqueue(tickProactiveInner);
+  /**
+   * 主动搭话：等待型（他太久没回）和「有话说」（手里有件没说的）共用这条发送通道。
+   * 两条各有各的判据，但共用每日额度与冷却——不然一天会「找一次 + 说一次」。
+   */
+  async function tickProactive(route = 'wait') {
+    return enqueue(() => tickProactiveInner(route));
   }
 
-  async function tickProactiveInner() {
+  async function tickProactiveInner(route = 'wait') {
     const cfg = { ...PROACTIVE_DEFAULTS, ...(config.proactive || {}) };
     if (!cfg.enabled) return { poked: false, reason: '未开启' };
     if (!config.ownerQQ) return { poked: false, reason: 'ownerQQ 未设置' };
@@ -1697,9 +1909,27 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const lastUserAt = [...hist].reverse().find((m) => m.role === 'user')?.at || 0;
     const st = companion.snapshot();
     const state = pokeStore.load();
-    // 「等没等回、几句没回」全从历史现算，不再有连发计数器那种会跟事实漂的影子状态。
-    const g = pokeGate({ now: t, cfg, history: hist, state, mood: st.mood.v, emotion: st.emotion });
+    // 两条路：等待型看「他多久没回」，有话说看「手里有没有到点的事」。
+    const g = route === 'share'
+      ? shareGate({
+        now: t, cfg: intentsCfg(), pokeCfg: cfg, loops: intentStore.load().loops,
+        rhythm: rhythmStore.load(), state, lastUserAt, mood: st.mood.v, history: hist,
+      })
+      : pokeGate({ now: t, cfg, history: hist, state, mood: st.mood.v, emotion: st.emotion });
     if (!g.ok) return { poked: false, reason: g.reason };
+    const open = g.open || openThread(hist);
+    // 这一次能拿出来的「没说完的事」：有话说这条路只拿它自己选的那几条。
+    const shown = route === 'share' ? (g.loops || []) : dueLoops(intentStore.load(), t).slice(0, 2);
+    const loopLines = intentsOn() ? promptLoopLines(shown, t) : [];
+    const decisionsLog = (patch = {}) => {
+      const cur = pokeStore.load();
+      const decisions = [...(cur.decisions || []), {
+        at: t, route, action: patch.action || 'wait',
+        reason: String(patch.reason || ''), loopId: patch.loopId || '',
+        loopText: String(patch.loopText || '').slice(0, 40), sent: Boolean(patch.sent),
+      }].slice(-20);
+      pokeStore.save({ ...cur, decisions });
+    };
 
     const lastLine = [...hist].reverse().find((m) => m.role === 'user')?.text || '';
     // 「还挂着件事」只能指最近：拿三个月前的记忆当此刻的念头，是替她编。
@@ -1729,21 +1959,31 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       game: gameStore.load(),
       seen: state.seen,
     });
+    const idle = g.active
+      ? `他 ${g.idleMinutes} 分钟前还在跟你说话，说到一半停了`
+      : `他已经 ${g.idleHours ?? Math.max(0, Math.round((t - lastUserAt) / 3600e3))} 小时没跟你说话了`;
+    // 六股劲儿里的最冲那一个：只用来排顺序和给一句话，不直接生成台词。
+    const drives = computeDrives({
+      now: t, lastUserAt, loops: intentStore.load().loops,
+      novel: novelStore.load(), game: gameStore.load(), facts: factsStore.load(),
+      relation: st.relation, emotion: st.emotion,
+    });
     const prompt = composePokePrompt({
       clock: clockText(t),
       // 在场时不能说「他已经 N 小时没跟你说话了」：他刚才还在，只是话停在半句上。
-      idle: g.active
-        ? `他 ${g.idleMinutes} 分钟前还在跟你说话，说到一半停了`
-        : `他已经 ${g.idleHours} 小时没跟你说话了`,
+      idle,
       lastLine,
       hint,
       inner: state.lastThought?.text || '',
       doing: await lifeBlock(),
       events: perceived.events,
       // 她上一句还没人接：这是真事，写给她看，免得隔几个小时又从头问一遍。
-      waiting: g.open?.unanswered ? String(g.open.lastText).slice(0, 60) : '',
+      waiting: open?.unanswered ? String(open.lastText).slice(0, 60) : '',
       // 情绪占主导：要不要开口、说得多急，得带着此刻的心情，不是只看时钟。
       feel: `心情${moodLabel(st.mood.v)}${st.emotion.label ? ` · ${st.emotion.label}` : ''}`,
+      // 「有话说」这条通道的燃料：到她嘴边还没说出口的事。
+      drive: driveLine(drives),
+      loopLines,
     });
 
     // 这是一次独立调用，不碰主历史：写进去，她就真会以为自己听过那句系统提醒。
@@ -1777,6 +2017,23 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       seen: perceived.seen,
     }, { now: t, events: perceived.events.length });
 
+    // 「有话说」这条路：必须挑中手里的一条，否则不发——
+    // 不然它又会退化成没话找话的「在吗」，那就白做了。
+    const wanted = decided.loopId ? shown.find((l) => l.id === decided.loopId) : null;
+    if (route === 'share' && decided.send && !wanted) {
+      pokeStore.save(noteWait({ state: withThought, now: t, minutes: decided.waitMinutes, cfg, present: false }));
+      decisionsLog({ action: 'skip', reason: '没挑中手里那件事' });
+      log.info?.('有话说：她没挑中手里那件事，这次不发');
+      return { poked: false, reason: '没挑中手里那件事', waitMinutes: decided.waitMinutes };
+    }
+    // 空壳（只有话头没有内容）在「有话说」这条路不发：宁可沉默，不递半句（借 AstrBot 那条）。
+    // 等待型不禁「在吗」——想他了只问一句是正常的，别把两条通道的规矩混在一起。
+    if (route === 'share' && decided.send && looksLikeShell(decided.message)) {
+      pokeStore.save(noteWait({ state: withThought, now: t, minutes: decided.waitMinutes, cfg, present: Boolean(g.active) }));
+      decisionsLog({ action: 'skip', reason: '空壳：只有话头没有内容' });
+      return { poked: false, reason: '空壳' };
+    }
+
     // 她顺手想查点什么。查不到就算了，绝不能让她以为查过。
     let looked = '';
     if (decided.search && config.search?.enabled === true && canSearch(factsStore.load(), t, config.search?.maxPerDay ?? 5)) {
@@ -1797,21 +2054,47 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
 
     if (!decided.send) {
       pokeStore.save(noteWait({ state: withThought, now: t, minutes: decided.waitMinutes, cfg, present: Boolean(g.active) }));
+      decisionsLog({ action: 'wait', reason: decided.reason || '想过了，先不说' });
       return { poked: false, reason: decided.reason || '想过了，先不说', waitMinutes: decided.waitMinutes, search: decided.search || '', looked };
     }
 
+    // 想完之后再核一遍：他是不是已经回来了（借念起那条「发送前检查 user_returned_since」）。
+    // 他回来说话了，这条「想说的话」就留到下一轮——不硬插进刚接上的对话里。
+    if (route === 'share') {
+      const nowUserAt = [...session.snapshot().history].reverse().find((m) => m.role === 'user')?.at || 0;
+      if (nowUserAt > lastUserAt) {
+        pokeStore.save(noteWait({ state: withThought, now: t, minutes: 20, cfg, present: false }));
+        decisionsLog({ action: 'skip', reason: '他刚回来，这次先不说' });
+        return { poked: false, reason: '他刚回来，这次先不说' };
+      }
+    }
+
     const plan = replyPlan(st, { baseDelayMs: config.session?.replyDelayMs ?? 800 });
-    const parts = splitReply(decided.message).slice(0, plan.maxParts);
+    // 她说的话一句都不切掉：拆条只决定分几条发（吞话修过的那条规矩，主动消息也一样）。
+    const parts = splitReply(decided.message);
     const msg = { kind: 'private', userId: String(config.ownerQQ), chatId: `private:${config.ownerQQ}` };
     let sent = 0;
     for (const part of parts) {
       try { await sleep(plan.delayMs); await sendText(onebot, msg, part); sent += 1; }
       catch (e) { log.warn?.(`主动搭话发送失败：${e.message}`); break; }
     }
-    pokeStore.save(notePoked({ state: withThought, now: t, active: Boolean(g.active), night: g.night === true, breaking: g.break === true }));
+    // 说出口才算销账：她挑中的那条、以及话里顺带提到的别的账。
+    if (sent) {
+      if (wanted) intentStore.save(markSpoken(intentStore.load(), wanted.id, t));
+      const sp = intentsOn() ? detectSpoken(intentStore.load(), decided.message, t) : { state: null, spoken: [] };
+      if (sp.spoken.length) intentStore.save(sp.state);
+    }
+    pokeStore.save(notePoked({
+      state: withThought, now: t, active: Boolean(g.active), night: g.night === true,
+      breaking: g.break === true, share: route === 'share',
+    }));
+    decisionsLog({
+      action: 'speak', reason: decided.reason || '',
+      loopId: wanted?.id || '', loopText: wanted?.text || '', sent,
+    });
     // 她确实说了这句话。不记进历史，他下一句接上来时她不知道自己刚问过什么。
     if (sent) session.note(decided.message, { at: t });
-    return { poked: true, sent, message: decided.message, search: decided.search || '', looked };
+    return { poked: true, sent, message: decided.message, search: decided.search || '', looked, route };
   }
 
   /**
@@ -2195,6 +2478,11 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const msg = { ...batch.last, text: mergeTexts(batch.texts), parts: batch.texts };
     // 他出声了：说「晚点再想」的那个计划作废。
     pokeStore.save(noteSaidByUser(pokeStore.load()));
+    // 她刚说要去睡/去忙，他一条消息把她弄醒了：状态先改，这一轮的上下文里就有「你刚被吵醒」。
+    if (rhythmOn()) {
+      const woken = wakeRhythm(rhythmStore.load(), now(), { by: 'his message' });
+      if (woken) rhythmStore.save(woken);
+    }
     // 他隔了这么久才回来：她等过——真事，这一轮让她知道（太久就不提了，她已经把那句收掉）。
     hungLine = hungFactLine(now());
     // 他在回忆就先去翻旧账（不是回忆就清空，免得把上一轮的原话带进这一轮）。
@@ -2206,10 +2494,44 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     // 他明确要一段长的：「讲讲这个」不该被「默认一句 1~10 字」拆到只剩两句。
     const long = situationsFor(msg.text, { at: now() }).includes('long');
     const plan = replyPlan(companion.snapshot(), { baseDelayMs: config.session?.replyDelayMs ?? 800, room: long ? 2 : 0 });
-    // 她可能留了 [表情:xx]：标记不能发给他，拆句之前就得剔掉。
+    // 她可能留了 [表情:xx] / [不回] / [晚点回:20]：标记不能发给他，拆句之前就得剔掉。
     const act = parseActions(r.reply);
+    const hisClip = String(msg.text || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+
+    // 她选了「不回」：这一轮什么都不发。这是她的决定，不是故障——留一条痕（面板可见），
+    // 但不进历史：她确实没说过那句话。只在真的没写别的字时才算数，写了字以字为准。
+    const silentChoice = act.silent === true && !act.text && !act.stickers.length;
+    if (silentChoice && intentsOn()) {
+      const l = makeLoop({
+        kind: 'reply', about: 'him', text: hisClip,
+        source: `his:${Number(batch.last?.at) || now()}`, weight: 0.4, now: now(),
+      });
+      if (l) {
+        intentStore.save(markDropped(addLoop(intentStore.load(), l), l.id, now()));
+        log.info?.(`她这次选择不回（「${hisClip.slice(0, 20)}」）`);
+      }
+      pokeStore.save(noteSaidByUser(pokeStore.load()));
+      pendingQuestions = leftoverQuestions(asked);
+      recallLines = ''; hungLine = ''; pendingImages.length = 0;
+      return { ...r, sent: 0, plan, silent: true, merged: batch.texts.length };
+    }
+
+    // 「晚点回」：不是吞掉，是记成一条未完成的回话，到点由主动通道提醒她。
+    if (act.deferMinutes && intentsOn()) {
+      const t0 = now();
+      const l = makeLoop({
+        kind: 'reply', about: 'him', text: hisClip,
+        source: `his:${Number(batch.last?.at) || t0}`, weight: 0.55, now: t0,
+        dueAt: t0 + act.deferMinutes * 60e3, expiresAt: t0 + REPLY_TTL_MS,
+      });
+      if (l) {
+        intentStore.save(addLoop(intentStore.load(), l));
+        log.info?.(`她说晚点回（${act.deferMinutes} 分钟后）：记一条账`);
+      }
+    }
+
     // 归档放在这里，不放 session 里：`[查:…]` 触发重答时，第一版草稿从没发出去过。
-    if (config.transcript?.enabled !== false) appendTranscript(dataDir, { at: now(), role: 'assistant', text: act.text });
+    if (act.text && config.transcript?.enabled !== false) appendTranscript(dataDir, { at: now(), role: 'assistant', text: act.text });
     // 拆条只决定「分几条发」，不决定「丢不丢」：她写下来的每一句都要发出去。
     // 以前这里按心情 slice 掉超出的句子——心情一般时最多 2 条，第 3 句就这么没了，
     // 表现就是「话题快的时候有时候一句话发不出来」。
@@ -2226,6 +2548,32 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     }
     // 表情另起一条：OneBot 的 image 段不能和文字合并成一个气泡。
     const sticker = act.stickers.length ? await sendSticker(msg, act.stickers[0]) : null;
+
+    // 她说的话要落回状态（2026-11-25）：去睡了就真的去睡；答应过的事有账；
+    // 说出口的「没说完的事」要销账——说过一次就不再提。
+    if (act.text) {
+      const t1 = now();
+      if (rhythmOn()) {
+        const claim = parseRhythmClaim(act.text);
+        const applied = claim ? applyClaim(rhythmStore.load(), claim, t1, rhythmCfg()) : null;
+        if (applied) {
+          rhythmStore.save(applied);
+          log.info?.(`她说要去${claim.state === 'asleep' ? '睡' : '忙'}：${claim.state} 状态已记下`);
+        }
+      }
+      if (intentsOn()) {
+        const promise = parsePromise(act.text, t1);
+        if (promise) {
+          const l = promiseLoop(promise, { now: t1 });
+          if (l) {
+            intentStore.save(addLoop(intentStore.load(), l));
+            log.info?.(`她答应了一件事：${promise.claim}`);
+          }
+        }
+        const sp = detectSpoken(intentStore.load(), act.text, t1);
+        if (sp.spoken.length) intentStore.save(sp.state);
+      }
+    }
     pendingQuestions = leftoverQuestions(asked);
     const turnEnd = now();
     recallLines = ''; // 原话只活这一轮：下一轮要么重新翻，要么没有
@@ -2483,6 +2831,11 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     if (lastTickAt && t - lastTickAt > 20 * 60e3) frozen = { awakeAt: t, lastBefore: lastTickAt };
     lastTickAt = t;
     try { aliveStore.save({ at: t }); } catch (e) { log.warn?.(`记活着的时刻失败：${e.message}`); }
+    // 她心里还没完成的事：清过期、认没做到的账、核销做完的、派生跨天目标、到点自己醒。
+    // 纯计算不调模型，所以放在最前面，别的任务读到的是更新过的账。
+    enqueue(refreshIntents).catch((e) => log.warn?.(`意图维护出错：${e.message}`));
+    // 每天一次「今天想干点什么」（默认关；开了才多这一次小调用）。
+    enqueue(refreshDailyPlan).catch((e) => log.warn?.(`定今天的计划出错：${e.message}`));
     // 她自己的时间：到点就重新决定在干什么，跟她要不要主动搭话无关。
     enqueue(refreshLife).catch((e) => log.warn?.(`她的当下出错：${e.message}`));
     enqueue(refreshDiary).catch((e) => log.warn?.(`日记没写成：${e.message}`));
@@ -2584,6 +2937,18 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         perception: statsOf(perceptionStore.load()),
         novel: novelStore.load(),
         game: gameStore.load(),
+        // 她心里还没完成的事 + 她此刻在不在（睡/忙）+ 六股劲儿里最冲的。
+        intents: intentStore.load(),
+        rhythm: rhythmStore.load(),
+        drives: (() => {
+          const hist = session.snapshot().history;
+          const lastUserAt = [...hist].reverse().find((m) => m.role === 'user')?.at || 0;
+          return computeDrives({
+            now: now(), lastUserAt, loops: intentStore.load().loops,
+            novel: novelStore.load(), game: gameStore.load(), facts: factsStore.load(),
+            relation: st.relation, emotion: st.emotion,
+          });
+        })(),
         behavior: weekStats(readBehavior(dataDir, { from: now() - WEEK_MS, to: now() })),
         session: {
           size: session.size,
@@ -2694,6 +3059,9 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         behavior: snap.behavior,
         novel: snap.novel,
         game: snap.game,
+        intents: snap.intents,
+        rhythm: snap.rhythm,
+        drives: snap.drives,
         screen: screenStore.load(),
         stickers: (() => {
           const cur = stickerStore.load();
@@ -2775,7 +3143,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     log.info?.(`qq-companion：面板 ${panelUrl}`);
   } catch { /* 诊断日志失败不影响启动 */ }
 
-  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, impulse: { state: () => impulseStore.load(), refresh: () => enqueue(refreshImpulse) }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, perception: { cleanup: () => enqueue(refreshPerception), stats: () => statsOf(perceptionStore.load()) }, novel: { state: () => novelStore.load(), read: () => readNovelIfBored(), think: () => thinkIfBored(), line: () => novelLine(novelStore.load(), now()), mind: () => mindLine(novelStore.load(), now()), look: (spec) => lookBookSpec(spec) }, game: { state: () => gameStore.load(), play: () => playGameIfBored(), line: () => gameLine(gameStore.load(), now()) }, pastime: () => pastimeIfBored(), intent: () => decideIntent(), get config() { return config; }, dataDir };
+  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, impulse: { state: () => impulseStore.load(), refresh: () => enqueue(refreshImpulse) }, intents: { state: () => intentStore.load(), refresh: () => enqueue(refreshIntents), line: () => renderIntentBlock(intentStore.load(), now()), promises: () => renderPromiseBlock(intentStore.load(), now()) }, rhythm: { state: () => rhythmStore.load(), line: () => rhythmLine(rhythmStore.load(), now()) }, dailyPlan: { refresh: () => enqueue(refreshDailyPlan) }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, perception: { cleanup: () => enqueue(refreshPerception), stats: () => statsOf(perceptionStore.load()) }, novel: { state: () => novelStore.load(), read: () => readNovelIfBored(), think: () => thinkIfBored(), line: () => novelLine(novelStore.load(), now()), mind: () => mindLine(novelStore.load(), now()), look: (spec) => lookBookSpec(spec) }, game: { state: () => gameStore.load(), play: () => playGameIfBored(), line: () => gameLine(gameStore.load(), now()) }, pastime: () => pastimeIfBored(), intent: () => decideIntent(), get config() { return config; }, dataDir };
 }
 
 function loadConfig(file, log) {
@@ -2794,7 +3162,7 @@ function loadConfig(file, log) {
 /** 嵌套对象按层合并：用户只写 ownerQQ 时，onebot 的默认地址不能被整块抹掉。 */
 export function mergeConfig(base, patch) {
   const out = { ...base, ...(patch || {}) };
-  for (const key of ['onebot', 'model', 'session', 'memory', 'proactive', 'urgent', 'pokeReply', 'impulse', 'budget', 'weather', 'search', 'video', 'transcript', 'screen', 'novel', 'game']) {
+  for (const key of ['onebot', 'model', 'session', 'memory', 'proactive', 'urgent', 'pokeReply', 'impulse', 'intents', 'rhythm', 'budget', 'weather', 'search', 'video', 'transcript', 'screen', 'novel', 'game']) {
     if (patch?.[key] && typeof patch[key] === 'object') out[key] = { ...(base?.[key] || {}), ...patch[key] };
   }
   return out;
