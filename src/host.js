@@ -1941,10 +1941,12 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       }
       const mime = sniffed;
       // 动图：抽几帧一起看，否则模型只拿到第一帧（真机上「疯狂点头」会变成一张静止的脸）。
-      // 十几兆的大动图只抽两帧：再多也只是多花内存，认得出是什么就够了。
-      const anim = await extractGifFrames(bytes, { max: bytes.length > MAX_IMAGE_BYTES ? 2 : 4 }).catch(() => null);
+      // 十来兆的大动图抽四帧：再多也只是多花内存，认得出是什么就够了；普通表情包抽八帧，
+      // 四帧会漏掉动作的中间态（抖一下、转个身这种，只看首尾像没在动）。
+      const anim = await extractGifFrames(bytes, { max: bytes.length > MAX_IMAGE_BYTES ? 4 : 8 }).catch(() => null);
       if (anim?.frames?.length > 1) {
-        const r = await describeImage({ dataUrls: anim.frames, prompt: `${ANIMATION_PROMPT}\n${PERCEPTION_PROMPT}`, key, fetchImpl, timeoutMs: 45000 });
+        // 帧多了要更多预算：一帧一帧看动作，思考会吃得更多（少了就是「帧收到了、描述是空的」）。
+        const r = await describeImage({ dataUrls: anim.frames, prompt: `${ANIMATION_PROMPT}\n${PERCEPTION_PROMPT}`, key, fetchImpl, timeoutMs: 60000, maxTokens: 4000 });
         const pic = parsePerception(r.ok ? r.text : '');
         seen.push({ ...r, text: r.ok ? pic.desc : '', frames: anim.frames.length, pages: anim.pages, bytes: bytes.length, mime });
         if (r.ok) pendingPerceptions.push({ ...pic, bytes, mime, frames: Number(anim.pages) || anim.frames.length, at: now() });

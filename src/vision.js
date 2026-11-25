@@ -75,8 +75,11 @@ export function dataUrlOf(bytes, mime = 'image/jpeg') {
 
 /**
  * 让模型描述一张图。失败一律返回 {ok:false}，绝不抛——看图失败不该让她哑掉。
+ *
+ * 2026-11-25：默认预算 2000 → 3000。动图从 4 帧加到 8 帧之后，一帧一帧看动作更吃思考，
+ * 帧数上去、预算不上去，结果就是「帧都发过去了，描述是空的」。
  */
-export async function describeImage({ dataUrl, dataUrls, key, prompt = '', fetchImpl = globalThis.fetch, model = VISION_MODEL, baseUrl = VISION_BASE, timeoutMs = 30000, maxTokens = 2000 } = {}) {
+export async function describeImage({ dataUrl, dataUrls, key, prompt = '', fetchImpl = globalThis.fetch, model = VISION_MODEL, baseUrl = VISION_BASE, timeoutMs = 30000, maxTokens = 3000 } = {}) {
   const list = (Array.isArray(dataUrls) && dataUrls.length ? dataUrls : [dataUrl]).filter(Boolean);
   if (!list.length) return { ok: false, reason: '没有图' };
   if (!key) return { ok: false, reason: '没有可用的 key' };
@@ -175,7 +178,7 @@ export async function shrinkImage(bytes, { max = 1024, sharpImpl = null, quality
 }
 
 /** 从 pages 帧里挑几张：均匀采样，首尾都取到。 */
-export function pickFrameIndexes(pages, max = 4) {
+export function pickFrameIndexes(pages, max = 8) {
   const n = Math.floor(Number(pages) || 0);
   if (n <= 0 || max <= 0) return [];
   if (n <= max) return Array.from({ length: n }, (_, i) => i);
@@ -191,8 +194,11 @@ export function pickFrameIndexes(pages, max = 4) {
  * 一定要缩、一定要转 JPEG：真机上收过一个 300×11700 的表情包，四帧 PNG 合计 3.4 MB，
  * base64 之后请求体 4.5 MB，接口直接 400——她只能说「还是看不到」。
  * 表情包是给人瞥一眼的，320px 的 JPEG 足够看清在干嘛。
+ *
+ * 2026-11-25：默认 4 帧 → 8 帧。4 帧平均采样会漏掉动作的中间态（一个抖肩/转头的表情包
+ * 只看首尾两帧像是没在动）；8 帧 × 320px JPEG 一共也就一两百 KB，接口收得下。
  */
-export async function extractGifFrames(bytes, { max = 4, sharpImpl = null, size = 320, budgetBytes = 1_200_000 } = {}) {
+export async function extractGifFrames(bytes, { max = 8, sharpImpl = null, size = 320, budgetBytes = 1_200_000 } = {}) {
   let sharp = sharpImpl;
   if (!sharp) {
     try { sharp = (await import('sharp')).default; } catch { return null; }

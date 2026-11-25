@@ -115,6 +115,20 @@ test('动图抽帧：单帧图不当动图处理', async () => {
   assert.equal(await extractGifFrames(Buffer.from('x'), { sharpImpl: fake }), null);
 });
 
+test('动图抽帧：默认八帧——四帧会漏掉动作中间态', async () => {
+  const { extractGifFrames, pickFrameIndexes } = await import('../src/vision.js');
+  const out = Buffer.from([0xff, 0xd8, 0xff]);
+  const chain = { resize: () => chain, jpeg: () => chain, toBuffer: async () => out };
+  const fake = () => ({ metadata: async () => ({ pages: 20 }), ...chain });
+  const r = await extractGifFrames(Buffer.from('x'), { sharpImpl: fake });
+  assert.equal(r.pages, 20);
+  assert.equal(r.frames.length, 8, '20 帧的动图取 8 帧，不是 4 帧');
+  assert.deepEqual(pickFrameIndexes(20, 8), [0, 3, 5, 8, 11, 14, 16, 19], '均匀采样，首尾都取到');
+  // 十来兆的大动图降到四帧：多抽只是多花内存，认得出是什么就够了。
+  const big = await extractGifFrames(Buffer.from('x'), { sharpImpl: fake, max: 4 });
+  assert.equal(big.frames.length, 4);
+});
+
 test('动图抽帧：多帧时每帧缩成 jpeg，且取单帧必须带 pages:1', async () => {
   const { extractGifFrames } = await import('../src/vision.js');
   const seen = [];
@@ -145,7 +159,18 @@ test('看图预算被思考吃掉：finish_reason=length 就加预算重试，�
   const r = await describeImage({ dataUrl: 'data:x', key: 'k', fetchImpl: lengthThenOk });
   assert.equal(r.ok, true);
   assert.match(r.text, /粉发女孩/);
-  assert.deepEqual(calls, [2000, 4000], '重试要给更大的预算');
+  assert.deepEqual(calls, [3000, 6000], '重试要给更大的预算');
+
+  // 动图（帧多、思考更重）可以单独给更大的一档：4000 → 8000。
+  const animCalls = [];
+  const animLengthThenOk = async (url, opts) => {
+    animCalls.push(JSON.parse(opts.body).max_tokens);
+    if (animCalls.length === 1) return { ok: true, json: async () => ({ choices: [{ finish_reason: 'length', message: { content: '' } }] }) };
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: '八帧里她在跺脚' } }] }) };
+  };
+  const a = await describeImage({ dataUrls: ['data:1', 'data:2'], key: 'k', fetchImpl: animLengthThenOk, maxTokens: 4000 });
+  assert.match(a.text, /跺脚/);
+  assert.deepEqual(animCalls, [4000, 8000], '动图给到 4000，不够再翻倍');
 
   // 真空回复（finish_reason=stop）：不重试，直接报没描述
   const emptyCalls = [];
