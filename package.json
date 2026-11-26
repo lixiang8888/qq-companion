@@ -11,6 +11,7 @@
   },
   "files": [
     "src",
+    "assets",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",

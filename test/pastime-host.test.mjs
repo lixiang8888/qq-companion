@@ -23,7 +23,7 @@ function fakeCtx() {
         let text = '嗯';
         if (/这一回合做什么/.test(all)) text = '[种:向日葵 1,1]';
         else if (/你刚自己看完一章/.test(all)) text = '看到「刺进」那段有点闷。[读:闷 2 继续]';
-        else if (/你刚自己打完一局/.test(all)) text = '「第 1 关」就这。[玩:无感 1]';
+        else if (/【这一局】/.test(all)) text = '「得分 10」就这。[玩:无感 1]';
         else if (/这是你自己在想/.test(all)) text = '{"send":true,"message":"喂"}';
         yield { type: 'text-delta', index: 0, text };
         yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0 } };
@@ -65,17 +65,31 @@ function setup({ seedNovel = null, novelDown = false, config = {} } = {}) {
   };
   let clock = T;
   const ctx = fakeCtx();
-  const calls = { open: 0, close: 0, planted: [] };
-  const pvzFactory = () => ({
+  const calls = { open: 0, close: 0, planted: [], reads: 0 };
+  const browser = {
     async open() { calls.open += 1; },
     async close() { calls.close += 1; },
-    async paused() {},
-    async collect() {},
-    async plant(t, r, c) { calls.planted.push([t, r, c]); return 'ok'; },
-    async setWaves() { return 'ok'; },
-    async snapshot() { return { ready: true, sun: 200, wave: 1, maxWaves: 2, score: 0, defeated: 0, plants: [], zombies: [] }; },
+    async evaluate() { return 'ok'; },
+  };
+  const fakeDriver = {
+    create: () => ({
+      id: 'fake', title: '假游戏', stepMs: 1, maxDecisions: 5, maxMinutes: 5,
+      async prepare() {},
+      async read() { calls.reads += 1; return { victory: calls.reads >= 2 }; },
+      board() { return '假棋盘'; },
+      prompt() { return { instructions: '假规则', user: '这一回合做什么？', maxTokens: 10 }; },
+      parse() { return { kind: 'move' }; },
+      async apply() { calls.planted.push(1); return { ok: true }; },
+      done(s) { return { over: Boolean(s?.victory), victory: Boolean(s?.victory) }; },
+      finish() { return { facts: '假游戏：赢了，得分 10', victory: true, progress: { plays: 1 } }; },
+    }),
+  };
+  const host = createHost(ctx, {
+    dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, fetchImpl,
+    browserFactory: () => browser,
+    gameCatalog: [{ id: 'fake', title: '假游戏', kind: 'structured', entry: 'fake/index.html', ready: '' }],
+    drivers: { fake: fakeDriver },
   });
-  const host = createHost(ctx, { dataDir, now: () => clock, log: quiet, autoStart: false, sleep: async () => {}, pvzFactory, fetchImpl });
   return { dataDir, host, calls, tick: (ms) => { clock += ms; } };
 }
 

@@ -1,8 +1,8 @@
-// 她的小游戏：只测纯逻辑（浏览器那层在 tests 外面，用 .tmp 的冒烟脚本验）。
+// 她的小游戏：《植物大战僵尸》的纯逻辑（浏览器那层用 .tmp 的冒烟脚本验）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  GAME_TTL, LEVELS, MAX_LEVEL, PLANTS, bestOf, currentLevel, gameEmotion, gameLine, gameTurnPrompt,
+  LEVELS, MAX_LEVEL, PLANTS, bestOf, currentLevel, gameEmotion, gameTurnPrompt,
   lawnText, levelInfo, moveAllowed, noteGame, parseGameReaction, parseMove, plantIn, resultText,
   shouldPlay, unlockedPlants, waveInfo,
 } from '../src/game.js';
@@ -144,29 +144,6 @@ test('通关算更好的成绩：同样波数，赢了优先', () => {
   st = noteGame(st, { now: NOW + H, day: 'd', snap: { wave: 2, maxWaves: 2, victory: true, score: 10 } });
   assert.equal(bestOf(st, 1).victory, true);
   assert.equal(bestOf(st, 1).score, 10);
-});
-
-test('她能说出口的那一行：第几关、波数、原话、过了哪几关；过了 48 小时就闭嘴', () => {
-  let st = noteGame({}, {
-    now: NOW, day: '2026-11-22',
-    snap: { wave: 2, maxWaves: 2, victory: true, score: 800, defeated: 7 },
-    minutes: 3,
-    reaction: { thought: '这只复刻的向日葵居然也射击', label: '尬', intensity: 1, anchor: '第 1 关（2 波）', anchored: true },
-  });
-  st = noteGame(st, {
-    now: NOW + H, day: '2026-11-22',
-    snap: { wave: 4, maxWaves: 4, victory: true },
-    reaction: { thought: '这次守住了', label: '爽', intensity: 2, anchor: '第 2 关（4 波）', anchored: true },
-  });
-  const line = gameLine(st, NOW + 2 * H);
-  assert.match(line.text, /植物大战僵尸/);
-  assert.match(line.text, /第 2 关（4 波）/);
-  assert.match(line.text, /过了/);
-  assert.match(line.text, /这次守住了/);
-  assert.match(line.text, /已经过了第 1、2 关/);
-  assert.equal(line.ttl, GAME_TTL);
-  assert.equal(gameLine(st, NOW + H + GAME_TTL + 1).text, '', '过期了就不许再说「最近在打」');
-  assert.equal(gameLine({}, NOW).text, '');
 });
 
 test('闸门：他安静够久、今天没玩过、心情还行才开一局', () => {

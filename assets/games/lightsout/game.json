@@ -1,0 +1,14 @@
+{
+  "id": "lightsout",
+  "title": "点灯",
+  "kind": "vision",
+  "entry": "lightsout/index.html",
+  "ready": "typeof window.WG !== 'undefined'",
+  "start": "document.getElementById('btn-start').click()",
+  "done": "!document.getElementById('over-overlay').classList.contains('hidden')",
+  "read": "JSON.stringify({ moves: (() => { const n = Number(String(document.getElementById('hud-moves')?.textContent || '').replace(/\\D/g, '')); return Number.isFinite(n) ? n : 0; })() })",
+  "summary": "点一盏灯，它自己和上下左右都会亮灭翻转；把所有灯弄灭就赢。",
+  "controls": "点格子",
+  "license": "MIT",
+  "source": "https://github.com/mashukui/web-games"
+}

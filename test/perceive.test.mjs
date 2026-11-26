@@ -112,6 +112,18 @@ test('图：同一张只说一次，隔了一天就不算「刚才」', () => {
   assert.deepEqual(perceive({ now: NOON, lastPictureAt: NOON - PICTURE_MS - HOUR }).events, []);
 });
 
+test('游戏：她刚玩完一局就报一次，换成真材料（哪款、发生了什么）', () => {
+  const game = { last: { at: NOON - 5 * 60e3, game: 'g2048', title: '2048', facts: '推了 40 手，最后 512 分', label: '爽' } };
+  const r = perceive({ now: NOON, game });
+  assert.deepEqual(kinds(r), ['game']);
+  assert.match(r.events[0].text, /2048/);
+  assert.match(r.events[0].text, /512 分/);
+  assert.match(r.events[0].text, /爽/);
+  assert.deepEqual(perceive({ now: NOON, game, seen: r.seen }).events, []);
+  // 没有真材料（facts）的旧记录不硬报——宁可不说。
+  assert.deepEqual(kinds(perceive({ now: NOON, game: { last: { at: NOON - 60e3, title: '2048' } } })), []);
+});
+
 test('事件堆起来也不超过上限：context 里堆九条她会答非所问', () => {
   const t = at(8); // 早上：连天气都算一条，八种全中
   const r = perceive({

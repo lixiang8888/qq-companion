@@ -20,14 +20,39 @@
 
 `node_modules/` 不进仓库，换机器要重新 `npm install`。
 
-### Plants vs Zombies 复刻版（2026-11-22，她自己的小游戏）
+### 她自己的小游戏（2026-11-22 起；2026-11-26 改成游戏包）
+
+游戏全部是**原样放进 `assets/games/` 的单页/静态资源**，由宿主用无头浏览器打开；不装 exe、不联网、不执行
+本机其它程序。她玩哪一款由游戏目录（每包一份 `game.json`）决定。
+
+#### Plants vs Zombies 复刻版
 
 - 项目：plantsvszombiesjs/plantsvszombiesjs.github.io（https://github.com/plantsvszombiesjs/plantsvszombiesjs.github.io）
-- 许可：MIT，© 2025 Valentyn Kolesnikov；原文随文件放在 ssets/pvz/LICENSE
-- 用法：**整份单文件页面原样放进来**（ssets/pvz/index.html，81 KB，无依赖），由宿主用无头浏览器打开，
-  她那几手指令是通过页面自己暴露的 gameState / selectPlant / placePlant 执行的。没有改动其代码。
+- 许可：MIT，© 2025 Valentyn Kolesnikov；原文随文件放在 `assets/games/pvz/LICENSE`
+- 用法：**整份单文件页面原样放进来**（`assets/games/pvz/index.html`，81 KB，无依赖），她那几手指令是通过页面自己
+  暴露的 gameState / selectPlant / placePlant 执行的。没有改动其代码。
 - 没有采用 EA 原版《植物大战僵尸》的任何东西（素材、音乐、关卡数据都没有）；
   这个复刻的数值和美术是它自己的，跟原版不一样，别混着说。
+
+#### 2048
+
+- 项目：gabrielecirulli/2048（https://github.com/gabrielecirulli/2048），提交 `478b6ec346e3787f589e4af751378d06ded4cbbc`
+- 许可：MIT，© 2014 Gabriele Cirulli；原文在 `assets/games/g2048/LICENSE.txt`
+- 用法：**页面代码原样**放进 `assets/games/g2048/`（index.html + js/ + style/ 的 css/woff 字体）。
+  没改它的逻辑；她的操作走真键盘事件，状态读的是它自己写进 localStorage 的存档。
+  为了放进仓库，只去掉了 meta/ 图标与 eot/svg 等旧格式字体（页面照常跑）。
+
+#### 推箱子 / 点灯（mashukui/web-games）
+
+- 项目：mashukui/web-games（https://github.com/mashukui/web-games），提交 `2770860c6e2b3ab8144a56462d8178fe7e3445c7`
+- 许可：MIT，© mashukui；原文在 `assets/games/LICENSE-mashukui-web-games.txt`
+- 用法：从这套 48 款单文件游戏里挑了 **Sokoban（推箱子）** 和 **Lights Out（点灯）** 两个页面原样放进
+  `assets/games/sokoban/`、`assets/games/lightsout/`；共享脚本 `assets/games/i18n.js` 也原样放进来了。
+- **改了一处**：`i18n.js` 里上游的 GoatCounter 统计地址被置空（`GC_SITE = ''`），不向作者的统计端点发任何请求；
+  其它逻辑没动。页面显示中文靠它自带的翻译表。
+- 推箱子的操作走真方向键；它自带的只读探针 `window.__st()` 用来读关卡/步数/箱子计数，棋盘按 DOM 还原成字符画。
+  点灯没有结构化接口，走看屏兜底（截图 → 看图模型给一步 → 真鼠标点）。
+
 ## 只调用接口、未复制代码的
 
 | 项目 | 许可 | 关系 |

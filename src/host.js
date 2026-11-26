@@ -62,8 +62,14 @@ import { SCREEN_TTL, readScreen, sanitize, screenLine } from './screen.js';
 import { canSearch, factLine, latestFact, materialLines, noteSearch, search } from './search.js';
 import { parseActions } from './actions.js';
 import { MAX_NAME, NAME_PROMPT, mergeFavorites, namesLine, needNames, parseFavorites, pickSticker } from './stickers.js';
-import { MAX_LEVEL, PLANTS, currentLevel, gameEmotion, gameEvents, gameLine, gameTurnPrompt, lawnText, levelInfo, moveAllowed, noteGame, parseGameReaction, parseMove, resultText, shouldPlay, unlockedPlants } from './game.js';
-import { createPvz, findBrowser } from './pvz.js';
+import { gameEmotion, parseGameReaction, shouldPlay } from './game.js';
+import { createBrowser, findBrowser } from './games/browser.js';
+import { readCatalog } from './games/catalog.js';
+import { DRIVERS } from './games/drivers.js';
+import { pickGame } from './games/pick.js';
+import { gameLine as gameRecordLine, migrateRecords, noteSession } from './games/records.js';
+import { runStructuredSession } from './games/turnbased.js';
+import { VISION_DEFAULTS, runVisionSession } from './games/vision.js';
 import { choosePastime } from './pastime.js';
 
 export const name = 'qq-companion';
@@ -188,10 +194,10 @@ const DEFAULT_CONFIG = {
   // 她读书的后端（安卓模拟器里的 Legado）。base 留空用 novel.js 的默认地址；
   // launcher 留空 = 后端挂了只记一条日志，不去拉（不想让插件自己开模拟器的人就这么配）。
   novel: { base: '', launcher: '', cooldownMinutes: 30 },
-  // 她自己的小游戏：真游戏在无头浏览器里跑（assets/pvz/），她只做决定。
+  // 她自己的小游戏：每款游戏是一个包（assets/games/），无头浏览器里真跑。
   // enabled 默认关：要开浏览器、要花调用，也给不想让她玩的人一个开关。
-  // stepMs 是「每个决定之间让游戏跑多久」：真游戏一波 30 秒，8 秒算正好四手一波、20 波约 75 手。
-  game: { enabled: false, edgePath: '', stepMs: 8000, maxDecisions: 160, maxMinutes: 30, maxPerDay: 1 },
+  // stepMs 是 PvZ 的「每个决定之间让游戏跑多久」；别的游戏用自己的节奏（见 src/games/）。
+  game: { enabled: false, edgePath: '', stepMs: 8000, maxDecisions: 160, maxMinutes: 30, maxPerDay: 1, vision: { ...VISION_DEFAULTS } },
   // 聊天原文归档（按月一个 jsonl）：压缩之后能翻回原话的唯一地方。
   transcript: { enabled: true },
 };
@@ -212,7 +218,7 @@ export function apply(ctx, config = {}) {
   }
 }
 
-export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, log = console, autoStart = true, fetchImpl = globalThis.fetch, spawnImpl = spawn, mergeWindowMs = DEFAULT_WINDOW_MS, later = (fn, ms) => setTimeout(fn, ms), clear = (h) => clearTimeout(h), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), screenReader = readScreen, maxPerceptionRecords = MAX_RECORDS, pvzFactory = createPvz } = {}) {
+export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, log = console, autoStart = true, fetchImpl = globalThis.fetch, spawnImpl = spawn, mergeWindowMs = DEFAULT_WINDOW_MS, later = (fn, ms) => setTimeout(fn, ms), clear = (h) => clearTimeout(h), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), screenReader = readScreen, maxPerceptionRecords = MAX_RECORDS, browserFactory = createBrowser, gameCatalog = null, drivers = DRIVERS, assetsDir = join(HERE, '..', 'assets', 'games') } = {}) {
   if (!ctx || typeof ctx !== 'object') throw new Error('缺少 DSH 上下文（apply(ctx) 没拿到 ctx）');
   mkdirSync(dataDir, { recursive: true });
   const configFile = join(dataDir, 'config.json');
@@ -239,8 +245,10 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
   const rhythmStore = createJsonStore(join(dataDir, 'rhythm.json'), { defaults: () => createRhythm(), log: (m) => log.warn?.(m) });
   // 她自己在看什么书：读到第几章、上一章的感想。正文不落盘——一章两千多字，读完就够。
   const novelStore = createJsonStore(join(dataDir, 'novel.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
-  // 她的游戏战绩：上一局打到哪、最好成绩、最近 5 局和她自己的原话。
+  // 她的游戏战绩：最近玩了哪一款、每款各自的进度。旧形状在读取时迁移。
   const gameStore = createJsonStore(join(dataDir, 'game.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
+  const readGameState = () => migrateRecords(gameStore.load());
+  const saveGameState = (next) => { gameStore.save(next); return next; };
   // 她「上次醒着」的时间戳：一路写下去，下次开机才知道中间空了多久。
   const aliveStore = createJsonStore(join(dataDir, 'alive.json'), { defaults: () => ({}), log: (m) => log.warn?.(m) });
   // 空间：上次发了什么、为什么发、评论看到哪儿了。
@@ -891,7 +899,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       // 读起来像日志不像人。每条自带自己的有效期，过期就别提（「最近在看」过期就是谎话）。
       blk('novel', mind.text, mind.at, mind.ttl),
       // 她自己的游戏：上一局打到哪、最好成绩。跟书一样有自己的有效期，过期就不许说「最近在打」。
-      (() => { const g = gameLine(gameStore.load(), t); return blk('game', g.text, g.at, g.ttl); })(),
+      (() => { const g = gameRecordLine(readGameState(), t); return blk('game', g.text, g.at, g.ttl); })(),
     ], { now: t });
   }
 
@@ -1042,11 +1050,11 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       }
     }
     // 真做完的事：do 类按真事件核销（读到书 / 打过游戏）。
-    const done = detectDone(st, { now: t, novel: novelStore.load(), game: gameStore.load() });
+    const done = detectDone(st, { now: t, novel: novelStore.load(), game: readGameState() });
     st = done.state;
     // 跨天目标：一天最多派生一个，只从真进度里算（读到哪、过了哪关）。
     if (intentsOn() && st.goalDay !== dayKeyOf(t)) {
-      const goal = deriveGoal(st, { now: t, novel: novelStore.load(), game: gameStore.load() });
+      const goal = deriveGoal(st, { now: t, novel: novelStore.load(), game: readGameState() });
       if (goal) log.info?.(`她给自己定了个目标：${goal.text}`);
       st = (goal ? addLoop(st, goal) : st);
       st = { ...st, goalDay: dayKeyOf(t) };
@@ -1396,94 +1404,125 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     return lookBookSpec(books[0]);
   }
 
-  // ---- 她自己的小游戏：《植物大战僵尸》 ----
+  // ---- 她自己的游戏：游戏平台 ----
   //
-  // 真游戏在无头浏览器里跑（src/pvz.js + assets/pvz/），她只做两种决定：种什么、种哪。
-  // 局中每一手都是一次单独的调用，不进聊天历史；局后写一句感想（锚点必须是这局真实发生的事），
-  // 战绩进 game.json，强感触进记忆卡。这样她说「我打到第 12 波」是真的，下次也真的记得。
+  // 每款游戏是一个「游戏包」（assets/games/<id>/game.json + 页面），一局怎么跑写在
+  // src/games/<id>.js 里；这里只做四件事：她自己挑玩哪款、起无头浏览器、局后写感想、
+  // 把真战绩记进 game.json。她说「我打到第 12 波」是真的，因为材料来自这一局真实状态。
   let playingGame = false;
 
   const gameEnabled = () => config.game?.enabled === true;
 
-  /** 问她这一手。系统提示只给规则、价格和这一关能用的植物，不替她想怎么打。 */
-  async function gameTurn(snap, minutesLeft, state) {
-    const text = await complete({
-      system: `${personaCore()}\n\n${gameTurnPrompt({ state, minutesLeft })}`,
-      messages: [{ role: 'user', text: `${lawnText(snap)}\n\n这一回合做什么？（大概还剩 ${Math.max(0, Math.round(minutesLeft))} 分钟）` }],
-      // 300 实测会被推理模型的思考吃掉（真跑里两回合返回了空和半句「[种:」）：
-      // 一手就二十来个字，但预算得给够——800 偶尔还会被截断，给到 1500。
-      maxTokens: 1500,
-    });
-    return String(text || '').trim();
+  // 她这一轮能玩的游戏。目录在 createHost 时扫一次（重启/改配置才变）。
+  const games = Array.isArray(gameCatalog) ? gameCatalog : readCatalog({ root: assetsDir, drivers, log });
+
+  /** 她现在能不能看屏：跟收图看视频同一条凭据。拿不到就只玩结构化游戏。 */
+  async function visionKey() {
+    try {
+      const credentials = typeof ctx.get === 'function' ? ctx.get('credentials') : undefined;
+      if (!credentials?.resolve) return '';
+      const got = await credentials.resolve('DEEPSEEK_API_KEY').catch(() => null);
+      const key = typeof got === 'string' ? got : got?.value;
+      return String(key || '');
+    } catch { return ''; }
   }
 
-  /** 跑一局：打当前这一关。浏览器一定会被关掉；她中途想不出来就按当前战况把这局记下来。 */
-  async function runGame(t0) {
-    const cfg = config.game || {};
-    const stepMs = Math.max(1000, Number(cfg.stepMs) || 8000);
-    const maxDecisions = Math.max(10, Number(cfg.maxDecisions) || 160);
-    const maxMinutes = Math.max(2, Number(cfg.maxMinutes) || 30);
-    const bin = String(cfg.edgePath || '') || findBrowser();
-    const browser = pvzFactory({ edge: bin, log, now, sleep });
-    const deadline = t0 + maxMinutes * 60e3;
-    const before = gameStore.load();
-    const lv = levelInfo(currentLevel(before));
-    let snap = null;
-    let decisions = 0;
-    let lockedNote = '';
-    try {
-      await browser.open();
-      // 波数是交给游戏自己的：引擎在第 N 波结束后判胜利，不是我们这边替她算过关。
-      await browser.setWaves(lv.waves);
-      // 她想的这几秒不让她被啃：暂停 → 读战况 → 她决定 → 继续 → 种 → 跑一会 → 再暂停。
-      await browser.paused(true);
-      while (decisions < maxDecisions && now() < deadline) {
-        await browser.collect();
-        snap = await browser.snapshot();
-        if (!snap?.ready) throw new Error('游戏状态读不出来');
-        if (snap.over || snap.victory) break;
-        let reply = '';
-        try {
-          reply = await gameTurn(snap, (deadline - now()) / 60e3, before);
-          // 空回复也见过（推理模型把预算吃光）：再问一次，别白丢一回合。
-          if (!reply && decisions < maxDecisions - 1 && now() < deadline) {
-            reply = await gameTurn(snap, (deadline - now()) / 60e3, before);
-          }
-        } catch (e) {
-          log.warn?.(`打僵尸：这一手想不出来（${e.message}），按现在的战况收摊`);
-          break;
-        }
-        const move = parseMove(reply);
-        decisions += 1;
-        await browser.paused(false);
-        if (move?.kind === 'plant') {
-          if (!moveAllowed(before, move)) {
-            // 没解锁的植物不许种：她这一关只有那几样。下一手提示里会说明。
-            lockedNote = `「${PLANTS[move.plant]?.name || move.plant}」要后面几关才有，这一关你只能用 ${unlockedPlants(before).map((k) => PLANTS[k].name).join('、')}。`;
-            log.info?.(`那一手不算：${lockedNote}`);
-          } else {
-            const r = await browser.plant(move.plant, move.row, move.col);
-            if (r !== 'ok') log.info?.(`那一手没种上（${r}）：${move.plant} 第 ${move.row + 1} 行第 ${move.col + 1} 列`);
-          }
-        }
-        await sleep(stepMs);
-        await browser.paused(true);
-      }
-      snap = await browser.snapshot();
-    } finally {
-      await browser.close();
-    }
+  /** 局中问她「这一手」。规则由驱动给，人格语气由这里拼——不进聊天历史。 */
+  async function askGame({ instructions = '', user = '', maxTokens = 800 } = {}) {
+    return String(await complete({
+      system: `${personaCore()}\n\n${instructions}`.trim(),
+      messages: [{ role: 'user', text: String(user || '') }],
+      maxTokens,
+    }) || '');
+  }
 
-    const t = now();
-    const minutes = Math.max(0, (t - t0) / 60e3);
-    const material = resultText(snap, minutes, lv.n);
-    // 过了这关会解锁下一关的植物——这是真事，写进她的材料里，之后聊天她才能说。
-    const nextLv = lv.n < MAX_LEVEL ? levelInfo(lv.n + 1) : null;
-    const unlocked = nextLv ? nextLv.plants.filter((k) => !lv.plants.includes(k)).map((k) => PLANTS[k].name) : [];
-    const materialAll = snap.victory && nextLv && unlocked.length
-      ? `${material}，过了第 ${lv.n} 关，解锁了${unlocked.join('、')}`
-      : snap.victory ? `${material}，五关都过了` : material;
-    // 局后感想：跟读书同一套锚点规矩——引不出这局里真实发生的事，就不算情绪。
+  /** 从她账本里挑「这会儿想玩的」：有目标就玩那款，否则把能玩的摆出来让她自己挑。 */
+  async function chooseGame(t, state, hasVision) {
+    const candidates = games.filter((g) => g.kind !== 'vision' || hasVision);
+    if (!candidates.length) return null;
+    const prefer = openLoops(intentStore.load(), t)
+      .filter((l) => l.kind === 'do' && l.about === 'game' && l.target?.game)
+      .map((l) => String(l.target.game))[0] || '';
+    // 她自己定过「想玩某款」的目标：先做那件，不再重挑。
+    if (prefer) {
+      const hit = candidates.find((g) => g.id === prefer);
+      if (hit) return hit;
+    }
+    const fallback = pickGame(games, { library: state.library, hasVision });
+    if (candidates.length <= 1) return fallback;
+    const brief = candidates.map((g) => {
+      const lib = state.library?.[g.id] || {};
+      const bits = [];
+      if (Array.isArray(lib.cleared) && lib.cleared.length) bits.push(`过了第 ${lib.cleared.join('、')} 关`);
+      if (Number(lib.best)) bits.push(`最高 ${Number(lib.best)} 分`);
+      if (Number(lib.level) && !Array.isArray(lib.cleared)) bits.push(`打到第 ${Number(lib.level)} 关`);
+      if (Number(lib.wins)) bits.push(`赢过 ${Number(lib.wins)} 次`);
+      return `- ${g.title}：${g.summary}${bits.length ? `（${bits.join('，')}）` : '（还没玩过）'}`;
+    }).join('\n');
+    try {
+      const text = String(await complete({
+        system: `${personaCore()}\n\n（你现在一个人，想玩会儿游戏。）`,
+        messages: [{ role: 'user', text: `你手边有这些游戏：\n${brief}\n\n你现在想玩哪个？只回一个名字（或者回「随便」）。` }],
+        maxTokens: 80,
+      }) || '');
+      const hit = candidates.find((g) => text.includes(g.title) || text.includes(g.id));
+      if (hit) return hit;
+    } catch (e) {
+      log.warn?.(`挑游戏没挑成（${e.message}），按最久没玩的算`);
+    }
+    return fallback;
+  }
+
+  /**
+   * 跑一局。浏览器一定会被关掉；她中途想不出来就按当前状态收摊。
+   * 局后感想跟读书同一套锚点规矩：引不出这一局真实发生的事，就不推情绪。
+   */
+  async function runGame(t0) {
+    const state = readGameState();
+    const hasVision = Boolean(await visionKey());
+    const game = await chooseGame(t0, state, hasVision);
+    if (!game) { log.warn?.('游戏：目录里没有能玩的游戏'); return state; }
+    const bin = String(config.game?.edgePath || '') || findBrowser();
+    if (!bin) { log.warn?.('游戏：没找到可用的浏览器（Edge/Chrome），这次不玩'); return state; }
+
+    const browser = browserFactory({ bin, root: assetsDir, log, now, sleep });
+    let result = null;
+    try {
+      await browser.open(game.entry, { ready: game.ready });
+      if (game.kind === 'structured') {
+        const spec = drivers[game.id]?.create?.(config.game || {});
+        if (!spec?.id) throw new Error(`没有《${game.title}》的驱动`);
+        result = await runStructuredSession(spec, {
+          browser, ask: askGame, progress: state.library?.[game.id] || {}, now, sleep, log,
+        });
+      } else {
+        const key = await visionKey();
+        if (!key) throw new Error('没有看图凭据，看屏这条路走不了');
+        const vd = { ...VISION_DEFAULTS, ...(config.game?.vision || {}) };
+        result = await runVisionSession(game, {
+          browser, progress: state.library?.[game.id] || {}, now, sleep, log,
+          maxMinutes: vd.maxMinutes, maxDecisions: vd.maxDecisions, stepMs: vd.stepMs,
+          see: async ({ dataUrl, prompt }) => {
+            const r = await describeImage({ dataUrl, prompt, key, fetchImpl, timeoutMs: 60000, maxTokens: 1200 });
+            if (!r?.ok) throw new Error(r?.reason || '看图失败');
+            return String(r.text || '');
+          },
+        });
+      }
+    } catch (e) {
+      log.warn?.(`《${game.title}》这一局没玩成：${e.message}`);
+    } finally {
+      try { await browser.close(); } catch (e) { log.warn?.(`关游戏浏览器出错：${e.message}`); }
+    }
+    // 什么都没发生（页面没起来 / 第一眼就失败）：不记账，她也没法编。
+    if (!result?.facts) return state;
+
+    const t = Number(result.at) || now();
+    const looks = Array.isArray(result.observations) ? result.observations : [];
+    const material = [
+      `【这一局】${result.facts}`,
+      looks.length ? `她当时看到：${looks.map((x) => String(x).slice(0, 60)).join('；')}` : '',
+    ].filter(Boolean).join('\n');
     let text = '';
     const aff = settle(store.load(), t);
     const moodWord = aff.mood.v >= 0.7 ? '心情不错' : aff.mood.v >= 0.4 ? '心情平常' : '心情有点低';
@@ -1492,8 +1531,8 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         system: [
           personaCore(),
           '',
-          `你刚自己打完一局《植物大战僵尸》第 ${lv.n} 关。写两三句你自己的反应，总共不超过 80 字，按这个顺序：`,
-          '1) 先用「」引这局里的一个具体东西——数字或者哪条道（记录在下面，引里面的字）；',
+          `你刚自己玩完一局《${game.title}》。写两三句你自己的反应，总共不超过 80 字，按这个顺序：`,
+          '1) 先用「」引这局里的一个具体东西——数字、哪一步、或者你当时看到的东西（记录在下面，引里面的字）；',
           '2) 再说这让你怎么想；',
           '3) 最后才是你此刻的滋味。',
           '别写成复盘，别夸游戏，别写旁白。引不出记录里的东西就别硬编。',
@@ -1501,47 +1540,45 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
           '最后单独一行写：`[玩:标签 强度]`',
           '标签从 爽/触动/酸/闷/尬/烦/无感 里选一个；强度 1(轻) 2(中) 3(重)。哪怕是「无感」也要写这一行。',
           '',
-          // 和读书同一条：打完这局，有没有一句想跟他说的。可选；被截断就当没有。
           SHARE_PROMPT_LINE,
         ].join('\n'),
-        messages: [{ role: 'user', text: `【这局的记录】${materialAll}${lockedNote ? `\n（${lockedNote}）` : ''}\n\n你现在的状态：${moodWord}` }],
+        messages: [{ role: 'user', text: `${material}\n\n你现在的状态：${moodWord}` }],
         maxTokens: 800,
       }) || '').trim();
     } catch (e) {
-      log.warn?.(`打僵尸：局后感想没写出来（${e.message}）`);
+      log.warn?.(`《${game.title}》局后感想没写出来（${e.message}）`);
     }
-    // 剥掉 `[想说:…]`，别让它进 parseGameReaction 的锚点判断。
     const said = parseShare(text);
     text = said.text;
     const reaction = text
-      ? parseGameReaction(text, materialAll)
+      ? parseGameReaction(text, material)
       : { thought: '', label: '', intensity: 0, anchor: '', anchored: false };
     const emo = gameEmotion(reaction);
     if (emo) store.save(pushEmotion(aff, emo, t));
     // 强感触进记忆：带热度、封顶 0.5——她自己的游戏不该和他说的话抢记忆权重。
     if (reaction.anchored && (reaction.intensity === 3 || (['爽', '触动', '酸'].includes(reaction.label) && reaction.intensity >= 2))) {
-      memoryStore.save(remember(memoryStore.load(), `打《植物大战僵尸》${materialAll}，你记住的是「${reaction.anchor}」`, {
+      memoryStore.save(remember(memoryStore.load(), `玩《${game.title}》：${result.facts}，你记住的是「${reaction.anchor}」`, {
         now: t, source: 'seen', heat: Math.min(0.5, reaction.intensity / 4), mood: aff.emotion,
       }));
     }
-    const prev = gameStore.load();
-    const day = dayKeyOf(t0);
-    const next = noteGame(prev, {
-      now: t, day, snap, minutes, reaction, level: lv.n,
-      events: gameEvents(prev, snap),
+    const next = noteSession(state, {
+      game: game.id, title: game.title, at: t, day: dayKeyOf(t0),
+      facts: result.facts, victory: result.victory, quit: result.quit,
+      thought: reaction.thought, label: reaction.label, intensity: reaction.intensity, anchor: reaction.anchor,
+      progress: result.progress,
     });
-    gameStore.save(next);
-    // 这局里她真想跟他说一句：记成没被说出口的事（和读书同一条规矩，不写就没有）。
+    saveGameState(next);
+    // 这局里她真想跟他说一句：记成没被说出口的事（不写就没有）。
     if (said.share) {
       noteIntent(makeLoop({
         kind: 'tell', about: 'game', text: said.share,
-        source: `game:${lv.n}:${Number(snap?.wave) || 0}`,
-        anchor: reaction.anchor, label: '植物大战僵尸',
+        source: `game:${game.id}:${result.at}`,
+        anchor: reaction.anchor, label: game.title,
         weight: Math.min(1, 0.45 + 0.2 * (Number(reaction.intensity) || 0)),
         now: t,
       }));
     }
-    log.info?.(`打僵尸：第 ${lv.n} 关 · ${material}${reaction.label ? ` · ${reaction.label}` : ' · 无感'}${emo ? `（情绪 +${emo.intensity.toFixed(2)}）` : ''} · ${decisions} 手${next.cleared.length > (prev.cleared || []).length ? ` · 过了第 ${lv.n} 关，下一关是第 ${next.level} 关` : ''}`);
+    log.info?.(`玩《${game.title}》：${result.facts}${reaction.label ? ` · ${reaction.label}` : ' · 无感'}${emo ? `（情绪 +${emo.intensity.toFixed(2)}）` : ''} · ${result.decisions} 手 · ${result.reason}`);
     return next;
   }
 
@@ -1550,9 +1587,9 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
    * 后端（浏览器）不在就安静跳过，不当成错误。
    */
   async function playGameIfBored() {
-    if (!gameEnabled() || playingGame) return gameStore.load();
+    if (!gameEnabled() || playingGame) return readGameState();
     const t = now();
-    const st = gameStore.load();
+    const st = readGameState();
     const day = dayKeyOf(t);
     const playsToday = (st.recent || []).filter((g) => g.day === day).length;
     const hist = session.snapshot().history;
@@ -1566,12 +1603,12 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       return st;
     }
     playingGame = true;
-    try { await runGame(t); } catch (e) { log.warn?.(`打僵尸出错：${e.message}`); } finally { playingGame = false; }
-    return gameStore.load();
+    try { await runGame(t); } catch (e) { log.warn?.(`她玩游戏出错：${e.message}`); } finally { playingGame = false; }
+    return readGameState();
   }
 
   /**
-   * 她自己的时间：看书还是打僵尸。同一次心跳只做一件——
+   * 她自己的时间：看书还是玩游戏。同一次心跳只做一件——
    * 以前是两条独立任务，能撞在同一分钟里（一边看小说一边打游戏）。
    * 选哪个由 choosePastime 按真事算：上一件做的什么、这本读到什么态度、上一局输赢。
    */
@@ -1580,7 +1617,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     if (reading || playingGame || choosingPastime) return 'busy';
     const t = now();
     const nv = novelStore.load();
-    const gs = gameStore.load();
+    const gs = readGameState();
     const hist = session.snapshot().history;
     const lastUserAt = [...hist].reverse().find((m) => m.role === 'user')?.at || 0;
     const mood = companion.snapshot().mood.v;
@@ -1608,10 +1645,10 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       if (pick === 'read') {
         const before = Number(novelStore.load().at) || 0;
         await readNovelIfBored();
-        // 书没读成（后端没起、书都读完了）就换游戏：人也会这样，书翻不开就去打把僵尸。
+        // 书没读成（后端没起、书都读完了）就换游戏：人也会这样，书翻不开就去玩一局。
         // 不这样做的话，后端挂着的半天里她每轮都"选看书"，然后什么都没干。
         if ((Number(novelStore.load().at) || 0) === before && canPlay) {
-          log.info?.('书没读成，换成打一局僵尸');
+          log.info?.('书没读成，换成玩一局游戏');
           await playGameIfBored();
           return 'game';
         }
@@ -1619,7 +1656,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         await playGameIfBored();
       }
     } catch (e) {
-      log.warn?.(`${pick === 'read' ? '读书' : '打僵尸'}出错：${e.message}`);
+      log.warn?.(`${pick === 'read' ? '读书' : '玩游戏'}出错：${e.message}`);
     } finally {
       choosingPastime = false;
     }
@@ -1667,7 +1704,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
    * 一轮心跳里她只做一件事，按真实心情的先后：
    *   心里着急、说了话还没人回 → 叫他一下（戳一戳 / 窗口抖动，一次 HTTP，不花模型钱）；
    *   先看他（期待到了、护栏全过就自己想一次要不要找他），
-   *   他没消息可找，才去看书 / 打僵尸。
+   *   他没消息可找，才去看书 / 玩游戏。
    *
    * 以前这是两条独立通道：可能一边看书一边打游戏；也可能"该找他了"和"该看书了"
    * 同时发生、两条都跑。现在只有一个决定，一次只占一段时间。
@@ -1676,7 +1713,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
    */
   async function decideIntent() {
     // 叫他一下是几秒钟的事，不占她的"一段时间"，所以放在忙不忙的判断之前：
-    // 打着僵尸也照样会担心他。
+    // 玩着游戏也照样会担心他。
     const nudged = await nudgeIfUrgent(now());
     if (nudged) return nudged;
     if (reading || playingGame || choosingPastime) return 'busy';
@@ -1832,7 +1869,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     const real = [];
     const nl = novelLine(novelStore.load(), t);
     if (nl?.text) real.push(nl.text);
-    const gl = gameLine(gameStore.load(), t);
+    const gl = gameRecordLine(readGameState(), t);
     if (gl?.text) real.push(gl.text);
     if (hasDiary(dataDir, dayKeyOf(t))) real.push('今天的日记已经写过了');
     return [
@@ -1962,7 +1999,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
       // 她自己在看的书、她自己想出来的念头：也是「外面真的变了的事」，他安静时这是她的话题来源。
       novel: novelStore.load(),
       // 她打的游戏：也是「外面真的变了的事」，可以拿来开头。
-      game: gameStore.load(),
+      game: readGameState(),
       seen: state.seen,
     });
     const idle = g.active
@@ -1971,7 +2008,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     // 六股劲儿里的最冲那一个：只用来排顺序和给一句话，不直接生成台词。
     const drives = computeDrives({
       now: t, lastUserAt, loops: intentStore.load().loops,
-      novel: novelStore.load(), game: gameStore.load(), facts: factsStore.load(),
+      novel: novelStore.load(), game: readGameState(), facts: factsStore.load(),
       relation: st.relation, emotion: st.emotion,
     });
     const prompt = composePokePrompt({
@@ -2856,7 +2893,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     enqueue(refreshInsights).catch((e) => log.warn?.(`周自述出错：${e.message}`));
     enqueue(refreshBalance).catch((e) => log.warn?.(`查余额出错：${e.message}`));
     enqueue(refreshPerception).catch((e) => log.warn?.(`图片清理出错：${e.message}`));
-    // 她自己的时间：一轮只做一件事（先看他，再决定看书还是打僵尸）——以前是几条通道各跑各的。
+    // 她自己的时间：一轮只做一件事（先看他，再决定看书还是玩游戏）——以前是几条通道各跑各的。
     decideIntent().catch((e) => log.warn?.(`她自己的时间出错：${e.message}`));
     // 每天最多一次的「想一想」：从真反应里长出她自己的念头。十秒钟的内心活动，不占她的时间。
     thinkIfBored().catch((e) => log.warn?.(`想一想出错：${e.message}`));
@@ -2949,7 +2986,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
         facts: factsStore.load(),
         perception: statsOf(perceptionStore.load()),
         novel: novelStore.load(),
-        game: gameStore.load(),
+        game: readGameState(),
         // 她心里还没完成的事 + 她此刻在不在（睡/忙）+ 六股劲儿里最冲的。
         intents: intentStore.load(),
         rhythm: rhythmStore.load(),
@@ -2958,7 +2995,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
           const lastUserAt = [...hist].reverse().find((m) => m.role === 'user')?.at || 0;
           return computeDrives({
             now: now(), lastUserAt, loops: intentStore.load().loops,
-            novel: novelStore.load(), game: gameStore.load(), facts: factsStore.load(),
+            novel: novelStore.load(), game: readGameState(), facts: factsStore.load(),
             relation: st.relation, emotion: st.emotion,
           });
         })(),
@@ -3156,7 +3193,7 @@ export function createHost(ctx, { dataDir = defaultDataDir(), now = Date.now, lo
     log.info?.(`qq-companion：面板 ${panelUrl}`);
   } catch { /* 诊断日志失败不影响启动 */ }
 
-  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, impulse: { state: () => impulseStore.load(), refresh: () => enqueue(refreshImpulse) }, intents: { state: () => intentStore.load(), refresh: () => enqueue(refreshIntents), line: () => renderIntentBlock(intentStore.load(), now()), promises: () => renderPromiseBlock(intentStore.load(), now()) }, rhythm: { state: () => rhythmStore.load(), line: () => rhythmLine(rhythmStore.load(), now()) }, dailyPlan: { refresh: () => enqueue(refreshDailyPlan) }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, perception: { cleanup: () => enqueue(refreshPerception), stats: () => statsOf(perceptionStore.load()) }, novel: { state: () => novelStore.load(), read: () => readNovelIfBored(), think: () => thinkIfBored(), line: () => novelLine(novelStore.load(), now()), mind: () => mindLine(novelStore.load(), now()), look: (spec) => lookBookSpec(spec) }, game: { state: () => gameStore.load(), play: () => playGameIfBored(), line: () => gameLine(gameStore.load(), now()) }, pastime: () => pastimeIfBored(), intent: () => decideIntent(), get config() { return config; }, dataDir };
+  return { companion, onebot, session, handleEvent, proactive: { tick: tickProactive }, life: { refresh: () => enqueue(refreshLife), state: () => advance(lifeStore.load(), now()), line: () => lifeBlock() }, diary: { refresh: () => enqueue(refreshDiary), list: (n = 3) => readDiaries(dataDir, { limit: n }) }, budget: { state: () => budgetStore.load(), refresh: () => enqueue(refreshBalance) }, alive: { before: aliveBefore, bootAt, line: () => awakeLine() }, insights: { state: () => insightsStore.load(), refresh: () => enqueue(refreshInsights) }, qzone: { state: () => qzoneStore.load(), evaluate: () => enqueue(evaluatePost), comments: () => enqueue(refreshQzoneComments), publish: (text, opts) => qzonePublish(onebot, text, opts), remove: (tid) => qzoneRemove(onebot, tid) }, proactive: { tick: tickProactive, state: () => pokeStore.load(), check: pokeNow }, impulse: { state: () => impulseStore.load(), refresh: () => enqueue(refreshImpulse) }, intents: { state: () => intentStore.load(), refresh: () => enqueue(refreshIntents), line: () => renderIntentBlock(intentStore.load(), now()), promises: () => renderPromiseBlock(intentStore.load(), now()) }, rhythm: { state: () => rhythmStore.load(), line: () => rhythmLine(rhythmStore.load(), now()) }, dailyPlan: { refresh: () => enqueue(refreshDailyPlan) }, tick: () => heartbeat(), memory: { block: memoryBlock, card: () => memoryStore.load() }, perception: { cleanup: () => enqueue(refreshPerception), stats: () => statsOf(perceptionStore.load()) }, novel: { state: () => novelStore.load(), read: () => readNovelIfBored(), think: () => thinkIfBored(), line: () => novelLine(novelStore.load(), now()), mind: () => mindLine(novelStore.load(), now()), look: (spec) => lookBookSpec(spec) }, game: { state: () => readGameState(), play: () => playGameIfBored(), line: () => gameRecordLine(readGameState(), now()), catalog: () => games.map((g) => ({ id: g.id, title: g.title, kind: g.kind })) }, pastime: () => pastimeIfBored(), intent: () => decideIntent(), get config() { return config; }, dataDir };
 }
 
 function loadConfig(file, log) {

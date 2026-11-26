@@ -1,0 +1,11 @@
+{
+  "id": "pvz",
+  "title": "植物大战僵尸",
+  "kind": "structured",
+  "entry": "pvz/index.html",
+  "ready": "typeof gameState !== 'undefined' && typeof selectPlant === 'function'",
+  "summary": "开源复刻版：种向日葵攒阳光、种豌豆挡僵尸，一共五关。",
+  "controls": "决定这一手在哪个格种什么植物",
+  "license": "MIT",
+  "source": "https://github.com/plantsvszombiesjs/plantsvszombiesjs.github.io"
+}

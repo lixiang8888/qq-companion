@@ -27,6 +27,21 @@ test('面板：状态、人格、记忆、运行都在一页里', () => {
   assert.match(html, /小鲸鱼/);
 });
 
+test('面板：她最近在玩哪款、每款进度都能对上账本', () => {
+  const game = {
+    last: { game: 'lightsout', title: '点灯', facts: '玩了 3 分钟，点了 12 下，这一局玩完了', label: '闷', at: T0 },
+    library: {
+      lightsout: { title: '点灯', wins: 1, at: T0 },
+      g2048: { title: '2048', best: 1024, at: T0 },
+    },
+  };
+  const html = renderPanel({ state: initState(T0), memory: createCard(T0), game, now: T0 });
+  assert.match(html, /《点灯》/);
+  assert.match(html, /玩了 3 分钟/);
+  assert.match(html, /点灯（赢过 1 次）/);
+  assert.match(html, /2048（最高 1024）/);
+});
+
 test('面板不能自动刷新：表单里有 token，刷新一下输入就没了', () => {
   const html = renderPanel({ state: initState(T0), memory: createCard(T0), now: T0 });
   assert.doesNotMatch(html, /http-equiv="refresh"/);

@@ -14,6 +14,7 @@ import { driftLine } from './affect/personality.js';
 import { screenLine } from './screen.js';
 import { weatherLine } from './weather.js';
 import { driveLine, isOpen } from './intent.js';
+import { libraryLines } from './games/records.js';
 
 export function escapeHtml(value) {
   return String(value ?? '')
@@ -64,12 +65,12 @@ export function renderPanel({ state, memory, recalls = [], gateway = 'unknown', 
   const novelText = novel?.bookName
     ? ` · 在读《${novel.bookName}》第 ${Number(novel.index) + 1} 章${attitudeText}${novel.label ? ` · 上次：${novel.label}` : ''}${novel.thought ? `（「${String(novel.thought).slice(0, 24)}」）` : ''}${novel.readsToday ? `，今天读了 ${novel.readsToday} 章` : ''}`
     : '';
-  // 她自己的游戏：第几关、上一局打到哪、过了哪几关。没打过就不说。
+  // 她自己的游戏：最近玩哪款、每款各自的进度。没玩过就不说。
   const gl = game?.last;
-  const gameCleared = Array.isArray(game?.cleared) ? game.cleared : [];
-  const gameText = gl?.wave
-    ? ` · 打僵尸：第 ${gl.level || 1} 关第 ${gl.wave}/${gl.maxWaves || 20} 波${gl.victory ? '（过了）' : ''}${gl.label ? ` · ${gl.label}` : ''}${gameCleared.length ? `，过了第 ${gameCleared.join('、')} 关` : ''}`
-    : '';
+  const gameLib = libraryLines(game).filter((x) => x.text).map((x) => `${x.title}（${x.text}）`).join('、');
+  const gameText = gl?.game
+    ? ` · 最近玩《${gl.title || gl.game}》${gl.facts ? `：${gl.facts}` : ''}${gameLib ? ` · 玩过：${gameLib}` : ''}`
+    : (gameLib ? ` · 玩过：${gameLib}` : '');
   const stickerGrid = stickerItems.length
     ? `<div class="stickers">${stickerItems.map((s) => `<div class="sticker">
       <img src="${escapeHtml(s.url)}" alt="" loading="lazy">

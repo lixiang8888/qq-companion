@@ -1,0 +1,11 @@
+{
+  "id": "g2048",
+  "title": "2048",
+  "kind": "structured",
+  "entry": "g2048/index.html",
+  "ready": "document.querySelector('.score-container') !== null",
+  "summary": "方向键推所有的数字，相同的碰一起就合并，凑出 2048。",
+  "controls": "方向键：上/下/左/右",
+  "license": "MIT",
+  "source": "https://github.com/gabrielecirulli/2048"
+}

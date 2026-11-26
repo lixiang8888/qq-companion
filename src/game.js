@@ -1,7 +1,7 @@
-// 她自己的小游戏：《植物大战僵尸》MIT 复刻版（assets/pvz/，见 THIRD_PARTY_NOTICES.md）。
+// 她自己的小游戏：《植物大战僵尸》MIT 复刻版（assets/games/pvz/，见 THIRD_PARTY_NOTICES.md）。
 //
-// 真游戏在浏览器里跑，host 用 CDP 驱动（src/pvz.js）；这里只有纯逻辑：
-// 战况画成文字、解析她的指令、把这一局记下来、拼出注入她的那一行。
+// 真游戏在无头浏览器里跑（src/games/browser.js），PvZ 的驱动在 src/games/pvz.js；这里只有纯逻辑：
+// 战况画成文字、解析她的指令、把这一局记下来。
 // 纯函数，离线可测——浏览器那层永远测不进去，所以边界必须在这里收紧。
 
 import { anchorOf, reactionEmotion } from './novel.js';
@@ -30,8 +30,6 @@ export const ZOMBIES = {
   strong: { name: '红眼', hp: 60 },
 };
 
-// 「最近在打」这句话能说多久。过了就不许再说——跟书的念头同一个规矩。
-export const GAME_TTL = 48 * 3600e3;
 // 他安静这么久她才会去开游戏（跟读书共用同一个直觉，但各自可调）。
 export const GAME_QUIET_MS = 30 * 60e3;
 export const RECENT_KEEP = 5;
@@ -288,27 +286,6 @@ export function gameEvents(prev = {}, snap = {}) {
   if (snap.victory) list.push(`把 ${maxWaves} 波全挡回去了`);
   else if (snap.over) list.push(`第 ${Number(snap.wave) || 1} 波被突破，输了`);
   return list;
-}
-
-/**
- * 她能说出口的那一行。过了 GAME_TTL 就什么都不返回——
- * 「最近在打」过期了还说，就是编。
- */
-export function gameLine(state = {}, now = 0) {
-  const last = state?.last;
-  const at = Number(last?.at) || 0;
-  if (!at || !last?.wave) return { text: '', at: 0, ttl: 0 };
-  if (now - at > GAME_TTL) return { text: '', at, ttl: GAME_TTL };
-  const lv = Number(last.level) || currentLevel(state);
-  const cleared = Array.isArray(state.cleared) ? state.cleared.map(Number) : [];
-  const maxWaves = Number(last.maxWaves) || levelInfo(lv).waves;
-  let text = `你最近在打《植物大战僵尸》第 ${lv} 关（${maxWaves} 波）：上一局打到第 ${last.wave}/${maxWaves} 波，`
-    + (last.victory ? '过了' : '没撑住');
-  if (Number(last.score) > 0) text += `，分数 ${last.score}`;
-  if (last.thought) text += `（你的原话：${last.thought}）`;
-  if (cleared.length) text += `；已经过了第 ${cleared.join('、')} 关`;
-  if (cleared.length >= MAX_LEVEL) text += '（五关都过了）';
-  return { text: `${text}。`, at, ttl: GAME_TTL };
 }
 
 /**

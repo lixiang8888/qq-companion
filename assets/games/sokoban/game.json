@@ -1,0 +1,11 @@
+{
+  "id": "sokoban",
+  "title": "推箱子",
+  "kind": "structured",
+  "entry": "sokoban/index.html",
+  "ready": "typeof window.__st === 'function'",
+  "summary": "把每个箱子推到目标点上；只能推不能拉，推错就没了。30 关。",
+  "controls": "方向键：上/下/左/右；U 撤销；R 重来",
+  "license": "MIT",
+  "source": "https://github.com/mashukui/web-games"
+}

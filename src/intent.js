@@ -371,7 +371,7 @@ export function computeDrives({
   let proud = 0;
   if (today(Number(game?.last?.at)) && game.last.victory) proud += 0.4;
   if (today(Number(novel?.at)) && Number(novel.readsToday) >= 20) proud += 0.3;
-  if (Array.isArray(game?.cleared) && game.cleared.length >= 5) proud += 0.1;
+  if (Array.isArray(game?.library?.pvz?.cleared) && game.library.pvz.cleared.length >= 5) proud += 0.1;
   const proudOut = round2(proud);
   // 好奇：今天还没查过东西，或者手里有一条没查的 ask。
   const searchedToday = (facts?.items || []).some((f) => today(Number(f?.at)));
@@ -421,7 +421,8 @@ export function detectDone(state = {}, { now = 0, novel = {}, game = {} } = {}) 
       if (l.target?.finishAt) hit = Number(novel.index) + 1 >= Number(l.target.finishAt);
       else if (Number(novel.at) > 0) hit = Number(novel.at) > Number(l.createdAt);
     } else if (l.about === 'game') {
-      if (l.target?.level) hit = (game.cleared || []).map(Number).includes(Number(l.target.level));
+      const lib = game?.library || {};
+      if (l.target?.level) hit = (lib[l.target.game || 'pvz']?.cleared || []).map(Number).includes(Number(l.target.level));
       else if (Number(game.last?.at) > 0) hit = Number(game.last.at) > Number(l.createdAt);
     }
     if (!hit) continue;
@@ -449,13 +450,13 @@ export function deriveGoal(state = {}, { now = 0, novel = {}, game = {} } = {}) 
       dueAt: now, expiresAt: now + 7 * 86400e3, target: { finishAt: total },
     });
   }
-  const cleared = (game?.cleared || []).map(Number);
+  const cleared = (game?.library?.pvz?.cleared || []).map(Number);
   if (cleared.length < 5) {
     const level = cleared.length + 1;
     return makeLoop({
       kind: 'do', about: 'game', text: `把《植物大战僵尸》第 ${level} 关过了`,
       source: 'goal:game', label: '植物大战僵尸', weight: 0.4, now,
-      dueAt: now, expiresAt: now + 7 * 86400e3, target: { level },
+      dueAt: now, expiresAt: now + 7 * 86400e3, target: { game: 'pvz', level },
     });
   }
   return null;

@@ -127,12 +127,12 @@ export function perceive(state = {}) {
     add('thought', `你这两天自己在想：「${clip(thought.text, 40)}」`);
   }
 
-  // 她自己打的一局僵尸：跟书一样是她自己的生活，不是他给的话题。
+  // 她自己玩的一局游戏：跟书一样是她自己的生活，不是他给的话题。材料是这一局的真实记录。
   const gm = state.game?.last;
   const gmAt = num(gm?.at);
-  if (gmAt && gm?.wave && now - gmAt <= GAME_MS && gmAt !== seen.gameAt) {
+  if (gmAt && gm?.facts && now - gmAt <= GAME_MS && gmAt !== seen.gameAt) {
     seen.gameAt = gmAt;
-    add('game', `你刚打完一局《植物大战僵尸》第 ${Number(gm.level) || 1} 关，打到第 ${gm.wave}/${gm.maxWaves || 20} 波${gm.victory ? '，过了' : ''}${gm.label ? `，${gm.label}` : ''}`);
+    add('game', `你刚玩完一局《${clip(gm.title || gm.game, 20)}》：${clip(gm.facts, 80)}${gm.label ? `，${gm.label}` : ''}`);
   }
 
   return { events: events.slice(0, MAX_EVENTS), seen };

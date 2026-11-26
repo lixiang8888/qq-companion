@@ -243,13 +243,13 @@ test('驱力：手里有想说的事，share 就上来；最冲的那股写成�
 });
 
 test('驱力：今天通关了才算「想让他知道你干了什么」', () => {
-  const game = { last: { at: DAY_T0 - HOUR, victory: true }, cleared: [1] };
+  const game = { last: { at: DAY_T0 - HOUR, victory: true }, library: { pvz: { cleared: [1] } } };
   const d = computeDrives({
     now: DAY_T0, lastUserAt: DAY_T0 - HOUR, loops: [], novel: {}, game,
     facts: { items: [] }, relation: {}, emotion: {},
   });
   assert.ok(d.proud >= 0.4);
-  const oldGame = { last: { at: DAY_T0 - 3 * DAY, victory: true } };
+  const oldGame = { last: { at: DAY_T0 - 3 * DAY, victory: true }, library: {} };
   const d2 = computeDrives({
     now: DAY_T0, lastUserAt: DAY_T0 - HOUR, loops: [], novel: {}, game: oldGame,
     facts: { items: [] }, relation: {}, emotion: {},
@@ -263,10 +263,10 @@ test('做完的事：读过书 / 过了关，按真事件核销', () => {
   let st = createIntents();
   st = addLoop(st, makeLoop({ kind: 'do', about: 'novel', text: '读两章', source: 'imp:1', now: T0 }));
   st = addLoop(st, makeLoop({ kind: 'do', about: 'game', text: '过一关', source: 'imp:2', now: T0, target: { level: 2 } }));
-  const r = detectDone(st, { now: T0 + HOUR, novel: { at: T0 + 30 * 60e3 }, game: { last: null, cleared: [1] } });
+  const r = detectDone(st, { now: T0 + HOUR, novel: { at: T0 + 30 * 60e3 }, game: { last: null, library: { pvz: { cleared: [1] } } } });
   assert.equal(r.done.length, 1, '读书那条完成；第 2 关还没过');
   assert.equal(openLoops(r.state, T0 + HOUR).length, 1);
-  const r2 = detectDone(r.state, { now: T0 + 2 * HOUR, novel: {}, game: { cleared: [1, 2] } });
+  const r2 = detectDone(r.state, { now: T0 + 2 * HOUR, novel: {}, game: { library: { pvz: { cleared: [1, 2] } } } });
   assert.equal(r2.done.length, 1);
 });
 
@@ -281,7 +281,7 @@ test('跨天目标：只从真进度里算；一天只看一次', () => {
   assert.ok(far);
   assert.match(far.text, /第 1 关/);
   // 游戏目标：第五关之前，第 cleared+1 关
-  const gm = deriveGoal(createIntents(), { now: T0, novel: {}, game: { cleared: [1, 2] } });
+  const gm = deriveGoal(createIntents(), { now: T0, novel: {}, game: { library: { pvz: { cleared: [1, 2] } } } });
   assert.ok(gm);
   assert.match(gm.text, /第 3 关/);
   // 同一天已经看过就不再派生
